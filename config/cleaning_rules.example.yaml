@@ -1,0 +1,12 @@
+rules:
+  - id: warn-telemetry
+    vendor: cisco_iosxr
+    match: "^telemetry model-driven$"
+    action: warn
+    reason: "请确认目标 XRv9000 版本是否支持 telemetry"
+
+  - id: remove-phone-home
+    vendor: juniper_junos
+    match: "system.phone-home"
+    action: delete
+    reason: "实验环境不使用 phone-home"

@@ -1,0 +1,23 @@
+[build-system]
+requires = ["setuptools>=68"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "gns3-config-adaptor"
+version = "0.1.0"
+description = "Adapt IOS XR and Junos configurations for GNS3 XRv9000 and vMX images"
+requires-python = ">=3.11"
+dependencies = [
+  "openpyxl>=3.1,<4",
+  "PyYAML>=6,<7",
+]
+
+[project.scripts]
+config-adaptor = "config_adaptor.cli:main"
+
+[tool.setuptools.packages.find]
+where = ["src"]
+
+[tool.pytest.ini_options]
+pythonpath = ["src"]
+testpaths = ["tests"]
