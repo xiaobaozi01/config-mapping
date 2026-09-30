@@ -22,6 +22,8 @@ group 展开是事务式的，并遵循显式配置、嵌套层级和 group 列�
 - `iosxr_bundle/`：IOS XR 聚合 NNI、UNI、group 和认证清洗样例。
 - `junos_bundle/`：Junos 聚合 NNI、UNI、groups 和认证清洗样例。
 - `iosxr_duplicate_vlan/`：UNI VLAN 冲突重新分配样例。
+- `iosxr_mlag/`：IOS XR 同一 Bundle 跨对端拆分、一对多引用与 QinQ UNI 样例。
+- `junos_mlag/`：Junos ae 跨对端拆分、裸口清理与 QinQ UNI 样例。
 - `junos_unresolved/`：无法解析 group 时事务回滚样例。
 - `group_configs/`：独立的厂商 group 优先级和通配匹配配置。
 
@@ -38,7 +40,9 @@ config-adaptor convert \
   --profiles config/image_profiles.yaml
 ```
 
-`--profiles` 可调整两类镜像的数据接口列表；列表最后一个接口保留，倒数第二个接口用于 UNI。需要增加保守清洗规则时传入 `--rules config/cleaning_rules.example.yaml`。
+`--profiles` 可调整两类镜像的数据接口列表；列表最后一个接口用于 UNI，其余接口可分配给 NNI。需要增加保守清洗规则时传入 `--rules config/cleaning_rules.example.yaml`。
+
+UNI 只迁移有 IP、L2VC/L2Circuit、L2 绑定或全局业务引用的接口；裸口删除。Cisco 会沿 `bridge-domain` 关联活跃 attachment circuit 与 BVI，Juniper 会沿 `bridge-domains`/`vlans` 关联活跃接口、VLAN 与 IRB；未关联活跃业务的 BVI/IRB 不迁移。目标 UNI 统一重写为 QinQ，旧标签匹配和 VLAN rewrite 清除，外层 VLAN 是设备内唯一的目标子接口编号，内层优先保留可识别的原 VLAN。
 
 也可以不安装直接运行：
 

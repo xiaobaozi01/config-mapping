@@ -41,9 +41,8 @@ Excel 至少包含两个工作表：
 镜像 Profile 定义 XRv9000 和 vMX 可以使用的数据接口，并按照列表位置划分用途：
 
 ```text
-interfaces[:-2]  → NNI 可分配接口
-interfaces[-2]   → UNI 统一父接口
-interfaces[-1]   → 保留接口，不参与转换
+interfaces[:-1]  → NNI 可分配接口
+interfaces[-1]   → UNI 统一父接口
 ```
 
 ### 2.2 输出
@@ -399,16 +398,29 @@ Bundle-Ether10
 
 #### 聚合扁平化
 
-当多条 Excel 链路属于同一 Bundle 时：
+当多条 Excel 链路在同一对端设备之间属于同一 Bundle 时：
 
 1. 使用并查集将成员行归为一条逻辑链路。
-2. 检查两端聚合成员关系是否对称。
-3. 保留 Excel 中行号最小的成员链路。
-4. 删除其他冗余成员链路。
-5. 删除原物理成员接口配置。
-6. 将 Bundle 及其子接口配置迁移到目标物理接口。
-7. 删除 `bundle id`、LACP 和聚合成员属性。
-8. 记录成员删除、父接口迁移和子接口迁移映射。
+2. 保留 Excel 中行号最小的成员链路。
+3. 删除其他冗余成员链路。
+4. 删除原物理成员接口配置。
+5. 将 Bundle 及其子接口配置迁移到目标物理接口。
+6. 删除 `bundle id`、LACP 和聚合成员属性。
+7. 记录成员删除、父接口迁移和子接口迁移映射。
+
+同一对端分组内，多个成员行的两端必须各自指向唯一聚合。
+单边聚合或一端同时指向多个聚合时，无法在不猜测配置冲突的前提下合并，
+因此按保守策略报错。
+
+#### M-LAG 按对端拆分
+
+同一 Bundle 的物理成员连到不同对端时，不会跨对端合并：
+
+1. 分组键为“本端设备 + Bundle + 对端设备”。
+2. 每个对端组分配一个目标物理口。
+3. Bundle 及子接口先克隆到各目标的占位接口。
+4. 删除旧 Bundle 和所有成员后，再把占位接口落到真实目标名。
+5. 全局 Bundle 引用展开为多条目标引用。
 
 接口改名使用两阶段占位符：
 
@@ -425,10 +437,16 @@ UNI 候选必须满足：
 - 不属于 NNI。
 - 不是 Loopback。
 - 不是管理接口。
-- 不是最后一个保留接口。
+- 不是最后一个 UNI 目标父接口。
 - 不是聚合物理成员。
+- 自身配置 IP/L2VC/L2 transport，或被 L2VPN、bridge-domain、路由协议等全局业务引用。
 
-所有 UNI 映射到倒数第二个镜像接口的子接口。
+所有 UNI 映射到最后一个镜像接口的子接口。
+只有描述、MTU 等非业务属性的裸口会被删除，不消耗模拟器资源。
+
+BVI 不会因为自身存在 IP 地址就自动迁移。系统先从活跃 L2 attachment
+circuit 收集 VLAN，并分析 `bridge-domain` 中的 `routed interface`；只有
+与活跃业务关联的 BVI 才迁移，未关联的网关作为无效 UNI 删除。
 
 #### VLAN 分配
 
@@ -455,22 +473,22 @@ UNI 候选必须满足：
 ```text
 GigabitEthernet0/0/0/3.100
 →
-GigabitEthernet0/0/0/6.100
+GigabitEthernet0/0/0/7.100
 ```
 
 系统会：
 
 1. 暂时把源父接口改为 `ADAPT-UNI-*`。
 2. 将每个源接口迁移到目标 UNI 父接口。
-3. 删除原 Dot1Q、Bundle 和 LACP 属性。
-4. 写入新的 `encapsulation dot1q <VLAN>`。
+3. 删除原 encapsulation、rewrite、Bundle 和 LACP 属性。
+4. 写入新的 `encapsulation dot1q <outer> second-dot1q <inner>`。
 5. 合并可能出现的重复目标接口块。
 6. 删除源接口。
 
 如果目标父接口不存在，自动创建：
 
 ```text
-interface GigabitEthernet0/0/0/6
+interface GigabitEthernet0/0/0/7
  no shutdown
 ```
 
@@ -668,9 +686,15 @@ ge-0/0/0 {
 6. 删除 `aggregated-ether-options`、`gigether-options` 和 `ether-options`。
 7. 更新协议中的 `ae0` 或 `ae0.0` 引用。
 
+若同一 ae 的成员连到不同对端，与 IOS XR 相同，按对端拆分为多个物理口，ae 配置和全局引用都会一对多展开。
+
 ### 8.4 Junos UNI 处理
 
-所有 UNI 汇聚到倒数第二个 vMX 接口。
+所有 UNI 汇聚到最后一个 vMX 接口。
+
+系统从活跃 unit 的 `vlan-id`、`vlan-id-list`、`vlan members` 收集业务
+VLAN，并沿 `bridge-domains`/`vlans` 的接口、VLAN ID或名称查找 IRB。
+只有关联活跃广播域的 IRB 才会迁移。
 
 目标父接口自动具备：
 
@@ -684,8 +708,8 @@ encapsulation flexible-ethernet-services;
 1. 找到源接口和源 unit。
 2. 深拷贝 unit 配置。
 3. 根据 VLAN 规划修改 unit 编号。
-4. 删除原 `vlan-id`。
-5. 写入新的 `vlan-id`。
+4. 递归删除原 `vlan-id`、`vlan-id-list`、`vlan-tags`、`vlan members`、接口模式和输入/输出 VLAN map。
+5. 写入新的 `vlan-tags outer <outer> inner <inner>`。
 6. 将 unit 添加到统一目标父接口。
 7. 全部 unit 迁移完成后停用源父接口。
 
@@ -762,6 +786,10 @@ ae0.0              → ge-0/0/0.0
 - Segment Routing
 - Telemetry
 
+常规映射是一对一。M-LAG 按对端拆分时，同一源 Bundle/ae
+会生成多个目标；Cisco 将相关命令行/配置块复制展开，Junos
+将 interfaces 之外的相关节点克隆展开。
+
 Cisco 会更新非接口配置块头和块内容中的引用。
 
 Junos 会跳过 `interfaces` 定义本身，只递归更新其他层级中的引用，避免对已经迁移完成的接口节点再次替换。
@@ -800,7 +828,7 @@ rules:
 - 配置文件不存在或越出配置目录。
 - 厂商无法识别。
 - NNI 数量超过镜像可用物理接口数量。
-- 聚合链路两端成员关系不对称。
+- 同一对端聚合组内的成员关系不一致。
 - UNI VLAN 空间耗尽。
 - Group 无法完整展开。
 - Junos 大括号不平衡。
@@ -825,6 +853,7 @@ report.json
 - Group 展开事件。
 - Group 冲突路径、语义键、胜出值和被覆盖值。
 - 聚合链路扁平化事件。
+- M-LAG 按对端拆分的源接口、目标接口和 Excel 行。
 - 接口映射数量。
 - 有效和跳过链路数量。
 - 认证清洗分类统计。

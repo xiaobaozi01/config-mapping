@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import copy
 import re
 import textwrap
 from dataclasses import dataclass, field
@@ -112,6 +113,7 @@ _CISCO_PREFIXES = {
 
 def canonical_cisco_interface(value: str) -> str:
     """去除空白并展开常见 IOS XR 接口缩写。"""
+    value = re.sub(r"\s+l2transport\s*$", "", value.strip(), flags=re.IGNORECASE)
     compact = re.sub(r"\s+", "", value.strip())
     match = re.match(r"([A-Za-z-]+)(.*)", compact)
     if not match:
@@ -130,6 +132,8 @@ def _cisco_interface_kind(name: str) -> str:
         return "management"
     if parent.startswith("bundle-ether"):
         return "bundle"
+    if parent.startswith("bvi"):
+        return "gateway"
     return "physical"
 
 
@@ -144,7 +148,17 @@ class CiscoBlock:
     def interface_name(self) -> str | None:
         """如果当前块是 interface，返回规范化后的接口名。"""
         match = re.match(r"interface\s+(.+?)\s*$", self.header, re.IGNORECASE)
-        return canonical_cisco_interface(match.group(1)) if match else None
+        if not match:
+            return None
+        # IOS XR 二层子接口会把 l2transport 写在 interface 头部，
+        # 它是接口模式而不是接口名的一部分。
+        value = re.sub(r"\s+l2transport\s*$", "", match.group(1), flags=re.IGNORECASE)
+        return canonical_cisco_interface(value)
+
+    @property
+    def l2transport(self) -> bool:
+        """判断该接口头是否含有 IOS XR ``l2transport`` 模式。"""
+        return bool(re.match(r"interface\s+.+\s+l2transport\s*$", self.header, re.IGNORECASE))
 
 
 class CiscoDocument:
@@ -175,6 +189,10 @@ class CiscoDocument:
                 current = CiscoBlock(header=line.rstrip())
                 blocks.append(current)
                 inside_group = bool(re.match(r"group\s+\S+", line, re.IGNORECASE))
+            elif line.strip() == "!" and line[:1].isspace() and current is not None:
+                # IOS XR 会在 l2vpn/router 等层级块内部用缩进 ``!``
+                # 结束子模式；它不能被误判成整个顶层块的结束符。
+                current.lines.append(line.rstrip())
             elif line.strip() == "!":
                 current = None
                 blocks.append(CiscoBlock(header="!"))
@@ -195,11 +213,23 @@ class CiscoDocument:
             name = block.interface_name
             assert name is not None
             vlan = None
+            inner_vlan = None
             for line in block.lines:
-                match = re.match(r"\s*encapsulation\s+dot1q\s+(\d+)", line, re.IGNORECASE)
+                match = re.match(
+                    r"\s*encapsulation\s+dot1q\s+(\d+)"
+                    r"(?:\s+second-dot1q\s+(\d+))?",
+                    line,
+                    re.IGNORECASE,
+                )
                 if match:
                     vlan = int(match.group(1))
+                    inner_vlan = int(match.group(2)) if match.group(2) else None
                     break
+            # BVI 编号本身就是常用业务 VLAN，作为无显式封装时的保守提示值。
+            if vlan is None:
+                bvi = re.fullmatch(r"BVI(\d+)", interface_parent(name), re.IGNORECASE)
+                if bvi and 1 <= int(bvi.group(1)) <= 4094:
+                    vlan = int(bvi.group(1))
             result.append(
                 InterfaceSpec(
                     name=name,
@@ -207,6 +237,7 @@ class CiscoDocument:
                     unit=interface_unit(name),
                     vlan=vlan,
                     kind=_cisco_interface_kind(name),
+                    inner_vlan=inner_vlan,
                 )
             )
         return result
@@ -242,6 +273,104 @@ class CiscoDocument:
             {spec.name for spec in self.interface_specs() if spec.parent == parent},
             key=lambda value: (interface_unit(value) is not None, value),
         )
+
+    def business_interface_names(self) -> set[str]:
+        """识别真正承载三层或二层业务的 IOS XR 接口。
+
+        直接业务包括 IPv4/IPv6、l2transport、xconnect 等；此外，
+        被 L2VPN、bridge-domain、路由协议等全局配置引用的接口也视为活跃业务口。
+        BVI 不因自身有 IP 就自动迁移，只有所在 bridge-domain 还包含活跃
+        attachment circuit，或编号命中活跃业务 VLAN 时才作为网关迁移。
+        """
+        specs = self.interface_specs()
+        known = {spec.name for spec in specs}
+        kinds = {spec.name: spec.kind for spec in specs}
+        active: set[str] = set()
+        direct = re.compile(
+            r"^(?:ipv4\s+address|ipv6\s+address|xconnect\b|l2transport\b|"
+            r"bridge-domain\b|l2vpn\b|ethernet-services\b)",
+            re.IGNORECASE,
+        )
+        for block in self._interface_blocks():
+            name = block.interface_name
+            if (
+                name
+                and kinds.get(name) != "gateway"
+                and (block.l2transport or any(direct.match(line.strip()) for line in block.lines))
+            ):
+                active.add(name)
+
+        # 扫描接口定义之外的引用。使用边界匹配避免 Gi0/0/0/1
+        # 误命中 Gi0/0/0/10。
+        external = "\n".join(
+            text
+            for block in self.blocks
+            if block.active and not block.interface_name
+            for text in [block.header, *block.lines]
+        )
+        for name in known:
+            if kinds.get(name) != "gateway" and re.search(
+                rf"(?<![A-Za-z0-9_.-]){re.escape(name)}(?![A-Za-z0-9_.-])", external
+            ):
+                active.add(name)
+        for parent in {spec.parent for spec in specs}:
+            parent_specs = [spec for spec in specs if spec.parent == parent]
+            if parent_specs and parent_specs[0].kind != "gateway" and re.search(
+                rf"(?<![A-Za-z0-9_.-]){re.escape(parent)}(?![A-Za-z0-9_.-])", external
+            ):
+                active.update(spec.name for spec in parent_specs)
+
+        # 先从仍活跃的二层接入口收集业务 VLAN，再沿 bridge-domain
+        # 关联 routed interface。BVI 编号回退只用于没有显式关联的常见配置。
+        spec_by_name = {spec.name: spec for spec in specs}
+        active_vlans: set[int] = set()
+        for name in active:
+            spec = spec_by_name.get(name)
+            block = self._find_interface_block(name)
+            if not spec or not block or spec.kind == "gateway" or spec.vlan is None:
+                continue
+            rendered = "\n".join(block.lines)
+            if block.l2transport or re.search(
+                r"^\s*(?:xconnect|bridge-domain|l2vpn|ethernet-services)\b",
+                rendered,
+                re.IGNORECASE | re.MULTILINE,
+            ):
+                active_vlans.add(spec.vlan)
+
+        def descendants(node: _CiscoNode) -> list[_CiscoNode]:
+            result: list[_CiscoNode] = []
+            for child in node.children:
+                result.append(child)
+                result.extend(descendants(child))
+            return result
+
+        for block in self.blocks:
+            if not block.active or not re.match(r"^l2vpn\b", block.header.strip(), re.IGNORECASE):
+                continue
+            for node in self._parse_cisco_nodes(block.lines):
+                stack = [node]
+                while stack:
+                    current = stack.pop()
+                    stack.extend(current.children)
+                    if not re.match(r"^bridge-domain\b", current.command, re.IGNORECASE):
+                        continue
+                    attachments: set[str] = set()
+                    gateways: set[str] = set()
+                    for child in descendants(current):
+                        gateway_match = re.match(r"^routed\s+interface\s+(.+)$", child.command, re.IGNORECASE)
+                        if gateway_match:
+                            gateways.add(canonical_cisco_interface(gateway_match.group(1)))
+                            continue
+                        interface_match = re.match(r"^interface\s+(.+)$", child.command, re.IGNORECASE)
+                        if interface_match:
+                            attachments.add(canonical_cisco_interface(interface_match.group(1)))
+                    if attachments & active:
+                        active.update(gateway for gateway in gateways if gateway in known)
+
+        for spec in specs:
+            if spec.kind == "gateway" and spec.vlan in active_vlans:
+                active.add(spec.name)
+        return active
 
     def _find_interface_block(self, name: str) -> CiscoBlock | None:
         """按规范化名称查找一个有效接口块。"""
@@ -603,7 +732,7 @@ class CiscoDocument:
                 continue
             suffix = current[len(source) :] if current else ""
             new_name = target + suffix
-            block.header = f"interface {new_name}"
+            block.header = f"interface {new_name}" + (" l2transport" if block.l2transport else "")
             if strip_bundle:
                 block.lines = [
                     line
@@ -611,6 +740,40 @@ class CiscoDocument:
                     if not re.match(r"\s*(bundle\s+id|lacp\b|aggregated-)\b", line, re.IGNORECASE)
                 ]
             self._merge_duplicate_interface(block)
+
+    def clone_interface_tree(self, source: str, target: str, strip_bundle: bool = False) -> None:
+        """把一棵 IOS XR 接口配置复制到新物理口，用于 M-LAG 按对端拆分。"""
+        source = canonical_cisco_interface(source)
+        target = canonical_cisco_interface(target)
+        originals = [
+            block
+            for block in self._interface_blocks()
+            if block.interface_name == source
+            or (block.interface_name and block.interface_name.startswith(source + "."))
+        ]
+        if not originals:
+            # 拓扑口可能没有显式配置，仍需要生成可用目标口。
+            self.blocks.append(CiscoBlock(header=f"interface {target}", lines=[" no shutdown"]))
+            self.blocks.append(CiscoBlock(header="!"))
+            return
+        insert_at = max(self.blocks.index(block) for block in originals) + 1
+        clones: list[CiscoBlock] = []
+        for original in originals:
+            clone = copy.deepcopy(original)
+            current = original.interface_name or source
+            new_name = target + current[len(source) :]
+            clone.header = f"interface {new_name}" + (" l2transport" if original.l2transport else "")
+            if strip_bundle:
+                clone.lines = [
+                    line
+                    for line in clone.lines
+                    if not re.match(r"\s*(bundle\s+id|lacp\b|aggregated-)", line, re.IGNORECASE)
+                ]
+            clones.extend([clone, CiscoBlock(header="!")])
+        self.blocks[insert_at:insert_at] = clones
+        for clone in clones:
+            if clone.interface_name:
+                self._merge_duplicate_interface(clone)
 
     def _merge_duplicate_interface(self, preferred: CiscoBlock) -> None:
         """接口改名发生碰撞时去重合并配置行。"""
@@ -627,21 +790,25 @@ class CiscoDocument:
                 block.active = False
         preferred.lines = merged
 
-    def map_uni(self, source: str, target_parent: str, vlan: int) -> str:
-        """把一个 UNI 迁移到目标父接口的 Dot1Q 子接口。"""
+    def map_uni(self, source: str, target_parent: str, vlan: int, inner_vlan: int) -> str:
+        """把 UNI 迁移到目标父接口，并统一重写为 QinQ 终结。"""
         source = canonical_cisco_interface(source)
         target = f"{canonical_cisco_interface(target_parent)}.{vlan}"
         block = self._find_interface_block(source)
         if not block:
             return target
-        block.header = f"interface {target}"
+        block.header = f"interface {target}" + (" l2transport" if block.l2transport else "")
         filtered = [
             line
             for line in block.lines
-            if not re.match(r"\s*(encapsulation\s+dot1q|bundle\s+id|lacp\b)", line, re.IGNORECASE)
+            if not re.match(
+                r"\s*(?:encapsulation\b|rewrite\b|bundle\s+id\b|lacp\b)",
+                line,
+                re.IGNORECASE,
+            )
         ]
         insertion = 1 if filtered and re.match(r"\s*description\b", filtered[0], re.IGNORECASE) else 0
-        filtered.insert(insertion, f" encapsulation dot1q {vlan}")
+        filtered.insert(insertion, f" encapsulation dot1q {vlan} second-dot1q {inner_vlan}")
         block.lines = filtered
         self._merge_duplicate_interface(block)
         return target
@@ -708,21 +875,53 @@ class CiscoDocument:
         )
         self.blocks[terminal:terminal] = [account, CiscoBlock(header="!")]
 
-    def replace_references(self, replacements: dict[str, str]) -> None:
-        """在非接口头和块内容中更新所有已知接口引用。"""
+    def replace_references(self, replacements: dict[str, list[str]]) -> None:
+        """在接口定义外更新引用，并将一对多 M-LAG 引用复制展开。"""
         if not replacements:
             return
-        canonical = {canonical_cisco_interface(k): v for k, v in replacements.items() if k != v}
+        canonical = {
+            canonical_cisco_interface(source): list(dict.fromkeys(targets))
+            for source, targets in replacements.items()
+            if targets and targets != [source]
+        }
         if not canonical:
             return
         names = sorted(canonical, key=len, reverse=True)
-        pattern = re.compile(r"(?<![A-Za-z0-9_.-])(" + "|".join(map(re.escape, names)) + r")(?![A-Za-z0-9_.-])")
+        pattern = re.compile(
+            r"(?<![A-Za-z0-9_.-])(" + "|".join(map(re.escape, names)) + r")(?![A-Za-z0-9_.-])"
+        )
+
+        def expand(value: str) -> list[str]:
+            """按原文一次性展开引用，避免新目标名再被当作旧源名级联替换。"""
+            matches = list(pattern.finditer(value))
+            if not matches:
+                return [value]
+            variants = [""]
+            cursor = 0
+            for match in matches:
+                prefix = value[cursor : match.start()]
+                variants = [
+                    current + prefix + target
+                    for current in variants
+                    for target in canonical[match.group(1)]
+                ]
+                cursor = match.end()
+            return list(dict.fromkeys(current + value[cursor:] for current in variants))
+
+        rebuilt: list[CiscoBlock] = []
         for block in self.blocks:
-            if not block.active:
+            if not block.active or block.interface_name:
+                if block.active:
+                    block.lines = [line for raw in block.lines for line in expand(raw)]
+                rebuilt.append(block)
                 continue
-            if not block.interface_name:
-                block.header = pattern.sub(lambda match: canonical[match.group(1)], block.header)
-            block.lines = [pattern.sub(lambda match: canonical[match.group(1)], line) for line in block.lines]
+            header_variants = expand(block.header)
+            for header in header_variants:
+                clone = copy.deepcopy(block)
+                clone.header = header
+                clone.lines = [line for raw in clone.lines for line in expand(raw)]
+                rebuilt.append(clone)
+        self.blocks = rebuilt
 
     def render(self) -> str:
         """按原顺序输出仍有效的配置块。"""

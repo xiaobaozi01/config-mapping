@@ -9,7 +9,7 @@ import yaml
 from .models import ImageProfile, Vendor
 
 
-# 未提供 YAML 时使用的保守默认值；最后两口分别留给 UNI 和保留用途。
+# 未提供 YAML 时使用的默认值；最后一个数据口专用于 UNI。
 DEFAULT_INTERFACES = {
     Vendor.CISCO_IOSXR: [f"GigabitEthernet0/0/0/{index}" for index in range(8)],
     Vendor.JUNIPER_JUNOS: [f"ge-0/0/{index}" for index in range(8)],

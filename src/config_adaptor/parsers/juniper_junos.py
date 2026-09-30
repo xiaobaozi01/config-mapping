@@ -68,6 +68,8 @@ def _junos_interface_kind(name: str) -> str:
         return "management"
     if parent.startswith("ae"):
         return "bundle"
+    if parent == "irb":
+        return "gateway"
     return "physical"
 
 
@@ -180,7 +182,24 @@ class JunosDocument:
         if unit.children is None:
             return None
         for child in unit.children:
-            match = re.match(r"vlan-id\s+(\d+)\s*;", self._base_header(child.header))
+            statement = self._base_header(child.header)
+            match = re.match(r"vlan-id\s+(\d+)\s*;", statement)
+            if match:
+                return int(match.group(1))
+            tags = re.match(r"vlan-tags\s+outer\s+(\d+)\s+inner\s+\d+\s*;", statement)
+            if tags:
+                return int(tags.group(1))
+        return None
+
+    def _find_inner_vlan(self, unit: JunosNode) -> int | None:
+        """读取 ``vlan-tags outer ... inner ...`` 中的内层 VLAN。"""
+        if unit.children is None:
+            return None
+        for child in unit.children:
+            match = re.match(
+                r"vlan-tags\s+outer\s+\d+\s+inner\s+(\d+)\s*;",
+                self._base_header(child.header),
+            )
             if match:
                 return int(match.group(1))
         return None
@@ -470,13 +489,18 @@ class JunosDocument:
                 continue
             for unit in units:
                 number = self._unit_number(unit)
+                vlan = self._find_vlan(unit)
+                # IRB unit 编号通常对应业务 VLAN，无显式 vlan-id 时用作提示值。
+                if vlan is None and parent.lower() == "irb" and number.isdigit() and 1 <= int(number) <= 4094:
+                    vlan = int(number)
                 result.append(
                     InterfaceSpec(
                         name=f"{parent}.{number}",
                         parent=parent,
                         unit=number,
-                        vlan=self._find_vlan(unit),
+                        vlan=vlan,
                         kind=_junos_interface_kind(parent),
+                        inner_vlan=self._find_inner_vlan(unit),
                     )
                 )
         return result
@@ -506,6 +530,145 @@ class JunosDocument:
             key=lambda value: (interface_unit(value) is not None, value),
         )
 
+    def business_interface_names(self) -> set[str]:
+        """识别承载三层、二层及活跃广播域网关的 Junos 接口。
+
+        IRB 不因自身配置地址就自动迁移；只有 bridge-domain/vlan 中仍有
+        活跃接入口，或其 unit 命中活跃业务 VLAN 时才进入 UNI 计划。
+        """
+        specs = self.interface_specs()
+        known = {spec.name for spec in specs}
+        kinds = {spec.name: spec.kind for spec in specs}
+        active: set[str] = set()
+        business_pattern = re.compile(
+            r"\b(?:family\s+(?:inet6?|ccc|bridge|ethernet-switching)|"
+            r"encapsulation\s+(?:ethernet-ccc|vlan-ccc)|input-vlan-map|output-vlan-map)\b"
+        )
+        for node in self._interface_nodes():
+            parent = self._interface_name(node)
+            units = self._unit_nodes(node)
+            if not units:
+                rendered = self._render_node(node, 0)
+                if _junos_interface_kind(parent) != "gateway" and business_pattern.search(rendered):
+                    active.add(parent)
+                continue
+            for unit in units:
+                rendered = self._render_node(unit, 0)
+                name = f"{parent}.{self._unit_number(unit)}"
+                if kinds.get(name) != "gateway" and business_pattern.search(rendered):
+                    active.add(name)
+
+        # protocols/l2circuit/bridge-domains/vlans/routing-instances 等树中的引用
+        # 均是业务活跃的可验证信号。
+        external = "\n".join(
+            self._render_node(node, 0)
+            for node in (self.root.children or [])
+            if node.active and self._base_header(node.header) not in {"interfaces", "groups"}
+        )
+        for name in known:
+            if kinds.get(name) != "gateway" and re.search(
+                rf"(?<![A-Za-z0-9_.-]){re.escape(name)}(?![A-Za-z0-9_.-])", external
+            ):
+                active.add(name)
+        for parent in {spec.parent for spec in specs}:
+            parent_specs = [spec for spec in specs if spec.parent == parent]
+            if parent_specs and parent_specs[0].kind != "gateway" and re.search(
+                rf"(?<![A-Za-z0-9_.-]){re.escape(parent)}(?![A-Za-z0-9_.-])", external
+            ):
+                active.update(spec.name for spec in parent_specs)
+
+        def expand_vlan_tokens(value: str) -> set[int]:
+            """展开 Junos VLAN 列表中的单值及 ``100-110`` 范围。"""
+            result: set[int] = set()
+            for start, end, single in re.findall(r"(?:(\d+)\s*-\s*(\d+))|(\d+)", value):
+                if single:
+                    number = int(single)
+                    if 1 <= number <= 4094:
+                        result.add(number)
+                    continue
+                lower, upper = int(start), int(end)
+                if 1 <= lower <= upper <= 4094:
+                    result.update(range(lower, upper + 1))
+            return result
+
+        spec_by_name = {spec.name: spec for spec in specs}
+        active_vlans: set[int] = set()
+        active_vlan_names: set[str] = set()
+        for name in list(active):
+            spec = spec_by_name.get(name)
+            if not spec or spec.kind == "gateway":
+                continue
+            node = self._find_interface_node(spec.parent)
+            if not node:
+                continue
+            units = self._unit_nodes(node)
+            unit = next(
+                (item for item in units if spec.unit is not None and self._unit_number(item) == spec.unit),
+                node if spec.unit is None else None,
+            )
+            if unit is None:
+                continue
+            rendered = self._render_node(unit, 0)
+            is_l2 = bool(
+                re.search(
+                    r"\b(?:family\s+(?:ccc|bridge|ethernet-switching)|"
+                    r"encapsulation\s+(?:ethernet-ccc|vlan-ccc)|"
+                    r"vlan-id-list|vlan\s+members|input-vlan-map|output-vlan-map)\b",
+                    rendered,
+                )
+            )
+            if is_l2 and spec.vlan is not None:
+                active_vlans.add(spec.vlan)
+            for match in re.finditer(r"vlan-id-list\s+\[([^\]]+)\]", rendered):
+                active_vlans.update(expand_vlan_tokens(match.group(1)))
+            for match in re.finditer(r"vlan\s+members\s+(?:\[([^\]]+)\]|([^;\s]+))\s*;", rendered):
+                payload = match.group(1) or match.group(2) or ""
+                active_vlans.update(expand_vlan_tokens(payload))
+                active_vlan_names.update(
+                    token for token in re.findall(r"[A-Za-z_][A-Za-z0-9_.-]*", payload)
+                    if not token.isdigit()
+                )
+
+        # bridge-domains/vlans 既可能位于根层级，也可能嵌在 routing-instance。
+        # 每个广播域只有在关联活跃接入口、活跃 VLAN ID 或活跃 VLAN 名时，
+        # 才把其 routing-interface/l3-interface IRB 纳入迁移。
+        def walk_domains(node: JunosNode) -> None:
+            if node.children is None:
+                return
+            base = self._base_header(node.header).rstrip(";")
+            if base in {"bridge-domains", "vlans"}:
+                for domain in node.children:
+                    if not domain.active or domain.children is None:
+                        continue
+                    rendered = self._render_node(domain, 0)
+                    interfaces = {
+                        canonical_junos_interface(value)
+                        for value in re.findall(r"(?<![-\w])interface\s+([^;\s]+)\s*;", rendered)
+                    }
+                    gateways = {
+                        canonical_junos_interface(value)
+                        for value in re.findall(
+                            r"\b(?:routing-interface|l3-interface)\s+([^;\s]+)\s*;", rendered
+                        )
+                    }
+                    vlan_ids = {
+                        int(value)
+                        for value in re.findall(r"\bvlan-id\s+(\d+)\s*;", rendered)
+                        if 1 <= int(value) <= 4094
+                    }
+                    domain_name = self._base_header(domain.header).split()[0].rstrip(";")
+                    if interfaces & active or vlan_ids & active_vlans or domain_name in active_vlan_names:
+                        active.update(gateway for gateway in gateways if gateway in known)
+            for child in node.children:
+                if child.active:
+                    walk_domains(child)
+
+        walk_domains(self.root)
+        for spec in specs:
+            if spec.kind == "gateway" and spec.vlan in active_vlans:
+                active.add(spec.name)
+        return active
+
     def _find_interface_node(self, name: str) -> JunosNode | None:
         """按父接口名查找接口节点。"""
         canonical = canonical_junos_interface(interface_parent(name))
@@ -534,6 +697,30 @@ class JunosDocument:
             ]
         self._merge_duplicate_interface(node)
 
+    def clone_interface_tree(self, source: str, target: str, strip_bundle: bool = False) -> None:
+        """把 Junos 接口树复制到新物理口，用于 M-LAG 按对端拆分。"""
+        source_node = self._find_interface_node(source)
+        interfaces = self._interfaces_block(create=True)
+        assert interfaces is not None and interfaces.children is not None
+        if source_node is None:
+            clone = JunosNode(canonical_junos_interface(target), [])
+        else:
+            clone = source_node.clone()
+            clone.header = canonical_junos_interface(target)
+            clone.active = True
+            if strip_bundle and clone.children is not None:
+                clone.children = [
+                    child
+                    for child in clone.children
+                    if not (
+                        child.is_block
+                        and self._base_header(child.header)
+                        in {"aggregated-ether-options", "gigether-options", "ether-options"}
+                    )
+                ]
+        interfaces.children.append(clone)
+        self._merge_duplicate_interface(clone)
+
     def _merge_duplicate_interface(self, preferred: JunosNode) -> None:
         """接口改名碰撞时合并不重复的子节点并停用旧节点。"""
         name = self._interface_name(preferred)
@@ -552,19 +739,64 @@ class JunosDocument:
                     existing.add(rendered)
             node.active = False
 
+    def _strip_vlan_termination(self, nodes: list[JunosNode]) -> list[JunosNode]:
+        """递归删除旧标签匹配和 VLAN rewrite，同时保留业务 family/CCC 类型。"""
+        blocked_statements = re.compile(
+            r"^(?:vlan-id(?:-list)?|vlan-tags|native-vlan-id|"
+            r"input-vlan-map|output-vlan-map|interface-mode|"
+            r"flexible-vlan-tagging|stacked-vlan-tagging|vlan-tagging)\b"
+        )
+        retained: list[JunosNode] = []
+        for node in nodes:
+            base = self._base_header(node.header).rstrip(";")
+            if blocked_statements.match(base) or re.match(r"^vlan\s+members\b", base):
+                continue
+            # family ethernet-switching/bridge 中的 ``vlan { members ... }``
+            # 整块属于旧入口匹配，不能随 QinQ 目标 unit 保留。
+            if node.is_block and base == "vlan":
+                continue
+            clone = node.clone()
+            if clone.children is not None:
+                clone.children = self._strip_vlan_termination(clone.children)
+            retained.append(clone)
+        return retained
+
     def _ensure_target_parent(self, target_parent: str) -> JunosNode:
         """确保 UNI 目标口存在并支持灵活 VLAN 封装。"""
         existing = self._find_interface_node(target_parent)
         if existing:
-            return existing
-        interfaces = self._interfaces_block(create=True)
-        assert interfaces is not None and interfaces.children is not None
-        node = JunosNode(target_parent, [JunosNode("flexible-vlan-tagging;"), JunosNode("encapsulation flexible-ethernet-services;")])
-        interfaces.children.append(node)
+            node = existing
+        else:
+            interfaces = self._interfaces_block(create=True)
+            assert interfaces is not None and interfaces.children is not None
+            node = JunosNode(target_parent, [])
+            interfaces.children.append(node)
+        assert node.children is not None
+        # 目标口可能在原配置中已有单层/堆叠标签设置，统一清理后再写入
+        # 本次转换唯一允许的 flexible QinQ 父接口属性。
+        node.children = [
+            child
+            for original in node.children
+            for child in (
+                [original]
+                if original.is_block and self._base_header(original.header).startswith("unit ")
+                else self._strip_vlan_termination([original])
+            )
+        ]
+        node.children = [
+            child
+            for child in node.children
+            if not re.match(r"^encapsulation\s+(?:ethernet-bridge|vlan-bridge)\b", self._base_header(child.header))
+        ]
+        required = ["flexible-vlan-tagging;", "encapsulation flexible-ethernet-services;"]
+        existing_headers = {self._base_header(child.header) for child in node.children}
+        for statement in reversed(required):
+            if statement not in existing_headers:
+                node.children.insert(0, JunosNode(statement))
         return node
 
-    def map_uni(self, source: str, target_parent: str, vlan: int) -> str:
-        """复制源 unit 配置到目标父接口，并将 unit/vlan-id 统一为新 VLAN。"""
+    def map_uni(self, source: str, target_parent: str, vlan: int, inner_vlan: int) -> str:
+        """复制源 unit 到目标父接口，并统一重写为 QinQ vlan-tags。"""
         source_parent = interface_parent(canonical_junos_interface(source))
         unit_number = interface_unit(source)
         source_node = self._find_interface_node(source_parent)
@@ -586,10 +818,8 @@ class JunosDocument:
             unit_node = unit_node.clone()
         unit_node.header = f"unit {vlan}"
         assert unit_node.children is not None
-        unit_node.children = [
-            child for child in unit_node.children if not re.match(r"vlan-id\s+\d+\s*;", self._base_header(child.header))
-        ]
-        unit_node.children.insert(0, JunosNode(f"vlan-id {vlan};"))
+        unit_node.children = self._strip_vlan_termination(unit_node.children)
+        unit_node.children.insert(0, JunosNode(f"vlan-tags outer {vlan} inner {inner_vlan};"))
         target_node.children.append(unit_node)
         return f"{target_parent}.{vlan}"
 
@@ -640,22 +870,53 @@ class JunosDocument:
             ]
         )
 
-    def replace_references(self, replacements: dict[str, str]) -> None:
-        """递归更新 interfaces 之外的协议和策略接口引用。"""
-        relevant = {canonical_junos_interface(k): v for k, v in replacements.items() if k != v}
+    def replace_references(self, replacements: dict[str, list[str]]) -> None:
+        """递归更新 interfaces 之外的引用，并复制一对多 M-LAG 节点。"""
+        relevant = {
+            canonical_junos_interface(source): list(dict.fromkeys(targets))
+            for source, targets in replacements.items()
+            if targets and targets != [source]
+        }
         if not relevant:
             return
         names = sorted(relevant, key=len, reverse=True)
-        pattern = re.compile(r"(?<![A-Za-z0-9_.-])(" + "|".join(map(re.escape, names)) + r")(?![A-Za-z0-9_.-])")
+        pattern = re.compile(
+            r"(?<![A-Za-z0-9_.-])(" + "|".join(map(re.escape, names)) + r")(?![A-Za-z0-9_.-])"
+        )
+
+        def expand(value: str) -> list[str]:
+            """按原节点头一次性展开，避免目标名再命中另一个源名。"""
+            matches = list(pattern.finditer(value))
+            if not matches:
+                return [value]
+            variants = [""]
+            cursor = 0
+            for match in matches:
+                prefix = value[cursor : match.start()]
+                variants = [
+                    current + prefix + target
+                    for current in variants
+                    for target in relevant[match.group(1)]
+                ]
+                cursor = match.end()
+            return list(dict.fromkeys(current + value[cursor:] for current in variants))
 
         def walk(node: JunosNode, inside_interfaces: bool = False) -> None:
-            """跳过接口定义本身，只处理其他层级中的引用。"""
-            current_inside = inside_interfaces or (node is not self.root and self._base_header(node.header) == "interfaces")
-            if node is not self.root and not current_inside:
-                node.header = pattern.sub(lambda match: relevant[match.group(1)], node.header)
-            if node.children:
-                for child in node.children:
-                    walk(child, current_inside)
+            """在父节点上就地复制子节点，接口定义树本身不二次替换。"""
+            if node.children is None:
+                return
+            current_inside = inside_interfaces or (
+                node is not self.root and self._base_header(node.header) == "interfaces"
+            )
+            rebuilt: list[JunosNode] = []
+            for child in node.children:
+                variants = [child.header] if current_inside else expand(child.header)
+                for header in variants:
+                    clone = child if len(variants) == 1 and header == child.header else child.clone()
+                    clone.header = header
+                    walk(clone, current_inside)
+                    rebuilt.append(clone)
+            node.children = rebuilt
 
         walk(self.root)
 

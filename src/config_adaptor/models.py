@@ -95,24 +95,22 @@ class ImageProfile:
 
     @property
     def nni_interfaces(self) -> list[str]:
-        """除 UNI 专用口和最后保留口之外，其余接口均可分配给 NNI。"""
-        if len(self.interfaces) < 2:
+        """除最后一个 UNI 专用口之外，其余接口均可分配给 NNI。"""
+        if len(self.interfaces) < 1:
             return []
-        return self.interfaces[:-2]
+        return self.interfaces[:-1]
 
     @property
     def uni_parent(self) -> str:
-        """倒数第二个接口统一承载所有 UNI 子接口。"""
-        if len(self.interfaces) < 2:
-            raise ValueError(f"{self.vendor}: 镜像至少需要两个数据接口")
-        return self.interfaces[-2]
-
-    @property
-    def reserved_interface(self) -> str:
-        """最后一个接口保留给未来用途，当前转换不触碰。"""
+        """最后一个接口统一承载所有 UNI 子接口。"""
         if not self.interfaces:
             raise ValueError(f"{self.vendor}: 镜像没有数据接口")
         return self.interfaces[-1]
+
+    @property
+    def reserved_interface(self) -> None:
+        """兼容旧调用；当前方案不再额外保留数据接口。"""
+        return None
 
 
 @dataclass(slots=True)
@@ -127,13 +125,20 @@ class DeviceContext:
     errors: list[str] = field(default_factory=list)
 
     @property
-    def replacement_map(self) -> dict[str, str]:
-        """汇总有效接口改名，用于更新协议等全局引用。"""
-        return {
-            item.source_interface: item.target_interface
-            for item in self.mappings
-            if item.target_interface and item.action not in {"remove", "skip"}
-        }
+    def replacement_map(self) -> dict[str, list[str]]:
+        """汇总接口改名关系，同时支持 M-LAG 的一对多引用替换。
+
+        普通接口只有一个目标；同一 Bundle/ae 按不同对端拆分时，
+        每个目标都会保留且按映射生成顺序去重。
+        """
+        result: dict[str, list[str]] = {}
+        for item in self.mappings:
+            if not item.target_interface or item.action in {"remove", "remove-bare", "skip"}:
+                continue
+            targets = result.setdefault(item.source_interface, [])
+            if item.target_interface not in targets:
+                targets.append(item.target_interface)
+        return result
 
 
 @dataclass(slots=True)

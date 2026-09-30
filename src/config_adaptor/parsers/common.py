@@ -13,6 +13,8 @@ class InterfaceSpec:
     unit: str | None
     vlan: int | None
     kind: str
+    # QinQ 源配置中可单独识别的内层客户 VLAN。
+    inner_vlan: int | None = None
 
 
 @dataclass(slots=True)
