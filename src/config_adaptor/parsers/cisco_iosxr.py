@@ -13,6 +13,7 @@ from ..models import SimulationAdaptationPolicy, WashingPolicy
 from .common import (
     CleanupOutcome,
     GroupExpansionOutcome,
+    InterfaceKind,
     InterfaceSpec,
     SimulationAdaptationOutcome,
     interface_parent,
@@ -125,18 +126,33 @@ def canonical_cisco_interface(value: str) -> str:
     return f"{expanded}{suffix}"
 
 
-def _cisco_interface_kind(name: str) -> str:
-    """按 IOS XR 命名规则区分物理口、聚合口、环回口和管理口。"""
+_CISCO_PHYSICAL_INTERFACE = re.compile(
+    r"^(?:Ethernet|FastEthernet|GigabitEthernet|TenGigE|TwentyFiveGigE|"
+    r"FortyGigE|FiftyGigE|HundredGigE|FourHundredGigE|POS|Serial)\d",
+    re.IGNORECASE,
+)
+_CISCO_VIRTUAL_INTERFACE = re.compile(
+    r"^(?:Tunnel(?:-ip|-te)?|Null|PW-Ether|VASI(?:Left|Right)?|NVE|Multilink)\d",
+    re.IGNORECASE,
+)
+
+
+def _cisco_interface_kind(name: str) -> InterfaceKind:
+    """按 IOS XR 接口名前缀分类；未识别类型不得回退为物理口。"""
     parent = interface_parent(name).lower()
-    if parent.startswith("loopback"):
-        return "loopback"
-    if parent.startswith("mgmteth"):
-        return "management"
-    if parent.startswith("bundle-ether"):
-        return "bundle"
-    if parent.startswith("bvi"):
-        return "gateway"
-    return "physical"
+    if re.fullmatch(r"loopback\d+", parent):
+        return InterfaceKind.LOOPBACK
+    if re.match(r"^mgmteth\d", parent):
+        return InterfaceKind.MANAGEMENT
+    if re.fullmatch(r"bundle-ether\d+", parent):
+        return InterfaceKind.BUNDLE
+    if re.fullmatch(r"bvi\d+", parent):
+        return InterfaceKind.GATEWAY
+    if _CISCO_PHYSICAL_INTERFACE.match(parent):
+        return InterfaceKind.PHYSICAL
+    if _CISCO_VIRTUAL_INTERFACE.match(parent):
+        return InterfaceKind.VIRTUAL
+    return InterfaceKind.UNKNOWN
 
 
 @dataclass(slots=True)
@@ -244,6 +260,10 @@ class CiscoDocument:
             )
         return result
 
+    def interface_kind(self, name: str) -> InterfaceKind:
+        """返回接口类别，供拓扑端点校验复用同一厂商规则。"""
+        return _cisco_interface_kind(canonical_cisco_interface(name))
+
     def bundle_members(self) -> dict[str, str]:
         """返回物理成员接口到 Bundle-Ether 的映射。"""
         result: dict[str, str] = {}
@@ -287,6 +307,7 @@ class CiscoDocument:
         specs = self.interface_specs()
         known = {spec.name for spec in specs}
         kinds = {spec.name: spec.kind for spec in specs}
+        mappable_kinds = {InterfaceKind.PHYSICAL, InterfaceKind.BUNDLE}
         active: set[str] = set()
         direct = re.compile(
             r"^(?:ipv4\s+address|ipv6\s+address|xconnect\b|l2transport\b|"
@@ -297,7 +318,7 @@ class CiscoDocument:
             name = block.interface_name
             if (
                 name
-                and kinds.get(name) != "gateway"
+                and kinds.get(name) in mappable_kinds
                 and (block.l2transport or any(direct.match(line.strip()) for line in block.lines))
             ):
                 active.add(name)
@@ -311,13 +332,13 @@ class CiscoDocument:
             for text in [block.header, *block.lines]
         )
         for name in known:
-            if kinds.get(name) != "gateway" and re.search(
+            if kinds.get(name) in mappable_kinds and re.search(
                 rf"(?<![A-Za-z0-9_.-]){re.escape(name)}(?![A-Za-z0-9_.-])", external
             ):
                 active.add(name)
         for parent in {spec.parent for spec in specs}:
             parent_specs = [spec for spec in specs if spec.parent == parent]
-            if parent_specs and parent_specs[0].kind != "gateway" and re.search(
+            if parent_specs and parent_specs[0].kind in mappable_kinds and re.search(
                 rf"(?<![A-Za-z0-9_.-]){re.escape(parent)}(?![A-Za-z0-9_.-])", external
             ):
                 active.update(spec.name for spec in parent_specs)

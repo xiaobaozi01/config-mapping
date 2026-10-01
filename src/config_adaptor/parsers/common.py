@@ -3,16 +3,29 @@
 from __future__ import annotations
 
 from dataclasses import dataclass, field
+from enum import StrEnum
+
+
+class InterfaceKind(StrEnum):
+    """接口的厂商无关类别；未知类型必须保守处理。"""
+
+    PHYSICAL = "physical"
+    BUNDLE = "bundle"
+    GATEWAY = "gateway"
+    LOOPBACK = "loopback"
+    MANAGEMENT = "management"
+    VIRTUAL = "virtual"
+    UNKNOWN = "unknown"
 
 
 @dataclass(slots=True)
 class InterfaceSpec:
-    """从原配置提取出的一个物理接口或逻辑单元。"""
+    """从原配置提取出的一个接口或逻辑单元。"""
     name: str
     parent: str
     unit: str | None
     vlan: int | None
-    kind: str
+    kind: InterfaceKind
     # QinQ 源配置中可单独识别的内层客户 VLAN。
     inner_vlan: int | None = None
 

@@ -6,8 +6,8 @@ from abc import ABC, abstractmethod
 from collections import defaultdict
 from dataclasses import dataclass
 
-from .parsers import interface_parent, interface_unit
-from .models import ConversionContext, InterfaceMapping, Link, Vendor
+from .parsers import InterfaceKind, interface_parent, interface_unit
+from .models import ConversionContext, InterfaceMapping, Link
 
 
 class ConversionHandler(ABC):
@@ -168,6 +168,36 @@ class GroupExpansionHandler(ConversionHandler):
                 context.errors.append(message)
 
 
+class InterfaceClassificationHandler(ConversionHandler):
+    """审计厂商接口分类，未知类型保留配置但不参与端口映射。"""
+
+    def process(self, context: ConversionContext) -> None:
+        """为每个未知父接口生成一次可审计告警。"""
+        for device_name in sorted(context.devices):
+            device = context.devices[device_name]
+            unknown_parents = sorted(
+                {
+                    spec.parent
+                    for spec in device.document.interface_specs()
+                    if spec.kind == InterfaceKind.UNKNOWN
+                }
+            )
+            for interface in unknown_parents:
+                message = (
+                    f"设备 {device_name} 的接口 {interface} 类型无法识别，"
+                    "已保留原配置且不参与接口映射"
+                )
+                device.warnings.append(message)
+                context.add_event(
+                    "interface-classification-warning",
+                    message,
+                    device=device_name,
+                    interface=interface,
+                    classification=InterfaceKind.UNKNOWN.value,
+                    action="preserve",
+                )
+
+
 class NNIHandler(ConversionHandler):
     """识别并扁平化聚合 NNI，再分配目标镜像物理接口。"""
 
@@ -190,6 +220,18 @@ class NNIHandler(ConversionHandler):
                 parent = interface_parent(source)
                 resolved[(link.row, device_name)] = parent
                 bundles[(link.row, device_name)] = member_maps[device_name].get(parent)
+                kind = device.document.interface_kind(parent)
+                if kind not in {InterfaceKind.PHYSICAL, InterfaceKind.BUNDLE}:
+                    message = (
+                        f"链接表第 {link.row} 行：设备 {device_name} 的端点 {raw_interface} "
+                        f"属于 {kind.value} 接口，不能作为物理 NNI 端点"
+                    )
+                    device.errors.append(message)
+                    context.errors.append(message)
+
+        # 端点分类不安全时不得开始链路合并或配置改写。
+        if context.has_errors:
+            return
 
         # 仅在“同一对端设备”范围内合并聚合成员。同一 Bundle/ae
         # 的成员若连到不同对端，视为 M-LAG，必须分配不同模拟器物理口。
@@ -412,7 +454,8 @@ class UNIHandler(ConversionHandler):
             candidates = [
                 spec
                 for spec in specs
-                if spec.kind in {"physical", "bundle", "gateway"}
+                if spec.kind
+                in {InterfaceKind.PHYSICAL, InterfaceKind.BUNDLE, InterfaceKind.GATEWAY}
                 and spec.parent not in nni_interfaces
                 and spec.parent != device.profile.uni_parent
                 and spec.parent not in member_parents
@@ -645,13 +688,14 @@ def build_default_chain() -> ConversionHandler:
     """按强制顺序组装默认责任链并返回链首。"""
     topology_preflight = TopologyPreflightHandler()
     groups = GroupExpansionHandler()
+    classification = InterfaceClassificationHandler()
     nni = NNIHandler()
     uni = UNIHandler()
     references = ReferenceRewriteHandler()
     optional_washing = OptionalFeatureWashingHandler()
     auth_washing = AuthWashingHandler()
     simulation_adaptation = SimulationAdaptationHandler()
-    topology_preflight.set_next(groups).set_next(nni).set_next(uni).set_next(references).set_next(
-        optional_washing
-    ).set_next(auth_washing).set_next(simulation_adaptation)
+    topology_preflight.set_next(groups).set_next(classification).set_next(nni).set_next(uni).set_next(
+        references
+    ).set_next(optional_washing).set_next(auth_washing).set_next(simulation_adaptation)
     return topology_preflight

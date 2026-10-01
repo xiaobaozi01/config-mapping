@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import json
+import shutil
 import tempfile
 import unittest
 from pathlib import Path
@@ -92,6 +93,139 @@ class ConversionTest(unittest.TestCase):
             self.assertEqual(adjustment["mode"], "stable")
             self.assertEqual(adjustment["image"], "xrv9000")
             self.assertIn("GigabitEthernet0/0/0/0", adjustment["target_interfaces"])
+
+    def test_unknown_and_virtual_interfaces_are_preserved_but_not_mapped(self):
+        """未识别及已知虚拟接口保留原配置，且未知类型生成审计告警。"""
+        topology, source_config_dir = self.conversion_fixture("iosxr_bundle")
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            config_dir = root / "configs"
+            shutil.copytree(source_config_dir, config_dir)
+            config_path = config_dir / "R1.cfg"
+            source = config_path.read_text(encoding="utf-8")
+            source = source.replace(
+                "\nend\n",
+                "\ninterface Tunnel-ip100\n"
+                " ipv4 address 198.51.100.1 255.255.255.252\n"
+                "!\n"
+                "interface FutureVirtual0\n"
+                " ipv4 address 203.0.113.1 255.255.255.252\n"
+                "!\n"
+                "end\n",
+            )
+            config_path.write_text(source, encoding="utf-8")
+
+            output = root / "output"
+            context = convert(topology, config_dir, output)
+
+            self.assertFalse(context.has_errors)
+            converted = (output / "configs" / "R1.cfg").read_text(encoding="utf-8")
+            self.assertIn("interface Tunnel-ip100", converted)
+            self.assertIn("interface FutureVirtual0", converted)
+            self.assertTrue(
+                any(
+                    "FutureVirtual0 类型无法识别" in warning
+                    for warning in context.devices["R1"].warnings
+                )
+            )
+            self.assertFalse(
+                any(
+                    "Tunnel-ip100 类型无法识别" in warning
+                    for warning in context.devices["R1"].warnings
+                )
+            )
+            mapped_sources = {
+                mapping.source_interface for mapping in context.devices["R1"].mappings
+            }
+            self.assertNotIn("Tunnel-ip100", mapped_sources)
+            self.assertNotIn("FutureVirtual0", mapped_sources)
+
+    def test_unknown_l2_attachment_does_not_activate_gateway(self):
+        """未知接口即使带二层业务，也不能间接触发 BVI 的 UNI 迁移。"""
+        document = CiscoDocument(
+            "interface FutureVirtual0.500 l2transport\n"
+            " encapsulation dot1q 500\n"
+            "!\n"
+            "interface BVI500\n"
+            " ipv4 address 192.0.2.1 255.255.255.0\n"
+            "!\n"
+            "l2vpn\n"
+            " bridge group TEST\n"
+            "  bridge-domain BD500\n"
+            "   interface FutureVirtual0.500\n"
+            "   routed interface BVI500\n"
+            "!\n"
+            "end\n"
+        )
+
+        business = document.business_interface_names()
+        self.assertNotIn("FutureVirtual0.500", business)
+        self.assertNotIn("BVI500", business)
+
+    def test_non_physical_nni_endpoint_fails_before_mapping(self):
+        """链接表引用未知接口时必须失败，不能猜测为物理口继续转换。"""
+        topology, source_config_dir = self.conversion_fixture("iosxr_bundle")
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            config_dir = root / "configs"
+            shutil.copytree(source_config_dir, config_dir)
+            config_path = config_dir / "R1.cfg"
+            source = config_path.read_text(encoding="utf-8").replace(
+                "\nend\n",
+                "\ninterface FutureVirtual0\n"
+                " ipv4 address 203.0.113.1 255.255.255.252\n"
+                "!\n"
+                "end\n",
+            )
+            config_path.write_text(source, encoding="utf-8")
+
+            invalid_topology = root / "topology.xlsx"
+            workbook = load_workbook(topology)
+            workbook["链接表"].cell(2, 2).value = "FutureVirtual0"
+            workbook.save(invalid_topology)
+
+            output = root / "output"
+            context = convert(invalid_topology, config_dir, output)
+
+            self.assertTrue(context.has_errors)
+            self.assertTrue(
+                any(
+                    "FutureVirtual0" in error and "不能作为物理 NNI" in error
+                    for error in context.errors
+                )
+            )
+            self.assertFalse((output / "configs").exists())
+
+    def test_junos_virtual_and_unknown_interface_classification(self):
+        """Junos 虚拟前缀与未知前缀不会落入 physical。"""
+        document = JunosDocument(
+            "interfaces {\n"
+            "    ge-0/0/0 {\n"
+            "        disable;\n"
+            "    }\n"
+            "    gr-0/0/0 {\n"
+            "        unit 0 {\n"
+            "            family inet {\n"
+            "                address 192.0.2.1/32;\n"
+            "            }\n"
+            "        }\n"
+            "    }\n"
+            "    future0 {\n"
+            "        unit 0 {\n"
+            "            family inet {\n"
+            "                address 198.51.100.1/32;\n"
+            "            }\n"
+            "        }\n"
+            "    }\n"
+            "}\n"
+        )
+        kinds = {spec.parent: spec.kind for spec in document.interface_specs()}
+        self.assertEqual(kinds["ge-0/0/0"], "physical")
+        self.assertEqual(kinds["gr-0/0/0"], "virtual")
+        self.assertEqual(kinds["future0"], "unknown")
+        business = document.business_interface_names()
+        self.assertNotIn("gr-0/0/0.0", business)
+        self.assertNotIn("future0.0", business)
 
     def test_iosxr_simulation_adaptation_is_scoped_and_idempotent(self):
         """只调整映射目标口，并放宽已存在的激进 BFD 参数。"""

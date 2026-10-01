@@ -13,6 +13,7 @@ from ..models import SimulationAdaptationPolicy, WashingPolicy
 from .common import (
     CleanupOutcome,
     GroupExpansionOutcome,
+    InterfaceKind,
     InterfaceSpec,
     SimulationAdaptationOutcome,
     interface_parent,
@@ -61,18 +62,33 @@ def canonical_junos_interface(value: str) -> str:
     return re.sub(r"\s+", "", value.strip())
 
 
-def _junos_interface_kind(name: str) -> str:
-    """按 Junos 命名规则识别物理、聚合、环回和管理接口。"""
+_JUNOS_PHYSICAL_INTERFACE = re.compile(
+    r"^(?:fe|ge|xe|et|mge|so|se|t1|e1|ct|coc|sat|xle)-\d",
+    re.IGNORECASE,
+)
+_JUNOS_VIRTUAL_INTERFACE = re.compile(
+    r"^(?:(?:gr|ip|lt|mt|pd|pe|sp|st|vtep|demux|reth)(?:-|\d)|"
+    r"(?:dsc|lsi|pimd|pime|tap)$)",
+    re.IGNORECASE,
+)
+
+
+def _junos_interface_kind(name: str) -> InterfaceKind:
+    """按 Junos 接口名前缀分类；未识别类型不得回退为物理口。"""
     parent = interface_parent(name).lower()
-    if parent.startswith("lo0"):
-        return "loopback"
-    if parent.startswith(("fxp", "em", "me", "vme")):
-        return "management"
-    if parent.startswith("ae"):
-        return "bundle"
+    if parent == "lo0":
+        return InterfaceKind.LOOPBACK
+    if re.fullmatch(r"(?:(?:fxp|em|me)\d+|vme\d*)", parent):
+        return InterfaceKind.MANAGEMENT
+    if re.fullmatch(r"ae\d+", parent):
+        return InterfaceKind.BUNDLE
     if parent == "irb":
-        return "gateway"
-    return "physical"
+        return InterfaceKind.GATEWAY
+    if _JUNOS_PHYSICAL_INTERFACE.match(parent):
+        return InterfaceKind.PHYSICAL
+    if _JUNOS_VIRTUAL_INTERFACE.match(parent):
+        return InterfaceKind.VIRTUAL
+    return InterfaceKind.UNKNOWN
 
 
 @dataclass
@@ -826,6 +842,10 @@ class JunosDocument:
                 )
         return result
 
+    def interface_kind(self, name: str) -> InterfaceKind:
+        """返回接口类别，供拓扑端点校验复用同一厂商规则。"""
+        return _junos_interface_kind(canonical_junos_interface(name))
+
     def bundle_members(self) -> dict[str, str]:
         """返回物理接口到 ae 聚合接口的映射。"""
         result: dict[str, str] = {}
@@ -860,6 +880,7 @@ class JunosDocument:
         specs = self.interface_specs()
         known = {spec.name for spec in specs}
         kinds = {spec.name: spec.kind for spec in specs}
+        mappable_kinds = {InterfaceKind.PHYSICAL, InterfaceKind.BUNDLE}
         active: set[str] = set()
         business_pattern = re.compile(
             r"\b(?:family\s+(?:inet6?|ccc|bridge|ethernet-switching)|"
@@ -870,13 +891,16 @@ class JunosDocument:
             units = self._unit_nodes(node)
             if not units:
                 rendered = self._render_node(node, 0)
-                if _junos_interface_kind(parent) != "gateway" and business_pattern.search(rendered):
+                if (
+                    _junos_interface_kind(parent) in mappable_kinds
+                    and business_pattern.search(rendered)
+                ):
                     active.add(parent)
                 continue
             for unit in units:
                 rendered = self._render_node(unit, 0)
                 name = f"{parent}.{self._unit_number(unit)}"
-                if kinds.get(name) != "gateway" and business_pattern.search(rendered):
+                if kinds.get(name) in mappable_kinds and business_pattern.search(rendered):
                     active.add(name)
 
         # protocols/l2circuit/bridge-domains/vlans/routing-instances 等树中的引用
@@ -887,13 +911,13 @@ class JunosDocument:
             if node.active and self._base_header(node.header) not in {"interfaces", "groups"}
         )
         for name in known:
-            if kinds.get(name) != "gateway" and re.search(
+            if kinds.get(name) in mappable_kinds and re.search(
                 rf"(?<![A-Za-z0-9_.-]){re.escape(name)}(?![A-Za-z0-9_.-])", external
             ):
                 active.add(name)
         for parent in {spec.parent for spec in specs}:
             parent_specs = [spec for spec in specs if spec.parent == parent]
-            if parent_specs and parent_specs[0].kind != "gateway" and re.search(
+            if parent_specs and parent_specs[0].kind in mappable_kinds and re.search(
                 rf"(?<![A-Za-z0-9_.-]){re.escape(parent)}(?![A-Za-z0-9_.-])", external
             ):
                 active.update(spec.name for spec in parent_specs)

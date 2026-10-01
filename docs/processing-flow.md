@@ -107,6 +107,8 @@ TopologyPreflightHandler
         ↓
 GroupExpansionHandler
         ↓
+InterfaceClassificationHandler
+        ↓
 NNIHandler
         ↓
 UNIHandler
@@ -125,6 +127,8 @@ SimulationAdaptationHandler
 `TopologyPreflightHandler` 在任何配置改写前验证链路端点，标记超出支持范围的链路，并为本端生成 `action=skip` 的 NNI 映射。后续 Group、NNI 和 UNI 只消费有效链路或明确保留的接口角色，避免跳过的 NNI 被误分类为 UNI。
 
 `GroupExpansionHandler` 支持三种模式：`relevant` 只展开接口迁移、协议接口引用、管理认证及已启用可选清洗所需的 group；`strict` 展开所有已应用 group；`preserve` 保留全部 group。默认使用 `relevant`，未被选中的定义、`apply-group(s)` 和排除语句继续保留。
+
+`InterfaceClassificationHandler` 使用厂商物理接口白名单分类接口。已知虚拟接口和未知接口均不参与 NNI/UNI 物理端口分配；未知接口原样保留并写入告警，若链接表把非物理接口作为端点则转换失败。
 
 ## 4. 输入准备
 
