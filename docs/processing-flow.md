@@ -79,17 +79,23 @@ output/
         ↓
 按厂商解析配置
         ↓
+预检链路端点并标记不支持的链路
+        ↓
 按策略展开配置 Group（默认仅业务相关）
         ↓
 处理 NNI 和聚合扁平化
         ↓
 处理 UNI 和 VLAN 汇聚
         ↓
+更新协议和策略中的接口引用
+        ↓
+执行显式启用的可选能力清洗
+        ↓
 清洗认证与权限配置
         ↓
-执行可选外部清洗规则
+按镜像 Profile 适配模拟参数
         ↓
-更新协议和策略中的接口引用
+执行可选外部清洗规则
         ↓
 生成配置、拓扑、映射和报告
 ```
@@ -97,16 +103,26 @@ output/
 核心转换采用责任链：
 
 ```text
+TopologyPreflightHandler
+        ↓
 GroupExpansionHandler
         ↓
 NNIHandler
         ↓
 UNIHandler
         ↓
+ReferenceRewriteHandler
+        ↓
+OptionalFeatureWashingHandler
+        ↓
 AuthWashingHandler
+        ↓
+SimulationAdaptationHandler
 ```
 
 任一阶段产生错误后，责任链停止，不继续执行后续阶段。
+
+`TopologyPreflightHandler` 在任何配置改写前验证链路端点，标记超出支持范围的链路，并为本端生成 `action=skip` 的 NNI 映射。后续 Group、NNI 和 UNI 只消费有效链路或明确保留的接口角色，避免跳过的 NNI 被误分类为 UNI。
 
 `GroupExpansionHandler` 支持三种模式：`relevant` 只展开接口迁移、协议接口引用、管理认证及已启用可选清洗所需的 group；`strict` 展开所有已应用 group；`preserve` 保留全部 group。默认使用 `relevant`，未被选中的定义、`apply-group(s)` 和排除语句继续保留。
 
@@ -197,11 +213,13 @@ NNI 阶段还负责确定：
 - 哪些目标镜像物理接口已被占用。
 - 哪些成员接口和逻辑接口需要删除或迁移。
 
-因此当前正确顺序是：
+因此接口分类相关阶段的正确顺序是：
 
 ```text
-Group → NNI → UNI → Auth
+Group → NNI → UNI
 ```
+
+完整责任链还会在它们之前执行拓扑预检，并在之后执行引用更新、可选能力清洗、认证替换和模拟参数适配。
 
 如果未来需要交换 NNI/UNI 执行顺序，必须先增加独立的“接口分析与规划阶段”，一次性计算完整 NNI 闭包、UNI 集合和目标端口，不能简单交换两个处理器。
 
@@ -222,7 +240,7 @@ Group 展开失败后：
 
 - 原配置保持不变。
 - Group 定义和应用语句仍然保留。
-- 不继续执行 NNI、UNI 和认证清洗。
+- 不继续执行 NNI、UNI、配置清洗和参数适配。
 - 转换状态标记为失败。
 
 ## 7. Cisco IOS XR 处理流程
@@ -794,7 +812,26 @@ optional_washing:
 - `nat`：删除 NAT/CGN 配置。
 - `flow_statistics`：删除流量采样和流量监控配置。
 
-这些开关会改变业务能力，只有显式启用才执行；清洗报告只记录类别和数量，不记录秘密值。
+这些开关会改变业务能力，只有显式启用才由 `OptionalFeatureWashingHandler` 执行；它与 `AuthWashingHandler` 的强制管理面替换分开报告。清洗报告只记录类别和数量，不记录秘密值。
+
+### 8.7 模拟参数适配
+
+镜像 Profile 中的 `simulation_adaptation` 控制 `SimulationAdaptationHandler`：
+
+```yaml
+simulation_adaptation:
+  mode: stable
+  ensure_data_interfaces_enabled: true
+  remove_physical_interface_knobs: true
+  bfd_minimum_interval_ms: 300
+  bfd_minimum_multiplier: 3
+```
+
+- `off`：保持所有参数不变；YAML 中建议写成 `"off"`，避免被解析为布尔值。
+- `compatible`：保证已映射的数据父接口启用，并删除这些目标口上的 speed、duplex、FEC、协商、链路防抖等物理设备属性。
+- `stable`：包含 compatible 行为，并只对配置中已经存在的 BFD interval/multiplier 执行下限钳制。
+
+适配不会为原本未启用 BFD 的协议或接口新增 BFD，也不会默认修改 OSPF、IS-IS、BGP 的 hello/hold/SPF 等业务定时器。非映射接口不参与接口属性清理。处理结果按设备写入 `report.json` 的 `simulation-adaptation` 事件；重复执行不会继续产生变更。旧 `param_adjustment` YAML 节点仍兼容读取，但不能与新节点同时配置。
 
 ## 9. 全局接口引用更新
 
@@ -885,13 +922,16 @@ report.json
 - 总体成功或失败状态。
 - 全局和设备级错误。
 - 告警。
+- 拓扑预检和跳过链路事件。
 - Group 展开事件。
 - Group 冲突路径、语义键、胜出值和被覆盖值。
 - 聚合链路扁平化事件。
 - M-LAG 按对端拆分的源接口、目标接口和 Excel 行。
 - 接口映射数量。
 - 有效和跳过链路数量。
+- 可选能力清洗分类统计。
 - 认证清洗分类统计。
+- 模拟参数适配分类统计。
 - 外部规则命中记录。
 
 认证报告只记录删除类别和数量，不记录原密码、密钥或其他认证秘密。

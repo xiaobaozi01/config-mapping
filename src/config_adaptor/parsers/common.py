@@ -27,8 +27,8 @@ class GroupExpansionOutcome:
 
 
 @dataclass(slots=True)
-class AuthenticationCleanupOutcome:
-    """按类别统计认证清洗删除项，报告中只记录数量而不泄露内容。"""
+class CleanupOutcome:
+    """按类别统计配置清洗结果，报告中只记录数量而不泄露内容。"""
     removed: dict[str, int] = field(default_factory=dict)
 
     def record(self, category: str, count: int = 1) -> None:
@@ -36,10 +36,49 @@ class AuthenticationCleanupOutcome:
         if count > 0:
             self.removed[category] = self.removed.get(category, 0) + count
 
+    def merge(self, other: "CleanupOutcome") -> None:
+        """合并另一次清洗结果，供兼容组合入口使用。"""
+        for category, count in other.removed.items():
+            self.record(category, count)
+
     @property
     def total(self) -> int:
         """返回所有类别的删除总数。"""
         return sum(self.removed.values())
+
+
+# 兼容已有导入路径；新代码使用语义更通用的 CleanupOutcome。
+AuthenticationCleanupOutcome = CleanupOutcome
+
+
+@dataclass(slots=True)
+class SimulationAdaptationOutcome:
+    """模拟环境参数适配的分类统计。"""
+
+    added: dict[str, int] = field(default_factory=dict)
+    replaced: dict[str, int] = field(default_factory=dict)
+    removed: dict[str, int] = field(default_factory=dict)
+
+    def record(self, action: str, category: str, count: int = 1) -> None:
+        """按动作和类别累计修改数量。"""
+        if count <= 0:
+            return
+        buckets = {
+            "added": self.added,
+            "replaced": self.replaced,
+            "removed": self.removed,
+        }
+        bucket = buckets[action]
+        bucket[category] = bucket.get(category, 0) + count
+
+    @property
+    def total(self) -> int:
+        """返回新增、替换和删除的总数。"""
+        return sum(map(sum, (self.added.values(), self.replaced.values(), self.removed.values())))
+
+
+# 兼容旧的 Python 导入名；新代码使用 SimulationAdaptationOutcome。
+ParameterAdjustmentOutcome = SimulationAdaptationOutcome
 
 
 def normalized_command(value: str) -> str:

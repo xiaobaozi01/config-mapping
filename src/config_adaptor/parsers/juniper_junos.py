@@ -1,4 +1,4 @@
-"""Juniper Junos 大括号配置解析、groups 展开、接口改写和认证清洗。"""
+"""Juniper Junos 大括号配置解析、groups 展开、接口改写和分类清洗。"""
 
 from __future__ import annotations
 
@@ -9,11 +9,12 @@ from dataclasses import dataclass
 from typing import Iterable
 
 from ..constants import JUNOS_LAB_PASSWORD_HASH, LAB_USERNAME
-from ..models import WashingPolicy
+from ..models import SimulationAdaptationPolicy, WashingPolicy
 from .common import (
-    AuthenticationCleanupOutcome,
+    CleanupOutcome,
     GroupExpansionOutcome,
     InterfaceSpec,
+    SimulationAdaptationOutcome,
     interface_parent,
     interface_unit,
     normalized_command as _normalized_command,
@@ -977,15 +978,111 @@ class JunosDocument:
         """确保 UNI 目标父接口存在。"""
         self._ensure_target_parent(name)
 
-    def clean_authentication(
+    def adapt_to_simulation(
         self,
-        policy: WashingPolicy | None = None,
-    ) -> AuthenticationCleanupOutcome:
-        """清理管理面认证，并按策略删除明确启用的扩展配置。"""
-        policy = policy or WashingPolicy()
+        policy: SimulationAdaptationPolicy,
+        data_interfaces: set[str],
+    ) -> SimulationAdaptationOutcome:
+        """按目标镜像策略清理物理属性并放宽现有 BFD 参数。"""
+        outcome = SimulationAdaptationOutcome()
+        if policy.mode == "off":
+            return outcome
+
+        targets = {canonical_junos_interface(interface_parent(name)) for name in data_interfaces}
+        blocked_leaf = re.compile(
+            r"^(?:speed|link-mode|fec|no-auto-negotiation|loopback|clocking)\b",
+            re.IGNORECASE,
+        )
+        blocked_blocks = {"aggregated-ether-options", "gigether-options", "ether-options"}
+        for interface in self._interface_nodes():
+            if self._interface_name(interface) not in targets or interface.children is None:
+                continue
+            retained: list[JunosNode] = []
+            for child in interface.children:
+                base = self._base_header(child.header).rstrip(";")
+                first = base.split(maxsplit=1)[0] if base else ""
+                if policy.ensure_data_interfaces_enabled and first == "disable":
+                    outcome.record("removed", "interface-disable")
+                    continue
+                if policy.remove_physical_interface_knobs and (
+                    blocked_leaf.match(base) or (child.is_block and base in blocked_blocks)
+                ):
+                    outcome.record("removed", "physical-interface-knob")
+                    continue
+                retained.append(child)
+            interface.children = retained
+
+        if policy.mode != "stable":
+            return outcome
+
+        interval = re.compile(
+            r"^(?P<key>minimum-interval|minimum-receive-interval|transmit-interval)\s+"
+            r"(?P<value>\d+)\s*;$",
+            re.IGNORECASE,
+        )
+        multiplier = re.compile(r"^(?P<key>multiplier)\s+(?P<value>\d+)\s*;$", re.IGNORECASE)
+
+        def walk(node: JunosNode, inside_bfd: bool = False) -> None:
+            if not node.active:
+                return
+            base = self._base_header(node.header)
+            current_bfd = inside_bfd or base.rstrip(";") == "bfd-liveness-detection"
+            if current_bfd and node.children is None:
+                for pattern, minimum, category in (
+                    (interval, policy.bfd_minimum_interval_ms, "bfd-minimum-interval"),
+                    (multiplier, policy.bfd_minimum_multiplier, "bfd-multiplier"),
+                ):
+                    match = pattern.match(base)
+                    if match and int(match.group("value")) < minimum:
+                        node.header = f'{match.group("key")} {minimum};'
+                        outcome.record("replaced", category)
+                        break
+            if node.children:
+                for child in node.children:
+                    walk(child, current_bfd)
+
+        walk(self.root)
+        return outcome
+
+    def adjust_simulation_parameters(
+        self,
+        policy: SimulationAdaptationPolicy,
+        data_interfaces: set[str],
+    ) -> SimulationAdaptationOutcome:
+        """兼容旧入口；新代码使用 adapt_to_simulation。"""
+        return self.adapt_to_simulation(policy, data_interfaces)
+
+    def _node_first_token(self, node: JunosNode) -> str:
+        """返回节点语句的第一个关键字。"""
+        base = self._base_header(node.header)
+        return base.split(maxsplit=1)[0].rstrip(";") if base else ""
+
+    def _disable_matching(
+        self,
+        node: JunosNode,
+        keywords: set[str],
+        category: str,
+        outcome: CleanupOutcome,
+        recursive: bool = False,
+    ) -> None:
+        """按层级关键字停用子节点，并只在需要时递归。"""
+        if node.children is None:
+            return
+        for child in node.children:
+            if not child.active:
+                continue
+            if self._node_first_token(child) in keywords:
+                child.active = False
+                outcome.record(category)
+                continue
+            if recursive:
+                self._disable_matching(child, keywords, category, outcome, recursive=True)
+
+    def clean_management_access(self) -> CleanupOutcome:
+        """清理账号、外部认证、远程管理和 SNMP。"""
         system = self._top_block("system", create=True)
         assert system is not None and system.children is not None
-        outcome = AuthenticationCleanupOutcome()
+        outcome = CleanupOutcome()
         blocked = {
             "login",
             "root-authentication",
@@ -1003,30 +1100,6 @@ class JunosDocument:
                 child.active = False
                 outcome.record(first)
 
-        def first_token(node: JunosNode) -> str:
-            """返回节点语句的第一个关键字。"""
-            base = self._base_header(node.header)
-            return base.split(maxsplit=1)[0].rstrip(";") if base else ""
-
-        def disable_matching(
-            node: JunosNode,
-            keywords: set[str],
-            category: str,
-            recursive: bool = False,
-        ) -> None:
-            """按层级关键字停用子节点，并只在需要时递归。"""
-            if node.children is None:
-                return
-            for child in node.children:
-                if not child.active:
-                    continue
-                if first_token(child) in keywords:
-                    child.active = False
-                    outcome.record(category)
-                    continue
-                if recursive:
-                    disable_matching(child, keywords, category, recursive=True)
-
         services = next(
             (
                 child
@@ -1036,11 +1109,17 @@ class JunosDocument:
             None,
         )
         if services:
-            disable_matching(services, {"ssh", "outbound-ssh", "telnet"}, "remote-access", True)
+            self._disable_matching(
+                services,
+                {"ssh", "outbound-ssh", "telnet"},
+                "remote-access",
+                outcome,
+                recursive=True,
+            )
             for child in services.children or []:
                 if (
                     child.active
-                    and first_token(child) == "netconf"
+                    and self._node_first_token(child) == "netconf"
                     and child.children is not None
                     and not any(grandchild.active for grandchild in child.children)
                 ):
@@ -1054,14 +1133,25 @@ class JunosDocument:
 
         security = self._top_block("security")
         if security:
-            disable_matching(security, {"ssh-known-hosts"}, "ssh-trust")
+            self._disable_matching(security, {"ssh-known-hosts"}, "ssh-trust", outcome)
+        return outcome
+
+    def clean_optional_features(
+        self,
+        policy: WashingPolicy,
+    ) -> CleanupOutcome:
+        """按显式策略删除协议认证及其他可选能力。"""
+        outcome = CleanupOutcome()
+        system = self._top_block("system")
+        security = self._top_block("security")
 
         if policy.protocol_authentication:
             if security:
-                disable_matching(
+                self._disable_matching(
                     security,
                     {"authentication-key-chains"},
                     "protocol-auth-definition",
+                    outcome,
                 )
             protocol_keywords = {
                 "authentication",
@@ -1073,17 +1163,19 @@ class JunosDocument:
             for root_name in ("protocols", "routing-instances", "logical-systems", "interfaces"):
                 root = self._top_block(root_name)
                 if root:
-                    disable_matching(
+                    self._disable_matching(
                         root,
                         protocol_keywords,
                         "protocol-auth-reference",
+                        outcome,
                         recursive=True,
                     )
 
         if policy.pki:
             if security:
-                disable_matching(security, {"pki", "certificates"}, "pki")
-            disable_matching(system, {"certificates"}, "pki")
+                self._disable_matching(security, {"pki", "certificates"}, "pki", outcome)
+            if system:
+                self._disable_matching(system, {"certificates"}, "pki", outcome)
 
         if policy.hardware:
             chassis = self._top_block("chassis")
@@ -1093,21 +1185,54 @@ class JunosDocument:
 
         if policy.nat:
             if security:
-                disable_matching(security, {"nat"}, "nat")
+                self._disable_matching(security, {"nat"}, "nat", outcome)
             services_top = self._top_block("services")
             if services_top:
-                disable_matching(services_top, {"nat", "nat-rules"}, "nat", recursive=True)
+                self._disable_matching(
+                    services_top,
+                    {"nat", "nat-rules"},
+                    "nat",
+                    outcome,
+                    recursive=True,
+                )
 
         if policy.flow_statistics:
             services_top = self._top_block("services")
             if services_top:
-                disable_matching(services_top, {"flow-monitoring"}, "flow-statistics", True)
+                self._disable_matching(
+                    services_top,
+                    {"flow-monitoring"},
+                    "flow-statistics",
+                    outcome,
+                    recursive=True,
+                )
             forwarding = self._top_block("forwarding-options")
             if forwarding:
-                disable_matching(forwarding, {"sampling"}, "flow-statistics", True)
+                self._disable_matching(
+                    forwarding,
+                    {"sampling"},
+                    "flow-statistics",
+                    outcome,
+                    recursive=True,
+                )
             interfaces = self._top_block("interfaces")
             if interfaces:
-                disable_matching(interfaces, {"sampling"}, "flow-statistics", True)
+                self._disable_matching(
+                    interfaces,
+                    {"sampling"},
+                    "flow-statistics",
+                    outcome,
+                    recursive=True,
+                )
+        return outcome
+
+    def clean_authentication(
+        self,
+        policy: WashingPolicy | None = None,
+    ) -> CleanupOutcome:
+        """兼容旧入口：组合管理面认证清洗和显式启用的可选清洗。"""
+        outcome = self.clean_management_access()
+        outcome.merge(self.clean_optional_features(policy or WashingPolicy()))
         return outcome
 
     def add_lab_account(self) -> None:

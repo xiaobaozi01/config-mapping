@@ -1,4 +1,4 @@
-"""Cisco IOS XR 配置解析、group 展开、接口改写和认证清洗。"""
+"""Cisco IOS XR 配置解析、group 展开、接口改写和分类清洗。"""
 
 from __future__ import annotations
 
@@ -9,11 +9,12 @@ from dataclasses import dataclass, field
 from typing import Iterable
 
 from ..constants import LAB_PASSWORD, LAB_USERNAME
-from ..models import WashingPolicy
+from ..models import SimulationAdaptationPolicy, WashingPolicy
 from .common import (
-    AuthenticationCleanupOutcome,
+    CleanupOutcome,
     GroupExpansionOutcome,
     InterfaceSpec,
+    SimulationAdaptationOutcome,
     interface_parent,
     interface_unit,
     normalized_command as _normalized_command,
@@ -943,13 +944,91 @@ class CiscoDocument:
         self.blocks.append(CiscoBlock(header=f"interface {canonical}", lines=[" no shutdown"]))
         self.blocks.append(CiscoBlock(header="!"))
 
-    def clean_authentication(
+    def adapt_to_simulation(
         self,
-        policy: WashingPolicy | None = None,
-    ) -> AuthenticationCleanupOutcome:
-        """清理管理面认证，并按策略删除明确启用的扩展配置。"""
-        policy = policy or WashingPolicy()
-        outcome = AuthenticationCleanupOutcome()
+        policy: SimulationAdaptationPolicy,
+        data_interfaces: set[str],
+    ) -> SimulationAdaptationOutcome:
+        """按目标镜像策略调整数据口和过于激进的 BFD 参数。"""
+        outcome = SimulationAdaptationOutcome()
+        if policy.mode == "off":
+            return outcome
+
+        targets = {canonical_cisco_interface(interface_parent(name)) for name in data_interfaces}
+        physical_knob = re.compile(
+            r"^(?:speed|duplex|negotiation|fec|transceiver|carrier-delay|dampening)\b",
+            re.IGNORECASE,
+        )
+        shutdown = re.compile(r"^shutdown$", re.IGNORECASE)
+        no_shutdown = re.compile(r"^no\s+shutdown$", re.IGNORECASE)
+
+        for block in self._interface_blocks():
+            name = block.interface_name
+            if not name or interface_parent(name) not in targets:
+                continue
+            if policy.remove_physical_interface_knobs:
+                retained = [line for line in block.lines if not physical_knob.match(line.strip())]
+                outcome.record("removed", "physical-interface-knob", len(block.lines) - len(retained))
+                block.lines = retained
+            if policy.ensure_data_interfaces_enabled:
+                retained = [line for line in block.lines if not shutdown.fullmatch(line.strip())]
+                outcome.record("removed", "interface-shutdown", len(block.lines) - len(retained))
+                block.lines = retained
+                if interface_unit(name) is None and not any(no_shutdown.fullmatch(line.strip()) for line in block.lines):
+                    insertion = 1 if block.lines and block.lines[0].strip().lower().startswith("description ") else 0
+                    block.lines.insert(insertion, " no shutdown")
+                    outcome.record("added", "interface-no-shutdown")
+
+        if policy.mode != "stable":
+            return outcome
+
+        interval = re.compile(
+            r"^(?P<indent>\s*bfd\s+(?:minimum-interval|minimum-receive-interval)\s+)"
+            r"(?P<value>\d+)(?P<suffix>\s*)$",
+            re.IGNORECASE,
+        )
+        multiplier = re.compile(
+            r"^(?P<indent>\s*bfd\s+multiplier\s+)(?P<value>\d+)(?P<suffix>\s*)$",
+            re.IGNORECASE,
+        )
+
+        def clamp(line: str, pattern: re.Pattern[str], minimum: int, category: str) -> str:
+            match = pattern.match(line)
+            if not match or int(match.group("value")) >= minimum:
+                return line
+            outcome.record("replaced", category)
+            return f'{match.group("indent")}{minimum}{match.group("suffix")}'
+
+        for block in self.blocks:
+            if not block.active:
+                continue
+            block.lines = [
+                clamp(
+                    clamp(
+                        line,
+                        interval,
+                        policy.bfd_minimum_interval_ms,
+                        "bfd-minimum-interval",
+                    ),
+                    multiplier,
+                    policy.bfd_minimum_multiplier,
+                    "bfd-multiplier",
+                )
+                for line in block.lines
+            ]
+        return outcome
+
+    def adjust_simulation_parameters(
+        self,
+        policy: SimulationAdaptationPolicy,
+        data_interfaces: set[str],
+    ) -> SimulationAdaptationOutcome:
+        """兼容旧入口；新代码使用 adapt_to_simulation。"""
+        return self.adapt_to_simulation(policy, data_interfaces)
+
+    def clean_management_access(self) -> CleanupOutcome:
+        """清理账号、AAA、远程管理和 SNMP，不触碰可选业务能力。"""
+        outcome = CleanupOutcome()
         top_level: list[tuple[str, re.Pattern[str]]] = [
             ("username", re.compile(r"^username\b", re.IGNORECASE)),
             ("aaa", re.compile(r"^aaa\b", re.IGNORECASE)),
@@ -961,36 +1040,6 @@ class CiscoDocument:
             ("ssh", re.compile(r"^ssh\b", re.IGNORECASE)),
             ("telnet", re.compile(r"^telnet\b", re.IGNORECASE)),
         ]
-        optional_top_level: list[tuple[bool, str, str]] = [
-            (
-                policy.pki,
-                "pki",
-                r"^(?:crypto\s+(?:pki|ca|key)\b|certificate\b|trustpoint\b)",
-            ),
-            (
-                policy.hardware,
-                "hardware",
-                r"^(?:hw-module|platform|service-location|slot)\b",
-            ),
-            (policy.nat, "nat", r"^(?:nat|cgn|service\s+cgn)\b"),
-            (
-                policy.flow_statistics,
-                "flow-statistics",
-                r"^(?:flow(?:-exporter|-monitor)?|sampler|monitor-session)\b",
-            ),
-        ]
-        top_level.extend(
-            (category, re.compile(pattern, re.IGNORECASE))
-            for enabled, category, pattern in optional_top_level
-            if enabled
-        )
-        if policy.protocol_authentication:
-            top_level.append(
-                (
-                    "protocol-auth-definition",
-                    re.compile(r"^(?:key\s+chain|key-?chain)\b", re.IGNORECASE),
-                )
-            )
         line_auth = re.compile(
             r"^(?:password|secret)\b"
             r"|^login\s+authentication\b"
@@ -1016,6 +1065,55 @@ class CiscoDocument:
                 retained = [line for line in block.lines if not line_auth.match(line.strip())]
                 outcome.record("line-auth-reference", len(block.lines) - len(retained))
                 block.lines = retained
+        return outcome
+
+    def clean_optional_features(
+        self,
+        policy: WashingPolicy,
+    ) -> CleanupOutcome:
+        """按显式策略删除协议认证及其他可选能力。"""
+        outcome = CleanupOutcome()
+        optional_top_level: list[tuple[bool, str, str]] = [
+            (
+                policy.pki,
+                "pki",
+                r"^(?:crypto\s+(?:pki|ca|key)\b|certificate\b|trustpoint\b)",
+            ),
+            (
+                policy.hardware,
+                "hardware",
+                r"^(?:hw-module|platform|service-location|slot)\b",
+            ),
+            (policy.nat, "nat", r"^(?:nat|cgn|service\s+cgn)\b"),
+            (
+                policy.flow_statistics,
+                "flow-statistics",
+                r"^(?:flow(?:-exporter|-monitor)?|sampler|monitor-session)\b",
+            ),
+        ]
+        top_level = [
+            (category, re.compile(pattern, re.IGNORECASE))
+            for enabled, category, pattern in optional_top_level
+            if enabled
+        ]
+        if policy.protocol_authentication:
+            top_level.append(
+                (
+                    "protocol-auth-definition",
+                    re.compile(r"^(?:key\s+chain|key-?chain)\b", re.IGNORECASE),
+                )
+            )
+        for block in self.blocks:
+            if not block.active:
+                continue
+            header = block.header.strip()
+            matched_category = next(
+                (category for category, pattern in top_level if pattern.match(header)),
+                None,
+            )
+            if matched_category:
+                block.active = False
+                outcome.record(matched_category)
         if policy.protocol_authentication:
             protocol_header = re.compile(
                 r"^(?:router\s+(?:bgp|isis|ospf|ospfv3|rip)|mpls\s+ldp|rsvp)\b",
@@ -1060,6 +1158,15 @@ class CiscoDocument:
                 elif block.interface_name:
                     block.lines, removed = strip_sections(block.lines, interface_auth)
                     outcome.record("protocol-auth-reference", removed)
+        return outcome
+
+    def clean_authentication(
+        self,
+        policy: WashingPolicy | None = None,
+    ) -> CleanupOutcome:
+        """兼容旧入口：组合管理面认证清洗和显式启用的可选清洗。"""
+        outcome = self.clean_management_access()
+        outcome.merge(self.clean_optional_features(policy or WashingPolicy()))
         return outcome
 
     def add_lab_account(self) -> None:

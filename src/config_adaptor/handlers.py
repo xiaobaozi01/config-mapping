@@ -1,4 +1,4 @@
-"""Group、NNI、UNI、认证四阶段责任链。"""
+"""拓扑预检、配置迁移、清洗和模拟参数适配责任链。"""
 
 from __future__ import annotations
 
@@ -7,7 +7,7 @@ from collections import defaultdict
 from dataclasses import dataclass
 
 from .parsers import interface_parent, interface_unit
-from .models import ConversionContext, InterfaceMapping, Vendor
+from .models import ConversionContext, InterfaceMapping, Link, Vendor
 
 
 class ConversionHandler(ABC):
@@ -64,6 +64,64 @@ class _EndpointPlan:
     source_members: list[str]
 
 
+class TopologyPreflightHandler(ConversionHandler):
+    """在任何配置改写前校验链路端点，并确定后续阶段可消费的链路。"""
+
+    def process(self, context: ConversionContext) -> None:
+        """把无效或暂不支持的链路标记为 inactive，并记录诊断。"""
+        def record_skipped_endpoints(link: Link, reason: str) -> None:
+            """保留已跳过端点的 NNI 角色，防止 UNI 阶段误分类。"""
+            for device_name, raw_interface in link.endpoints():
+                device = context.devices.get(device_name)
+                if not device:
+                    continue
+                source = interface_parent(device.document.resolve_interface(raw_interface))
+                logical = device.document.bundle_members().get(source)
+                for reserved in dict.fromkeys((source, logical)):
+                    if not reserved:
+                        continue
+                    device.mappings.append(
+                        InterfaceMapping(
+                            device=device_name,
+                            source_interface=reserved,
+                            role="NNI",
+                            action="skip",
+                            target_interface=None,
+                            link_rows=[link.row],
+                            reason=reason,
+                        )
+                    )
+
+        topology_devices = {device.name for device in context.topology.devices}
+        for link in context.topology.links:
+            missing = [name for name, _ in link.endpoints() if name not in topology_devices]
+            if missing:
+                link.active = False
+                link.skip_reason = f"端点设备未出现在设备列表: {', '.join(missing)}"
+                context.errors.append(f"链接表第 {link.row} 行：{link.skip_reason}")
+                record_skipped_endpoints(link, link.skip_reason)
+                continue
+            if all(device_name in context.devices for device_name, _ in link.endpoints()):
+                continue
+            link.active = False
+            link.skip_reason = "端点包含不在首版范围内的设备（可能为华为或未知厂商）"
+            record_skipped_endpoints(link, link.skip_reason)
+            context.warnings.append(f"链接表第 {link.row} 行已跳过：{link.skip_reason}")
+            context.add_event(
+                "skip-link",
+                f"跳过链接表第 {link.row} 行",
+                row=link.row,
+                reason=link.skip_reason,
+            )
+
+        context.add_event(
+            "topology-preflight",
+            "拓扑链路预检完成",
+            active_links=sum(1 for link in context.topology.links if link.active),
+            skipped_links=sum(1 for link in context.topology.links if not link.active),
+        )
+
+
 class GroupExpansionHandler(ConversionHandler):
     """在接口分类前展开厂商 group，确保继承配置也参与后续转换。"""
 
@@ -77,6 +135,8 @@ class GroupExpansionHandler(ConversionHandler):
         # 拓扑接口即使未显式出现在配置中，也要作为正则/通配 group 的候选对象。
         known_by_device: dict[str, set[str]] = defaultdict(set)
         for link in context.topology.links:
+            if not link.active:
+                continue
             for device_name, interface in link.endpoints():
                 if device_name in context.devices:
                     known_by_device[device_name].add(interface_parent(interface))
@@ -112,28 +172,9 @@ class NNIHandler(ConversionHandler):
     """识别并扁平化聚合 NNI，再分配目标镜像物理接口。"""
 
     def process(self, context: ConversionContext) -> None:
-        """校验链路、识别聚合成员、分配端口并改写设备配置。"""
-        supported_links = []
+        """识别聚合成员、分配目标端口并改写设备配置。"""
+        supported_links = [link for link in context.topology.links if link.active]
         original_by_row = {link.row: link for link in context.topology.links}
-        topology_devices = {device.name: device for device in context.topology.devices}
-
-        # 先筛掉缺失设备、华为或未知厂商端点，避免污染后面的分配结果。
-        for link in context.topology.links:
-            missing = [name for name, _ in link.endpoints() if name not in topology_devices]
-            if missing:
-                link.active = False
-                link.skip_reason = f"端点设备未出现在设备列表: {', '.join(missing)}"
-                context.errors.append(f"链接表第 {link.row} 行：{link.skip_reason}")
-                continue
-            left = context.devices.get(link.a_device)
-            right = context.devices.get(link.z_device)
-            if not left or not right:
-                link.active = False
-                link.skip_reason = "端点包含不在首版范围内的设备（可能为华为或未知厂商）"
-                context.warnings.append(f"链接表第 {link.row} 行已跳过：{link.skip_reason}")
-                context.add_event("skip-link", f"跳过链接表第 {link.row} 行", row=link.row, reason=link.skip_reason)
-                continue
-            supported_links.append(link)
 
         if not supported_links:
             return
@@ -355,10 +396,12 @@ class UNIHandler(ConversionHandler):
             device = context.devices[device_name]
             document = device.document
             specs = document.interface_specs()
-            nni_targets = {
-                interface_parent(mapping.target_interface)
+            nni_interfaces = {
+                interface_parent(value)
                 for mapping in device.mappings
-                if mapping.role == "NNI" and mapping.target_interface
+                if mapping.role == "NNI"
+                for value in (mapping.source_interface, mapping.target_interface)
+                if value
             }
             member_map = document.bundle_members()
             member_parents = set(member_map)
@@ -370,7 +413,7 @@ class UNIHandler(ConversionHandler):
                 spec
                 for spec in specs
                 if spec.kind in {"physical", "bundle", "gateway"}
-                and spec.parent not in nni_targets
+                and spec.parent not in nni_interfaces
                 and spec.parent != device.profile.uni_parent
                 and spec.parent not in member_parents
             ]
@@ -509,6 +552,46 @@ class UNIHandler(ConversionHandler):
             document.ensure_parent_interface(device.profile.uni_parent)
 
 
+class ReferenceRewriteHandler(ConversionHandler):
+    """在接口迁移完成后统一更新协议、策略和业务中的接口引用。"""
+
+    def process(self, context: ConversionContext) -> None:
+        """使用结构化一对多映射改写每台设备的非接口定义引用。"""
+        for device_name in sorted(context.devices):
+            device = context.devices[device_name]
+            device.document.replace_references(device.replacement_map)
+
+
+class OptionalFeatureWashingHandler(ConversionHandler):
+    """按显式策略清理会改变业务能力的可选配置类别。"""
+
+    def process(self, context: ConversionContext) -> None:
+        """把协议认证、PKI、硬件、NAT 和流量统计与认证替换分离。"""
+        policy = context.washing_policy
+        enabled = [
+            name
+            for name in (
+                "protocol_authentication",
+                "pki",
+                "hardware",
+                "nat",
+                "flow_statistics",
+            )
+            if getattr(policy, name)
+        ]
+        for device_name in sorted(context.devices):
+            device = context.devices[device_name]
+            cleanup = device.document.clean_optional_features(policy)
+            context.add_event(
+                "optional-washing",
+                f"设备 {device_name} 已执行可选能力清洗",
+                device=device_name,
+                enabled=enabled,
+                removed_sections=cleanup.total,
+                removed_by_type=cleanup.removed,
+            )
+
+
 class AuthWashingHandler(ConversionHandler):
     """清除原认证和授权体系，再添加统一实验账号。"""
 
@@ -516,7 +599,7 @@ class AuthWashingHandler(ConversionHandler):
         """调用厂商实现清理旧认证，并记录分项删除数量。"""
         for device_name in sorted(context.devices):
             device = context.devices[device_name]
-            cleanup = device.document.clean_authentication(context.washing_policy)
+            cleanup = device.document.clean_management_access()
             device.document.add_lab_account()
             context.add_event(
                 "authentication",
@@ -527,11 +610,48 @@ class AuthWashingHandler(ConversionHandler):
             )
 
 
+class SimulationAdaptationHandler(ConversionHandler):
+    """根据目标镜像 Profile 执行保守、可审计的模拟参数适配。"""
+
+    def process(self, context: ConversionContext) -> None:
+        """只调整已经迁移的数据口和显式存在的激进稳定性参数。"""
+        for device_name in sorted(context.devices):
+            device = context.devices[device_name]
+            policy = device.profile.simulation_adaptation
+            data_interfaces = {
+                interface_parent(mapping.target_interface)
+                for mapping in device.mappings
+                if mapping.target_interface
+                and mapping.role in {"NNI", "UNI"}
+                and mapping.action not in {"remove", "remove-bare", "skip"}
+            }
+            outcome = device.document.adapt_to_simulation(policy, data_interfaces)
+            context.add_event(
+                "simulation-adaptation",
+                f"设备 {device_name} 已按 {policy.mode} 模式适配模拟参数",
+                device=device_name,
+                image=device.profile.image,
+                version=device.profile.version,
+                mode=policy.mode,
+                target_interfaces=sorted(data_interfaces),
+                change_count=outcome.total,
+                added=outcome.added,
+                replaced=outcome.replaced,
+                removed=outcome.removed,
+            )
+
+
 def build_default_chain() -> ConversionHandler:
     """按强制顺序组装默认责任链并返回链首。"""
+    topology_preflight = TopologyPreflightHandler()
     groups = GroupExpansionHandler()
     nni = NNIHandler()
     uni = UNIHandler()
+    references = ReferenceRewriteHandler()
+    optional_washing = OptionalFeatureWashingHandler()
     auth_washing = AuthWashingHandler()
-    groups.set_next(nni).set_next(uni).set_next(auth_washing)
-    return groups
+    simulation_adaptation = SimulationAdaptationHandler()
+    topology_preflight.set_next(groups).set_next(nni).set_next(uni).set_next(references).set_next(
+        optional_washing
+    ).set_next(auth_washing).set_next(simulation_adaptation)
+    return topology_preflight

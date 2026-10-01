@@ -88,10 +88,35 @@ class InterfaceMapping:
 
 
 @dataclass(slots=True)
+class SimulationAdaptationPolicy:
+    """目标镜像的保守参数适配策略。"""
+
+    mode: str = "stable"
+    ensure_data_interfaces_enabled: bool = True
+    remove_physical_interface_knobs: bool = True
+    bfd_minimum_interval_ms: int = 300
+    bfd_minimum_multiplier: int = 3
+
+
+# 兼容旧的 Python 导入名；新代码统一使用 SimulationAdaptationPolicy。
+ParamAdjustmentPolicy = SimulationAdaptationPolicy
+
+
+@dataclass(slots=True)
 class ImageProfile:
     """某厂商 GNS3 镜像按顺序暴露的数据接口。"""
     vendor: Vendor
     interfaces: list[str]
+    image: str
+    version: str | None = None
+    simulation_adaptation: SimulationAdaptationPolicy = field(
+        default_factory=SimulationAdaptationPolicy
+    )
+
+    @property
+    def param_adjustment(self) -> SimulationAdaptationPolicy:
+        """兼容旧字段名；新代码使用 simulation_adaptation。"""
+        return self.simulation_adaptation
 
     @property
     def nni_interfaces(self) -> list[str]:

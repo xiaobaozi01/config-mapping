@@ -5,8 +5,11 @@ from __future__ import annotations
 from .cisco_iosxr import CiscoDocument, canonical_cisco_interface
 from .common import (
     AuthenticationCleanupOutcome,
+    CleanupOutcome,
     GroupExpansionOutcome,
     InterfaceSpec,
+    ParameterAdjustmentOutcome,
+    SimulationAdaptationOutcome,
     interface_parent,
     interface_unit,
 )
@@ -25,8 +28,11 @@ def parse_document(vendor: str, text: str) -> CiscoDocument | JunosDocument:
 __all__ = [
     "CiscoDocument",
     "AuthenticationCleanupOutcome",
+    "CleanupOutcome",
     "GroupExpansionOutcome",
     "InterfaceSpec",
+    "ParameterAdjustmentOutcome",
+    "SimulationAdaptationOutcome",
     "JunosDocument",
     "canonical_cisco_interface",
     "canonical_junos_interface",

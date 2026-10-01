@@ -106,12 +106,10 @@ def convert(
     """执行完整转换；即使失败也写 report，便于定位输入问题。"""
     context = prepare_context(topology_path, config_dir, profiles_path, washing_policy_path)
     if not context.errors:
-        # group 必须先展开，随后依次处理 NNI、UNI 和认证。
+        # 先预检拓扑；group 展开和接口迁移完成后再执行清洗及镜像参数适配。
         build_default_chain().handle(context)
         # 用户扩展规则放在核心转换之后，避免规则改变接口分类依据。
         apply_rules(context, load_rules(rules_path))
-        for device in context.devices.values():
-            device.document.replace_references(device.replacement_map)
     write_outputs(context, output_dir)
     return context
 
@@ -137,6 +135,11 @@ def write_outputs(context: ConversionContext, output_dir: Path) -> None:
         for event in context.events
         if event.get("kind") == "group-conflict"
     ]
+    simulation_adaptation_count = sum(
+        int(event.get("change_count", 0))
+        for event in context.events
+        if event.get("kind") == "simulation-adaptation"
+    )
     report = {
         "status": "failed" if context.has_errors else "success",
         "errors": list(dict.fromkeys(combined_errors)),
@@ -149,6 +152,7 @@ def write_outputs(context: ConversionContext, output_dir: Path) -> None:
             "skipped_links": sum(1 for link in context.topology.links if not link.active),
             "mapping_count": len(mapping_payload),
             "group_conflict_count": len(group_conflicts),
+            "simulation_adaptation_count": simulation_adaptation_count,
         },
     }
     (output_dir / "report.json").write_text(
@@ -185,6 +189,6 @@ def write_outputs(context: ConversionContext, output_dir: Path) -> None:
   topology-adapted.xlsx     已更新接口并移除冗余聚合成员的拓扑
   configs/                  XRv9000 和 vMX 配置
   interface-mapping.json    全局接口映射
-  report.json               转换报告
+  report.json               转换报告（含模拟参数适配明细）
 """
     (output_dir / "README.txt").write_text(readme, encoding="utf-8")

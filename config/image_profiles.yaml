@@ -1,5 +1,8 @@
 profiles:
   cisco_iosxr:
+    image: xrv9000
+    # 可选：填写实际镜像版本，便于报告和后续版本特定规则匹配。
+    version: null
     interfaces:
       - GigabitEthernet0/0/0/0
       - GigabitEthernet0/0/0/1
@@ -9,7 +12,16 @@ profiles:
       - GigabitEthernet0/0/0/5
       - GigabitEthernet0/0/0/6
       - GigabitEthernet0/0/0/7
+    simulation_adaptation:
+      # "off"：不调整；compatible：仅接口兼容；stable：兼容并放宽激进 BFD（默认）。
+      mode: stable
+      ensure_data_interfaces_enabled: true
+      remove_physical_interface_knobs: true
+      bfd_minimum_interval_ms: 300
+      bfd_minimum_multiplier: 3
   juniper_junos:
+    image: vmx
+    version: null
     interfaces:
       - ge-0/0/0
       - ge-0/0/1
@@ -19,3 +31,9 @@ profiles:
       - ge-0/0/5
       - ge-0/0/6
       - ge-0/0/7
+    simulation_adaptation:
+      mode: stable
+      ensure_data_interfaces_enabled: true
+      remove_physical_interface_knobs: true
+      bfd_minimum_interval_ms: 300
+      bfd_minimum_multiplier: 3

@@ -25,7 +25,7 @@
 
 ### 2.3 镜像接口配置
 
-镜像配置文件描述 XRv9000 和 vMX 在 GNS3 中实际可用的数据接口列表。列表最后一个接口承载 UNI 子接口，其余接口按链接表顺序分配给 NNI。
+镜像配置文件描述 XRv9000 和 vMX 在 GNS3 中的镜像名称、可选版本、实际可用的数据接口列表和模拟参数适配策略。列表最后一个接口承载 UNI 子接口，其余接口按链接表顺序分配给 NNI。
 
 ## 3. 术语和分类
 
@@ -116,12 +116,28 @@
 转换核心使用责任链模式。配置 group 必须在接口分类前展开，处理顺序为：
 
 ```text
-GroupExpansionHandler -> NNIHandler -> UNIHandler -> AuthWashingHandler
+TopologyPreflightHandler -> GroupExpansionHandler -> NNIHandler -> UNIHandler
+-> ReferenceRewriteHandler -> OptionalFeatureWashingHandler
+-> AuthWashingHandler -> SimulationAdaptationHandler
 ```
 
 每个处理器只负责其领域的识别、映射、配置变更和报告，并将上下文传递给下一个处理器。后续处理器可插入链中而不修改已有处理器调用方式。
 
-### 4.8 配置 Group 展开
+- `TopologyPreflightHandler` 在配置改写前校验端点，标记无效或暂不支持的链路；跳过链路的本端接口仍以 `action=skip` 保留 NNI 角色，不得被 UNI 重新分类。
+- `OptionalFeatureWashingHandler` 只处理显式开启的协议认证、PKI、硬件、NAT 和流量统计清洗。
+- `AuthWashingHandler` 只负责强制管理面认证清理和实验账号写入；两步视为同一原子阶段。
+
+### 4.8 模拟参数适配
+
+1. `SimulationAdaptationHandler` 在接口迁移、引用更新和认证清洗后运行，根据设备的镜像 Profile 调用厂商文档实现。
+2. `simulation_adaptation.mode` 支持：
+   - `off`：不执行参数适配；
+   - `compatible`：只启用已映射的数据口并清理目标口上的物理硬件属性；
+   - `stable`（默认）：在 `compatible` 基础上，将已经存在且过于激进的 BFD interval 和 multiplier 提高到 Profile 指定的安全下限。
+3. 参数适配不得凭空开启 BFD，不得默认缩短 OSPF、IS-IS、BGP 等业务协议定时器，也不得修改未参与映射的数据口。
+4. 参数适配必须幂等；每台设备的镜像、模式、目标接口和分类修改数量写入 `report.json`。
+
+### 4.9 配置 Group 展开
 
 1. Group 处理模式由 `group_handling.mode` 控制：
    - `relevant`（默认）：仅展开会影响接口、聚合、协议接口引用、管理认证和已启用可选清洗范围的 group；无关定义及其应用/排除语句原样保留；

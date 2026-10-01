@@ -9,10 +9,11 @@ from pathlib import Path
 
 from openpyxl import load_workbook
 
-from config_adaptor.models import WashingPolicy
+from config_adaptor.models import SimulationAdaptationPolicy, Vendor, WashingPolicy
 from config_adaptor.parsers.cisco_iosxr import CiscoDocument
 from config_adaptor.parsers.juniper_junos import JunosDocument
 from config_adaptor.pipeline import convert
+from config_adaptor.profiles import load_profiles
 from config_adaptor.washing import load_washing_policy
 
 
@@ -31,6 +32,11 @@ class ConversionTest(unittest.TestCase):
     def washing_config(name: str) -> str:
         """读取认证与可选策略清洗使用的外部配置文件。"""
         return (FIXTURES / "washing_configs" / name).read_text(encoding="utf-8")
+
+    @staticmethod
+    def simulation_config(name: str) -> str:
+        """读取模拟参数适配测试配置。"""
+        return (FIXTURES / "simulation_adaptation" / name).read_text(encoding="utf-8")
 
     @staticmethod
     def conversion_fixture(name: str) -> tuple[Path, Path]:
@@ -80,6 +86,91 @@ class ConversionTest(unittest.TestCase):
             self.assertEqual(authentication["removed_by_type"]["taskgroup"], 1)
             self.assertEqual(authentication["removed_by_type"]["usergroup"], 1)
             self.assertEqual(authentication["removed_by_type"]["line-auth-reference"], 5)
+            adjustment = next(
+                event for event in report["events"] if event["kind"] == "simulation-adaptation"
+            )
+            self.assertEqual(adjustment["mode"], "stable")
+            self.assertEqual(adjustment["image"], "xrv9000")
+            self.assertIn("GigabitEthernet0/0/0/0", adjustment["target_interfaces"])
+
+    def test_iosxr_simulation_adaptation_is_scoped_and_idempotent(self):
+        """只调整映射目标口，并放宽已存在的激进 BFD 参数。"""
+        policy = SimulationAdaptationPolicy()
+        document = CiscoDocument(self.simulation_config("iosxr.cfg"))
+        first = document.adapt_to_simulation(policy, {"GigabitEthernet0/0/0/0"})
+        rendered = document.render()
+
+        self.assertNotIn("carrier-delay", rendered)
+        self.assertEqual(rendered.count("speed 10000"), 1)
+        self.assertEqual(rendered.count("\n shutdown"), 1)
+        self.assertEqual(rendered.count("no shutdown"), 1)
+        self.assertNotIn("bfd minimum-interval 50", rendered)
+        self.assertNotIn("bfd minimum-interval 100", rendered)
+        self.assertEqual(rendered.count("bfd minimum-interval 300"), 2)
+        self.assertNotIn("bfd multiplier 1", rendered)
+        self.assertNotIn("bfd multiplier 2", rendered)
+        self.assertEqual(rendered.count("bfd multiplier 3"), 2)
+        self.assertGreater(first.total, 0)
+
+        second = document.adapt_to_simulation(policy, {"GigabitEthernet0/0/0/0"})
+        self.assertEqual(second.total, 0)
+
+    def test_junos_simulation_adaptation_is_scoped_and_idempotent(self):
+        """Junos 目标口清除物理属性，非目标口保持不变。"""
+        policy = SimulationAdaptationPolicy()
+        document = JunosDocument(self.simulation_config("junos.cfg"))
+        first = document.adapt_to_simulation(policy, {"ge-0/0/0"})
+        rendered = document.render()
+
+        self.assertNotIn("gigether-options", rendered)
+        self.assertEqual(rendered.count("speed 10g;"), 1)
+        self.assertEqual(rendered.count("disable;"), 1)
+        self.assertIn("minimum-interval 300;", rendered)
+        self.assertIn("minimum-receive-interval 300;", rendered)
+        self.assertIn("multiplier 3;", rendered)
+        self.assertGreater(first.total, 0)
+
+        second = document.adapt_to_simulation(policy, {"ge-0/0/0"})
+        self.assertEqual(second.total, 0)
+
+    def test_compatible_simulation_adaptation_preserves_bfd_values(self):
+        """compatible 模式只做接口兼容，不改协议稳定性参数。"""
+        policy = SimulationAdaptationPolicy(mode="compatible")
+        document = CiscoDocument(self.simulation_config("iosxr.cfg"))
+        document.adapt_to_simulation(policy, {"GigabitEthernet0/0/0/0"})
+        rendered = document.render()
+        self.assertIn("bfd minimum-interval 50", rendered)
+        self.assertIn("bfd multiplier 2", rendered)
+
+    def test_simulation_adaptation_profile_and_off_mode(self):
+        """示例 Profile 可加载，off 模式严格保持文档不变。"""
+        profiles = load_profiles(Path("config/image_profiles.yaml"))
+        cisco_profile = profiles[Vendor.CISCO_IOSXR]
+        self.assertEqual(cisco_profile.image, "xrv9000")
+        self.assertEqual(cisco_profile.simulation_adaptation.mode, "stable")
+        self.assertEqual(cisco_profile.simulation_adaptation.bfd_minimum_interval_ms, 300)
+        self.assertIs(cisco_profile.param_adjustment, cisco_profile.simulation_adaptation)
+
+        source = self.simulation_config("iosxr.cfg")
+        document = CiscoDocument(source)
+        outcome = document.adapt_to_simulation(
+            SimulationAdaptationPolicy(mode="off"),
+            {"GigabitEthernet0/0/0/0"},
+        )
+        self.assertEqual(outcome.total, 0)
+        self.assertEqual(document.render(), source)
+
+        with tempfile.TemporaryDirectory() as directory:
+            legacy_profile = Path(directory) / "legacy-profile.yaml"
+            legacy_profile.write_text(
+                "profiles:\n"
+                "  cisco_iosxr:\n"
+                "    param_adjustment:\n"
+                "      mode: off\n",
+                encoding="utf-8",
+            )
+            legacy = load_profiles(legacy_profile)
+            self.assertEqual(legacy[Vendor.CISCO_IOSXR].simulation_adaptation.mode, "off")
 
     def test_junos_bundle_nni_uni_and_auth(self):
         topology, config_dir = self.conversion_fixture("junos_bundle")
@@ -160,12 +251,49 @@ class ConversionTest(unittest.TestCase):
             self.assertEqual(report["summary"]["active_links"], 2)
             self.assertEqual(report["summary"]["skipped_links"], 1)
 
+    def test_skipped_nni_is_not_reclassified_as_uni(self):
+        """预检跳过的跨范围链路仍保留 NNI 角色，不进入 UNI 汇聚。"""
+        topology, config_dir = self.conversion_fixture("iosxr_duplicate_vlan")
+        with tempfile.TemporaryDirectory() as directory:
+            temporary_topology = Path(directory) / "topology.xlsx"
+            workbook = load_workbook(topology)
+            workbook["设备列表"].append(["H1", "Huawei", None])
+            workbook["链接表"].cell(2, 3).value = "H1"
+            workbook["链接表"].cell(2, 4).value = "GigabitEthernet0/0/0"
+            workbook.save(temporary_topology)
+
+            output = Path(directory) / "output"
+            context = convert(temporary_topology, config_dir, output)
+            self.assertFalse(context.has_errors)
+            mappings = context.devices["R1"].mappings
+            self.assertTrue(
+                any(
+                    item.role == "NNI"
+                    and item.action == "skip"
+                    and item.source_interface == "GigabitEthernet0/0/0/5"
+                    for item in mappings
+                )
+            )
+            self.assertFalse(
+                any(
+                    item.role == "UNI"
+                    and item.source_interface == "GigabitEthernet0/0/0/5"
+                    for item in mappings
+                )
+            )
+            report = json.loads((output / "report.json").read_text(encoding="utf-8"))
+            validation = next(
+                event for event in report["events"] if event["kind"] == "topology-preflight"
+            )
+            self.assertEqual(validation["active_links"], 0)
+            self.assertEqual(validation["skipped_links"], 1)
+
     def test_mandatory_washing_removes_management_access_and_snmp(self):
         """默认只清管理面必删项，协议认证和业务能力继续保留。"""
         policy = WashingPolicy()
 
         cisco_document = CiscoDocument(self.washing_config("iosxr.cfg"))
-        cisco_cleanup = cisco_document.clean_authentication(policy)
+        cisco_cleanup = cisco_document.clean_management_access()
         cisco_document.add_lab_account()
         cisco = cisco_document.render()
         self.assertNotIn("username old-user", cisco)
@@ -187,7 +315,7 @@ class ConversionTest(unittest.TestCase):
         self.assertEqual(cisco_cleanup.removed["ssh"], 2)
 
         junos_document = JunosDocument(self.washing_config("junos.cfg"))
-        junos_cleanup = junos_document.clean_authentication(policy)
+        junos_cleanup = junos_document.clean_management_access()
         junos_document.add_lab_account()
         junos = junos_document.render()
         self.assertNotIn("old-user", junos)
@@ -215,8 +343,10 @@ class ConversionTest(unittest.TestCase):
         policy = load_washing_policy(FIXTURES / "washing_configs" / "all_optional.yaml")
 
         cisco_document = CiscoDocument(self.washing_config("iosxr.cfg"))
-        cisco_document.clean_authentication(policy)
+        cisco_document.clean_optional_features(policy)
         cisco = cisco_document.render()
+        self.assertIn("username old-user", cisco)
+        self.assertIn("tacacs-server", cisco)
         self.assertNotIn("key chain OSPF_KEYS", cisco)
         self.assertNotIn("authentication message-digest", cisco)
         self.assertNotIn("crypto pki", cisco)
@@ -225,8 +355,10 @@ class ConversionTest(unittest.TestCase):
         self.assertNotIn("flow monitor", cisco)
 
         junos_document = JunosDocument(self.washing_config("junos.cfg"))
-        junos_document.clean_authentication(policy)
+        junos_document.clean_optional_features(policy)
         junos = junos_document.render()
+        self.assertIn("old-user", junos)
+        self.assertIn("radius-server", junos)
         self.assertNotIn("authentication-key-chains", junos)
         self.assertNotIn("simple-password OSPFSECRET", junos)
         self.assertNotIn("ca-profile PROD-CA", junos)
@@ -247,6 +379,22 @@ class ConversionTest(unittest.TestCase):
             self.assertFalse(context.has_errors)
             self.assertTrue(context.washing_policy.protocol_authentication)
             self.assertTrue(context.washing_policy.flow_statistics)
+            optional_events = [
+                event for event in context.events if event["kind"] == "optional-washing"
+            ]
+            self.assertTrue(optional_events)
+            self.assertIn("protocol_authentication", optional_events[0]["enabled"])
+            authentication_events = [
+                event for event in context.events if event["kind"] == "authentication"
+            ]
+            self.assertTrue(authentication_events)
+            self.assertNotIn("pki", authentication_events[0]["removed_by_type"])
+
+        combined = CiscoDocument(self.washing_config("iosxr.cfg"))
+        combined.clean_authentication(policy)
+        combined_rendered = combined.render()
+        self.assertNotIn("username old-user", combined_rendered)
+        self.assertNotIn("crypto pki", combined_rendered)
 
     def test_cisco_bundle_thresholds_are_removed_when_flattened(self):
         """Bundle 迁移到普通物理口时不遗留 minimum-active 或 LACP。"""

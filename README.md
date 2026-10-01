@@ -2,7 +2,7 @@
 
 将 IOS XR 和 Junos 大括号配置转换为适用于 GNS3 XRv9000/vMX 的配置。需求基线见 [docs/requirements.md](docs/requirements.md)，完整转换过程见 [docs/processing-flow.md](docs/processing-flow.md)。
 
-转换前会展开常见的 IOS XR `group/apply-group` 和 Junos `groups/apply-groups` 配置，使继承的接口及认证配置进入后续 NNI、UNI、Auth 责任链。已应用 group 无法静态求值时转换失败，不输出可能不完整的设备配置。
+拓扑预检后会展开常见的 IOS XR `group/apply-group` 和 Junos `groups/apply-groups` 配置，使继承的接口及认证配置进入后续转换。已应用 group 无法静态求值时转换失败，不输出可能不完整的设备配置。
 
 group 展开是事务式的，并遵循显式配置、嵌套层级和 group 列表顺序的厂商优先级。冲突详情写入 `report.json` 的 `group_conflicts` 字段。
 
@@ -11,7 +11,7 @@ group 展开是事务式的，并遵循显式配置、嵌套层级和 group 列�
 - `parsers/cisco_iosxr.py`：只负责 IOS XR 的语法、group/apply-group、接口与认证改写。
 - `parsers/juniper_junos.py`：只负责 Junos 大括号语法、groups/apply-groups、接口与认证改写。
 - `parsers/common.py`：只放接口数据结构以及父接口、子接口编号等无厂商语义的工具。
-- `handlers.py`：保留 Group、NNI、UNI、Auth 责任链，只通过统一文档接口调度，不再包含厂商分支。
+- `handlers.py`：保留拓扑预检、Group、NNI、UNI、引用更新、可选能力清洗、Auth、SimulationAdaptation 责任链，只通过统一文档接口调度，不包含厂商分支。
 
 `documents.py` 仅作为旧导入路径的兼容门面；新增厂商逻辑应放入各自模块。
 
@@ -43,9 +43,11 @@ config-adaptor convert \
   --washing-policy config/washing_policy.example.yaml
 ```
 
-`--profiles` 可调整两类镜像的数据接口列表；列表最后一个接口用于 UNI，其余接口可分配给 NNI。需要增加保守清洗规则时传入 `--rules config/cleaning_rules.example.yaml`。
+`--profiles` 可配置镜像名称/版本、数据接口列表和模拟参数适配策略；列表最后一个接口用于 UNI，其余接口可分配给 NNI。需要增加保守清洗规则时传入 `--rules config/cleaning_rules.example.yaml`。
 
-管理账号、AAA/TACACS/RADIUS、SSH/Telnet 网络管理服务、SSH 信任、SNMP 以及聚合扁平化后的 LACP/门限属性始终清理。`--washing-policy` 同时控制 group 处理模式和默认关闭的协议认证、PKI、硬件、NAT、流量统计扩展清洗；示例文件中的可选清洗开关只有显式改为 `true` 才生效。
+每个镜像 Profile 的 `simulation_adaptation.mode` 支持 `off`、`compatible` 和 `stable`。默认 `stable` 仅保证已映射数据口启用、删除这些目标口上的物理硬件属性，并将配置中已经存在且低于安全下限的 BFD interval/multiplier 调高；不会自动开启 BFD，也不会修改 OSPF、IS-IS 或 BGP 的业务定时器。全部修改写入 `report.json` 的 `simulation-adaptation` 事件。旧 `param_adjustment` YAML 节点仍兼容读取，但不能与新节点同时配置。
+
+管理账号、AAA/TACACS/RADIUS、SSH/Telnet 网络管理服务、SSH 信任、SNMP 以及聚合扁平化后的 LACP/门限属性始终清理。协议认证、PKI、硬件、NAT 和流量统计由独立的可选能力清洗阶段处理；`--washing-policy` 中的对应开关只有显式改为 `true` 才生效。
 
 group 默认采用 `relevant` 模式：只静态展开会影响接口、聚合、协议接口引用、管理认证以及已开启可选清洗范围的 group；日志、遥测等无关 group 连同其应用语句原样保留，也不会因其无法静态求值而阻断转换。`strict` 保持全量展开和全量校验，`preserve` 则完全跳过 group 展开。模式在策略文件的 `group_handling.mode` 中配置。
 
