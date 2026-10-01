@@ -2,14 +2,12 @@
 
 from __future__ import annotations
 
-import re
 from dataclasses import dataclass
 from pathlib import Path
-from typing import Any
 
 import yaml
 
-from .models import ConversionContext, DeviceContext
+from .models import ConversionContext
 
 
 @dataclass(slots=True)
@@ -47,53 +45,6 @@ def load_rules(path: Path | None) -> list[CleaningRule]:
     return rules
 
 
-def _apply_cisco(device: DeviceContext, rule: CleaningRule) -> int:
-    """在 IOS XR 顶层配置块上应用规则并返回命中数。"""
-    pattern = re.compile(rule.match, re.IGNORECASE)
-    hits = 0
-    for block in device.document.blocks:
-        if not block.active or not pattern.search(block.header.strip()):
-            continue
-        hits += 1
-        if rule.action == "delete":
-            block.active = False
-        elif rule.action == "replace":
-            block.header = pattern.sub(rule.value or "", block.header)
-        elif rule.action == "mask":
-            block.header = pattern.sub("<masked>", block.header)
-    return hits
-
-
-def _apply_junos(device: DeviceContext, rule: CleaningRule) -> int:
-    """递归遍历 Junos 层级树，并同时匹配路径和原始语句。"""
-    pattern = re.compile(rule.match, re.IGNORECASE)
-    hits = 0
-
-    def walk(node: Any, path: list[str]) -> None:
-        """深度优先遍历，path 保存当前配置层级。"""
-        nonlocal hits
-        if node is device.document.root:
-            next_path = path
-        else:
-            component = device.document._base_header(node.header).split(maxsplit=1)[0].rstrip(";")
-            next_path = [*path, component] if component else path
-            dotted = ".".join(next_path)
-            if node.active and (pattern.search(dotted) or pattern.search(node.header)):
-                hits += 1
-                if rule.action == "delete":
-                    node.active = False
-                elif rule.action == "replace":
-                    node.header = pattern.sub(rule.value or "", node.header)
-                elif rule.action == "mask":
-                    node.header = "<masked>;"
-        if node.children:
-            for child in node.children:
-                walk(child, next_path)
-
-    walk(device.document.root, [])
-    return hits
-
-
 def apply_rules(context: ConversionContext, rules: list[CleaningRule]) -> None:
     """按设备厂商执行规则，并把命中信息写入转换事件。"""
     for device_name in sorted(context.devices):
@@ -101,10 +52,7 @@ def apply_rules(context: ConversionContext, rules: list[CleaningRule]) -> None:
         for rule in rules:
             if rule.vendor != device.device.vendor.value:
                 continue
-            if device.device.vendor.value == "cisco_iosxr":
-                hits = _apply_cisco(device, rule)
-            else:
-                hits = _apply_junos(device, rule)
+            hits = device.document.apply_cleaning_rule(rule.match, rule.action, rule.value)
             if hits:
                 context.add_event(
                     "cleaning-rule",

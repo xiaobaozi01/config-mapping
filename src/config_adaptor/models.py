@@ -5,7 +5,10 @@ from __future__ import annotations
 from dataclasses import asdict, dataclass, field
 from enum import StrEnum
 from pathlib import Path
-from typing import Any
+from typing import TYPE_CHECKING, Any
+
+if TYPE_CHECKING:
+    from .vendor import VendorConfiguration
 
 
 class Vendor(StrEnum):
@@ -155,7 +158,7 @@ class DeviceContext:
     """单台设备在转换过程中的文档、规格、映射和诊断信息。"""
     device: Device
     config_path: Path
-    document: Any
+    document: VendorConfiguration
     profile: ImageProfile
     mappings: list[InterfaceMapping] = field(default_factory=list)
     warnings: list[str] = field(default_factory=list)

@@ -2,69 +2,16 @@
 
 from __future__ import annotations
 
-from abc import ABC, abstractmethod
 from collections import defaultdict
-from dataclasses import dataclass
 
+from .application.nni import NniEndpointPlan, plan_nni_components
+from .application.pipeline import ConversionPipeline
+from .application.uni import VlanSpaceExhausted, allocate_uni_vlans
 from .parsers import InterfaceKind, interface_parent, interface_unit
 from .models import ConversionContext, InterfaceMapping, Link
 
 
-class ConversionHandler(ABC):
-    """责任链基类：当前阶段成功后才把上下文传给下一阶段。"""
-
-    def __init__(self) -> None:
-        self._next: ConversionHandler | None = None
-
-    def set_next(self, handler: "ConversionHandler") -> "ConversionHandler":
-        """连接下一处理器，并返回它以支持链式组装。"""
-        self._next = handler
-        return handler
-
-    def handle(self, context: ConversionContext) -> ConversionContext:
-        """执行本阶段；出现错误时立即截断后续变更。"""
-        self.process(context)
-        if self._next and not context.has_errors:
-            return self._next.handle(context)
-        return context
-
-    @abstractmethod
-    def process(self, context: ConversionContext) -> None:
-        """由具体处理器实现本阶段的原地转换。"""
-        raise NotImplementedError
-
-
-class _UnionFind:
-    """用并查集把属于同一聚合链路的多行 Excel 成员归为一组。"""
-    def __init__(self, values: list[int]):
-        self.parent = {value: value for value in values}
-
-    def find(self, value: int) -> int:
-        """查找集合代表，并做路径压缩。"""
-        while self.parent[value] != value:
-            self.parent[value] = self.parent[self.parent[value]]
-            value = self.parent[value]
-        return value
-
-    def union(self, left: int, right: int) -> None:
-        """合并两个链路行号所属的集合。"""
-        left_root, right_root = self.find(left), self.find(right)
-        if left_root != right_root:
-            self.parent[right_root] = left_root
-
-
-@dataclass(slots=True)
-class _EndpointPlan:
-    """某设备端点从源接口迁移到目标物理口的执行计划。"""
-    logical_sources: list[str]
-    bundles: list[str]
-    target: str
-    link_rows: list[int]
-    # 同一逻辑聚合与同一对端之间可能有多个 Excel 物理成员口。
-    source_members: list[str]
-
-
-class TopologyPreflightHandler(ConversionHandler):
+class TopologyPreflightHandler:
     """在任何配置改写前校验链路端点，并确定后续阶段可消费的链路。"""
 
     def process(self, context: ConversionContext) -> None:
@@ -122,7 +69,7 @@ class TopologyPreflightHandler(ConversionHandler):
         )
 
 
-class GroupExpansionHandler(ConversionHandler):
+class GroupExpansionHandler:
     """在接口分类前展开厂商 group，确保继承配置也参与后续转换。"""
 
     def process(self, context: ConversionContext) -> None:
@@ -168,7 +115,7 @@ class GroupExpansionHandler(ConversionHandler):
                 context.errors.append(message)
 
 
-class InterfaceClassificationHandler(ConversionHandler):
+class InterfaceClassificationHandler:
     """审计厂商接口分类，未知类型保留配置但不参与端口映射。"""
 
     def process(self, context: ConversionContext) -> None:
@@ -198,7 +145,7 @@ class InterfaceClassificationHandler(ConversionHandler):
                 )
 
 
-class NNIHandler(ConversionHandler):
+class NNIHandler:
     """识别并扁平化聚合 NNI，再分配目标镜像物理接口。"""
 
     def process(self, context: ConversionContext) -> None:
@@ -235,46 +182,12 @@ class NNIHandler(ConversionHandler):
 
         # 仅在“同一对端设备”范围内合并聚合成员。同一 Bundle/ae
         # 的成员若连到不同对端，视为 M-LAG，必须分配不同模拟器物理口。
-        union = _UnionFind([link.row for link in supported_links])
-        bundle_rows: dict[tuple[tuple[str, str], str, str], list[int]] = defaultdict(list)
-        for link in supported_links:
-            device_pair = tuple(sorted((link.a_device, link.z_device)))
-            for device_name, _ in link.endpoints():
-                bundle = bundles[(link.row, device_name)]
-                if bundle:
-                    bundle_rows[(device_pair, device_name, bundle)].append(link.row)
-        for rows in bundle_rows.values():
-            for row in rows[1:]:
-                union.union(rows[0], row)
-
-        components: dict[int, list[int]] = defaultdict(list)
-        for link in supported_links:
-            components[union.find(link.row)].append(link.row)
-        component_rows: dict[int, list[int]] = {}
-        # 每个“聚合+对端”组只保留最早的物理成员行。
-        # 合并组内的两端仍必须各自指向唯一聚合；否则多棵无关
-        # 物理口配置无法保守合并。M-LAG 只放宽“同聚合跨不同对端”。
-        for rows in components.values():
-            keep = min(rows)
-            component_rows[keep] = sorted(rows)
-            if len(rows) > 1:
-                row_links = [original_by_row[row] for row in rows]
-                invalid_devices: list[str] = []
-                for device_name in sorted(
-                    {name for row_link in row_links for name, _ in row_link.endpoints()}
-                ):
-                    local_bundles = [bundles.get((row, device_name)) for row in rows]
-                    if any(value is None for value in local_bundles) or len(set(local_bundles)) != 1:
-                        invalid_devices.append(device_name)
-                if invalid_devices:
-                    message = (
-                        f"聚合 NNI 行 {sorted(rows)} 在同一对端组内的成员关系不一致，"
-                        f"涉及设备: {', '.join(invalid_devices)}"
-                    )
-                    context.errors.append(message)
-            for row in sorted(rows):
-                if row == keep:
-                    continue
+        component_plan = plan_nni_components(supported_links, bundles)
+        context.errors.extend(component_plan.errors)
+        component_rows = component_plan.component_rows
+        # 规划阶段不修改输入；只有计划通过校验后才把冗余链路标为 inactive。
+        if not context.has_errors:
+            for row, keep in component_plan.redundant_rows.items():
                 link = original_by_row[row]
                 link.active = False
                 link.skip_reason = f"聚合 NNI 扁平化，保留第 {keep} 行"
@@ -291,7 +204,7 @@ class NNIHandler(ConversionHandler):
 
         # 按原 Excel 行号稳定分配镜像接口，确保相同输入始终得到相同结果。
         active_links = sorted((link for link in supported_links if link.active), key=lambda item: item.row)
-        plans: dict[str, list[_EndpointPlan]] = defaultdict(list)
+        plans: dict[str, list[NniEndpointPlan]] = defaultdict(list)
         allocated: dict[str, int] = defaultdict(int)
         for link in active_links:
             for device_name, _ in link.endpoints():
@@ -315,9 +228,9 @@ class NNIHandler(ConversionHandler):
                     )
                 )
                 plans[device_name].append(
-                    _EndpointPlan(
-                        logical_sources=logical_sources,
-                        bundles=list(
+                    NniEndpointPlan(
+                        logical_sources=tuple(logical_sources),
+                        bundles=tuple(
                             dict.fromkeys(
                                 bundle
                                 for row in rows
@@ -325,11 +238,11 @@ class NNIHandler(ConversionHandler):
                             )
                         ),
                         target=target,
-                        link_rows=rows,
-                        source_members=[
+                        link_rows=tuple(rows),
+                        source_members=tuple(
                             resolved[(row, device_name)]
                             for row in rows
-                        ],
+                        ),
                     )
                 )
                 link.set_interface_for(device_name, target)
@@ -338,7 +251,7 @@ class NNIHandler(ConversionHandler):
             device = context.devices[device_name]
             document = device.document
             members = member_maps[device_name]
-            plans_by_logical: dict[str, list[_EndpointPlan]] = defaultdict(list)
+            plans_by_logical: dict[str, list[NniEndpointPlan]] = defaultdict(list)
             for plan in device_plans:
                 for logical in plan.logical_sources:
                     plans_by_logical[logical].append(plan)
@@ -429,7 +342,7 @@ class NNIHandler(ConversionHandler):
                 document.rename_interface_tree(placeholder, target, strip_bundle=True)
 
 
-class UNIHandler(ConversionHandler):
+class UNIHandler:
     """把剩余的有效 UNI 业务汇聚到最后一个接口的 QinQ 子接口。"""
 
     def process(self, context: ConversionContext) -> None:
@@ -511,23 +424,12 @@ class UNIHandler(ConversionHandler):
                 continue
 
             # interface_specs 保留源配置顺序，业务映射也沿用该顺序。
-            used_vlans: set[int] = set()
-            vlan_plan: dict[str, int] = {}
-            # 优先沿用合法且未冲突的原 VLAN，否则从 2 起分配最小空闲值。
-            for spec in source_specs:
-                requested = spec.vlan
-                if requested is not None and 2 <= requested <= 4094 and requested not in used_vlans:
-                    vlan = requested
-                else:
-                    vlan = next((candidate for candidate in range(2, 4095) if candidate not in used_vlans), 0)
-                if not vlan:
-                    message = f"设备 {device_name} 的 UNI 数量超过 VLAN 可用空间"
-                    device.errors.append(message)
-                    context.errors.append(message)
-                    break
-                used_vlans.add(vlan)
-                vlan_plan[spec.name] = vlan
-            if device.errors:
+            try:
+                vlan_plan = allocate_uni_vlans(source_specs)
+            except VlanSpaceExhausted as exc:
+                message = f"设备 {device_name} 的 {exc}"
+                device.errors.append(message)
+                context.errors.append(message)
                 continue
 
             source_parents = list(dict.fromkeys(spec.parent for spec in source_specs))
@@ -578,7 +480,7 @@ class UNIHandler(ConversionHandler):
                 )
 
             for parent, placeholder in placeholder_by_parent.items():
-                document.finalize_uni_source(placeholder) if hasattr(document, "finalize_uni_source") else document.remove_interface(placeholder, True)
+                document.finalize_uni_source(placeholder)
                 # 只有逻辑单元、没有独立父接口块时，仍需记录父级引用映射。
                 if not any(spec.name == parent for spec in source_specs):
                     device.mappings.append(
@@ -595,7 +497,7 @@ class UNIHandler(ConversionHandler):
             document.ensure_parent_interface(device.profile.uni_parent)
 
 
-class ReferenceRewriteHandler(ConversionHandler):
+class ReferenceRewriteHandler:
     """在接口迁移完成后统一更新协议、策略和业务中的接口引用。"""
 
     def process(self, context: ConversionContext) -> None:
@@ -605,7 +507,7 @@ class ReferenceRewriteHandler(ConversionHandler):
             device.document.replace_references(device.replacement_map)
 
 
-class OptionalFeatureWashingHandler(ConversionHandler):
+class OptionalFeatureWashingHandler:
     """按显式策略清理会改变业务能力的可选配置类别。"""
 
     def process(self, context: ConversionContext) -> None:
@@ -635,7 +537,7 @@ class OptionalFeatureWashingHandler(ConversionHandler):
             )
 
 
-class AuthWashingHandler(ConversionHandler):
+class AuthWashingHandler:
     """清除原认证和授权体系，再添加统一实验账号。"""
 
     def process(self, context: ConversionContext) -> None:
@@ -653,7 +555,7 @@ class AuthWashingHandler(ConversionHandler):
             )
 
 
-class SimulationAdaptationHandler(ConversionHandler):
+class SimulationAdaptationHandler:
     """根据目标镜像 Profile 执行保守、可审计的模拟参数适配。"""
 
     def process(self, context: ConversionContext) -> None:
@@ -684,18 +586,23 @@ class SimulationAdaptationHandler(ConversionHandler):
             )
 
 
-def build_default_chain() -> ConversionHandler:
-    """按强制顺序组装默认责任链并返回链首。"""
-    topology_preflight = TopologyPreflightHandler()
-    groups = GroupExpansionHandler()
-    classification = InterfaceClassificationHandler()
-    nni = NNIHandler()
-    uni = UNIHandler()
-    references = ReferenceRewriteHandler()
-    optional_washing = OptionalFeatureWashingHandler()
-    auth_washing = AuthWashingHandler()
-    simulation_adaptation = SimulationAdaptationHandler()
-    topology_preflight.set_next(groups).set_next(classification).set_next(nni).set_next(uni).set_next(
-        references
-    ).set_next(optional_washing).set_next(auth_washing).set_next(simulation_adaptation)
-    return topology_preflight
+def build_default_pipeline() -> ConversionPipeline:
+    """按强制顺序组装默认转换流水线。"""
+    return ConversionPipeline(
+        [
+            TopologyPreflightHandler(),
+            GroupExpansionHandler(),
+            InterfaceClassificationHandler(),
+            NNIHandler(),
+            UNIHandler(),
+            ReferenceRewriteHandler(),
+            OptionalFeatureWashingHandler(),
+            AuthWashingHandler(),
+            SimulationAdaptationHandler(),
+        ]
+    )
+
+
+def build_default_chain() -> ConversionPipeline:
+    """兼容旧入口；新代码使用 ``build_default_pipeline``。"""
+    return build_default_pipeline()

@@ -1,6 +1,6 @@
 # GNS3 配置自适应
 
-将 IOS XR 和 Junos 大括号配置转换为适用于 GNS3 XRv9000/vMX 的配置。需求基线见 [docs/requirements.md](docs/requirements.md)，完整转换过程见 [docs/processing-flow.md](docs/processing-flow.md)。
+将 IOS XR 和 Junos 大括号配置转换为适用于 GNS3 XRv9000/vMX 的配置。第一次接触项目请从 [新人导读](docs/onboarding-guide.md) 开始；需求基线见 [docs/requirements.md](docs/requirements.md)，完整转换过程见 [docs/processing-flow.md](docs/processing-flow.md)。
 
 拓扑预检后会展开常见的 IOS XR `group/apply-group` 和 Junos `groups/apply-groups` 配置，使继承的接口及认证配置进入后续转换。已应用 group 无法静态求值时转换失败，不输出可能不完整的设备配置。
 
@@ -8,10 +8,18 @@ group 展开是事务式的，并遵循显式配置、嵌套层级和 group 列�
 
 ## 厂商实现边界
 
-- `parsers/cisco_iosxr.py`：只负责 IOS XR 的语法、group/apply-group、接口与认证改写。
-- `parsers/juniper_junos.py`：只负责 Junos 大括号语法、groups/apply-groups、接口与认证改写。
+- `vendor/api.py`：应用层依赖的稳定厂商配置协议；厂商 AST 不向流程层泄漏。
+- `parsers/cisco_iosxr.py`：保留 IOS XR 语法模型、解析/渲染和兼容门面。
+- `parsers/juniper_junos.py`：保留 Junos 大括号语法模型、解析/渲染和兼容门面。
+- `vendor/*/groups.py`：分别封装事务式 Group 展开、继承优先级和冲突检测。
+- `vendor/*/interfaces.py`：分别封装接口识别、业务闭包分析及 NNI/UNI 接口树修改。
+- `vendor/*/cleaning.py`：分别封装 Cisco/Junos 的管理面与可选能力清洗。
+- `vendor/*/simulation.py`：分别封装目标镜像参数适配。
 - `parsers/common.py`：只放接口数据结构以及父接口、子接口编号等无厂商语义的工具。
-- `handlers.py`：保留拓扑预检、Group、NNI、UNI、引用更新、可选能力清洗、Auth、SimulationAdaptation 责任链，只通过统一文档接口调度，不包含厂商分支。
+- `application/nni/planner.py`：纯计算聚合链路分组与 M-LAG 边界，不修改配置或拓扑。
+- `application/uni/vlan_allocator.py`：封装 UNI VLAN 唯一性和冲突分配规则。
+- `application/pipeline.py`：显式组合转换阶段，并在首次错误后停止。
+- `handlers.py`：保留拓扑预检、Group、NNI、UNI、引用更新、清洗和模拟适配阶段，只通过统一厂商接口调度。
 
 `documents.py` 仅作为旧导入路径的兼容门面；新增厂商逻辑应放入各自模块。
 

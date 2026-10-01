@@ -9,7 +9,7 @@ from pathlib import Path
 from .constants import LAB_PASSWORD, LAB_USERNAME
 from .parsers import parse_document
 from .excel_io import load_topology, write_adapted_topology
-from .handlers import build_default_chain
+from .handlers import build_default_pipeline
 from .models import ConversionContext, DeviceContext, Vendor
 from .profiles import load_profiles
 from .rules import apply_rules, load_rules
@@ -107,7 +107,7 @@ def convert(
     context = prepare_context(topology_path, config_dir, profiles_path, washing_policy_path)
     if not context.errors:
         # 先预检拓扑；group 展开和接口迁移完成后再执行清洗及镜像参数适配。
-        build_default_chain().handle(context)
+        build_default_pipeline().execute(context)
         # 用户扩展规则放在核心转换之后，避免规则改变接口分类依据。
         apply_rules(context, load_rules(rules_path))
     write_outputs(context, output_dir)

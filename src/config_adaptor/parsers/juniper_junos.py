@@ -1,14 +1,12 @@
-"""Juniper Junos 大括号配置解析、groups 展开、接口改写和分类清洗。"""
+"""Juniper Junos 语法模型及面向应用层的兼容门面。"""
 
 from __future__ import annotations
 
 import copy
-import fnmatch
 import re
 from dataclasses import dataclass
 from typing import Iterable
 
-from ..constants import JUNOS_LAB_PASSWORD_HASH, LAB_USERNAME
 from ..models import SimulationAdaptationPolicy, WashingPolicy
 from .common import (
     CleanupOutcome,
@@ -17,7 +15,6 @@ from .common import (
     InterfaceSpec,
     SimulationAdaptationOutcome,
     interface_parent,
-    interface_unit,
     normalized_command as _normalized_command,
 )
 
@@ -222,654 +219,43 @@ class JunosDocument:
                 return int(match.group(1))
         return None
 
-    @classmethod
-    def _header_matches(cls, pattern_header: str, target_header: str) -> bool:
-        """匹配精确节点名或 ``<ge-*>`` 一类 Junos 通配节点。"""
-        pattern = cls._base_header(pattern_header)
-        target = cls._base_header(target_header)
-        if "<" not in pattern:
-            return pattern == target
-        pieces: list[str] = []
-        cursor = 0
-        for match in re.finditer(r"<([^>]+)>", pattern):
-            pieces.append(re.escape(pattern[cursor : match.start()]))
-            pieces.append(fnmatch.translate(match.group(1)).removesuffix(r"\Z"))
-            cursor = match.end()
-        pieces.append(re.escape(pattern[cursor:]))
-        try:
-            return bool(re.fullmatch("".join(pieces), target))
-        except re.error:
-            return False
-
-    @classmethod
-    def _group_names(cls, statement: str, keyword: str) -> list[str]:
-        """解析 apply-groups 或 apply-groups-except 的名称列表。"""
-        base = cls._base_header(statement).rstrip(";").strip()
-        match = re.match(rf"{re.escape(keyword)}\s+(.+)$", base)
-        if not match:
-            return []
-        value = match.group(1).strip().strip("[]").strip()
-        return [token.strip("'\"") for token in value.split() if token]
-
-    @classmethod
-    def _rewrite_group_control(cls, statement: str, keyword: str, remaining: list[str]) -> str | None:
-        """从 apply-groups 语句中只移除已经展开的 group。"""
-        base = cls._base_header(statement)
-        match = re.match(rf"({re.escape(keyword)})\s+(.+?)\s*;\s*$", base)
-        if not match:
-            return statement
-        if not remaining:
-            return None
-        prefix = statement[: statement.find(base)] if base in statement else ""
-        original_value = match.group(2).strip()
-        value = " ".join(remaining)
-        if original_value.startswith("[") and original_value.endswith("]"):
-            value = f"[ {value} ]"
-        return f"{prefix}{match.group(1)} {value};"
-
-    @classmethod
-    def _group_path_relevant(cls, path: list[str], policy: WashingPolicy) -> bool:
-        """判断 Junos 路径是否影响接口迁移或已启用的清洗范围。"""
-        if not path:
-            return False
-        normalized = [_normalized_command(cls._base_header(component)) for component in path]
-        top = normalized[0]
-        if top in {
-            "interfaces",
-            "protocols",
-            "routing-instances",
-            "logical-systems",
-            "bridge-domains",
-            "vlans",
-            "l2vpn",
-            "routing-options",
-        }:
-            return True
-        if top == "snmp":
-            return True
-        if top == "system" and len(normalized) > 1:
-            second = normalized[1]
-            if second.startswith(
-                (
-                    "login",
-                    "root-authentication",
-                    "authentication-order",
-                    "radius-",
-                    "tacplus-",
-                    "accounting",
-                )
-            ):
-                return True
-            if second == "services" and len(normalized) > 2:
-                return normalized[2].startswith(("ssh", "telnet", "netconf"))
-        if top == "security" and len(normalized) > 1:
-            second = normalized[1]
-            if second == "ssh-known-hosts":
-                return True
-            if policy.protocol_authentication and second == "authentication-key-chains":
-                return True
-            if policy.pki and second in {"pki", "certificates"}:
-                return True
-            if policy.nat and second in {"nat", "services"}:
-                return True
-        if policy.hardware and top == "chassis":
-            return True
-        if policy.nat and top in {"services", "service-set"}:
-            return True
-        if policy.flow_statistics and top == "forwarding-options":
-            return True
-        return False
-
-    def _group_tree_relevant(self, group: JunosNode, policy: WashingPolicy) -> bool:
-        """检查 group 定义中是否包含需要物化后再处理的配置。"""
-        def walk(items: list[JunosNode], path: list[str]) -> bool:
-            for item in items:
-                if not item.active:
-                    continue
-                current = [*path, self._base_header(item.header)]
-                if self._group_path_relevant(current, policy):
-                    return True
-                if item.children is not None and walk(item.children, current):
-                    return True
-            return False
-
-        return walk(group.children or [], [])
-
-    @staticmethod
-    def _junos_selector_specificity(header: str) -> tuple[int, str]:
-        """以通配表达式中的字面量长度衡量选择器具体程度。"""
-        literal = re.sub(r"<([^>]+)>", lambda item: re.sub(r"[*?\[\]]", "", item.group(1)), header)
-        return (len(literal), header)
-
-    def _group_payload_for_path(self, group: JunosNode, path: list[str]) -> list[JunosNode]:
-        """沿配置路径找到 group 在该层级应继承的子节点。"""
-        assert group.children is not None
-        candidates = group.children
-        for component in path:
-            matches = [
-                item
-                for item in candidates
-                if item.active and item.is_block and self._header_matches(item.header, component)
-            ]
-            if not matches:
-                return []
-            matches.sort(key=lambda item: (-self._junos_selector_specificity(item.header)[0], item.header))
-            candidates = [child for match in matches for child in (match.children or [])]
-        return candidates
-
-    @staticmethod
-    def _record_junos_conflict(
-        outcome: GroupExpansionOutcome,
-        path: list[str],
-        identity: str,
-        winner: JunosNode,
-        loser: JunosNode,
-    ) -> None:
-        """记录值不同的 group 冲突，完全相同的重复语句不记录。"""
-        if _normalized_command(winner.header) == _normalized_command(loser.header):
-            return
-        outcome.conflicts.append(
-            {
-                "vendor": "juniper_junos",
-                "path": " / ".join(path) or "<root>",
-                "key": identity,
-                "winner_source": winner.origin,
-                "winner_value": winner.header,
-                "loser_source": loser.origin,
-                "loser_value": loser.header,
-            }
-        )
-
-    def _merge_junos_group_children(
-        self,
-        target: JunosNode,
-        source_children: list[JunosNode],
-        group_name: str,
-        rank: tuple[int, ...],
-        path: list[str],
-        outcome: GroupExpansionOutcome,
-    ) -> None:
-        """按显式、嵌套层级和列表顺序合并 group 子节点。"""
-        assert target.children is not None
-        for source in source_children:
-            if not source.active or not source.header:
-                continue
-            if self._group_names(source.header, "apply-groups") or self._group_names(
-                source.header, "apply-groups-except"
-            ):
-                # Group 控制语句由 expand_groups 的依赖求值器处理，不作为
-                # 普通配置写入目标树。
-                continue
-            if source.is_block:
-                matches = [
-                    item
-                    for item in target.children
-                    if item.active and item.is_block and self._header_matches(source.header, item.header)
-                ]
-                if matches or "<" in source.header:
-                    continue
-                target.children.append(
-                    JunosNode(
-                        source.header,
-                        [],
-                        origin=f"group:{group_name}",
-                        rank=rank,
-                    )
-                )
-                continue
-
-            identity = _junos_statement_identity(self._base_header(source.header))
-            existing = next(
-                (
-                    item
-                    for item in target.children
-                    if item.active
-                    and not item.is_block
-                    and _junos_statement_identity(self._base_header(item.header)) == identity
-                ),
-                None,
-            )
-            candidate = JunosNode(
-                source.header,
-                origin=f"group:{group_name}",
-                rank=rank,
-            )
-            if existing is None:
-                target.children.append(candidate)
-                continue
-            if existing.origin != "explicit" and rank > existing.rank:
-                self._record_junos_conflict(outcome, path, identity, candidate, existing)
-                existing.header = candidate.header
-                existing.origin = candidate.origin
-                existing.rank = candidate.rank
-            else:
-                self._record_junos_conflict(outcome, path, identity, existing, candidate)
-
     def expand_groups(
         self,
         known_interfaces: Iterable[str],
         mode: str = "relevant",
         policy: WashingPolicy | None = None,
     ) -> GroupExpansionOutcome:
-        """事务式展开 Junos groups，并执行本地/内层优先规则。"""
+        """委托独立的 Junos Group 展开器。"""
+        from ..vendor.juniper.groups import JunosGroupExpander
 
-        outcome = GroupExpansionOutcome()
-        policy = policy or WashingPolicy()
-        if mode == "preserve":
-            return outcome
-        if mode not in {"relevant", "strict"}:
-            raise ValueError(f"未知 Junos group 处理模式: {mode}")
-        # 所有修改都发生在深拷贝上；任一引用无法解析即可整体回滚。
-        original_root = self.root
-        working = copy.deepcopy(self.root)
-        assert working.children is not None
-        groups_container = next(
-            (
-                node
-                for node in working.children
-                if node.active and node.is_block and self._base_header(node.header) == "groups"
-            ),
-            None,
-        )
-        if not groups_container or groups_container.children is None:
-            return outcome
-        groups = {
-            self._base_header(node.header): node
-            for node in groups_container.children
-            if node.active and node.is_block
-        }
-
-        # 将拓扑中出现但配置未声明的接口加入临时树，供通配 group 匹配。
-        interfaces = next(
-            (
-                node
-                for node in working.children
-                if node.active and node.is_block and self._base_header(node.header) == "interfaces"
-            ),
-            None,
-        )
-        if interfaces is None:
-            interfaces = JunosNode("interfaces", [])
-            working.children.append(interfaces)
-        assert interfaces.children is not None
-        existing_names = {
-            canonical_junos_interface(self._base_header(node.header).split()[0])
-            for node in interfaces.children
-            if node.active and node.is_block
-        }
-        for raw_name in known_interfaces:
-            name = canonical_junos_interface(interface_parent(raw_name))
-            if name not in existing_names:
-                interfaces.children.append(JunosNode(name, [], origin="synthetic"))
-                existing_names.add(name)
-
-        def group_dependencies(group: JunosNode) -> list[str]:
-            """按出现顺序收集一个 Group 内直接引用的其他 Group。"""
-            result: list[str] = []
-
-            def collect(node: JunosNode) -> None:
-                if node.children is None:
-                    for name in self._group_names(node.header, "apply-groups"):
-                        if name not in result:
-                            result.append(name)
-                    return
-                for child in node.children:
-                    if child.active:
-                        collect(child)
-
-            collect(group)
-            return result
-
-        dependencies = {name: group_dependencies(group) for name, group in groups.items()}
-        relevance_cache: dict[str, bool] = {}
-
-        def group_is_relevant(name: str, visiting: set[str] | None = None) -> bool:
-            """Group 的相关性包含其传递引用，循环稍后由依赖校验报告。"""
-            if name in relevance_cache:
-                return relevance_cache[name]
-            group = groups.get(name)
-            if group is None:
-                return False
-            visiting = set(visiting or ())
-            if name in visiting:
-                return False
-            visiting.add(name)
-            relevant = self._group_tree_relevant(group, policy) or any(
-                group_is_relevant(dependency, visiting)
-                for dependency in dependencies.get(name, [])
-            )
-            relevance_cache[name] = relevant
-            return relevant
-
-        selected_roots: set[str] = set()
-
-        def select_groups(node: JunosNode, path: list[str]) -> None:
-            """预先选出本次要展开的 group，未选中的控制语句保持原样。"""
-            if node.children is None or node is groups_container:
-                return
-            for child in node.children:
-                if not child.active:
-                    continue
-                names = self._group_names(child.header, "apply-groups") if not child.is_block else []
-                for name in names:
-                    group = groups.get(name)
-                    if mode == "strict" or (
-                        not path and group is None
-                    ) or self._group_path_relevant(path, policy) or (
-                        group is not None and group_is_relevant(name)
-                    ):
-                        selected_roots.add(name)
-                if child.is_block:
-                    select_groups(child, [*path, self._base_header(child.header)])
-
-        select_groups(working, [])
-        if not selected_roots:
-            self.root = original_root
-            return outcome
-
-        # 对本次选中的 Group 求传递依赖闭包，并在改写配置前完成未定义
-        # 引用和循环引用校验，确保失败时可以无损回滚。
-        selected_groups: set[str] = set()
-        dependency_state: dict[str, int] = {}
-        dependency_stack: list[str] = []
-        unresolved = False
-
-        def select_dependency(name: str) -> None:
-            nonlocal unresolved
-            state = dependency_state.get(name, 0)
-            if state == 2:
-                return
-            if state == 1:
-                start = dependency_stack.index(name)
-                cycle = [*dependency_stack[start:], name]
-                outcome.warnings.append(
-                    f"Junos group 存在循环引用: {' -> '.join(cycle)}"
-                )
-                unresolved = True
-                return
-            group = groups.get(name)
-            if group is None:
-                outcome.warnings.append(f"Junos apply-groups 引用了未定义的组 {name}")
-                unresolved = True
-                return
-            dependency_state[name] = 1
-            dependency_stack.append(name)
-            selected_groups.add(name)
-            for dependency in dependencies.get(name, []):
-                select_dependency(dependency)
-            dependency_stack.pop()
-            dependency_state[name] = 2
-
-        for name in sorted(selected_roots):
-            select_dependency(name)
-
-        if unresolved:
-            self.root = original_root
-            outcome.events.append("Junos group 展开未完整解析，已整体回滚并保留原配置")
-            outcome.success = False
-            return outcome
-
-        all_applied: set[str] = set()
-
-        # (Group 名称, 优先级, 引用链)。引用链使 apply-groups-except 能够
-        # 同时排除某 Group 及仅通过它引入的传递依赖；保留所有候选路径，
-        # 则被排除高优先级路径后仍可回退到独立应用的同名 Group。
-        GroupApplication = tuple[str, tuple[int, ...], tuple[str, ...]]
-
-        def eligible_applications(
-            applications: list[GroupApplication],
-            excluded: set[str],
-        ) -> list[GroupApplication]:
-            return [
-                application
-                for application in applications
-                if not any(name in excluded for name in application[2])
-            ]
-
-        def effective_applications(
-            applications: list[GroupApplication],
-            excluded: set[str],
-        ) -> list[GroupApplication]:
-            """每个 Group 只采用当前未排除路径中优先级最高的一次应用。"""
-            result: list[GroupApplication] = []
-            seen: set[str] = set()
-            for application in sorted(
-                eligible_applications(applications, excluded),
-                key=lambda item: item[1],
-                reverse=True,
-            ):
-                if application[0] in seen:
-                    continue
-                seen.add(application[0])
-                result.append(application)
-            return result
-
-        def expand_nested_applications(
-            path: list[str],
-            applications: list[GroupApplication],
-            excluded: set[str],
-        ) -> tuple[list[GroupApplication], list[GroupApplication], set[str]]:
-            """在当前真实配置路径求值 Group 内的 apply/except 控制语句。"""
-            expanded = list(applications)
-            expanded_excluded = set(excluded)
-            known = set(expanded)
-
-            while True:
-                changed = False
-                effective = effective_applications(expanded, expanded_excluded)
-
-                # 先应用排除，再沿仍有效的引用路径增加传递 Group。
-                nested_excluded: set[str] = set()
-                for group_name, _rank, _chain in effective:
-                    group = groups[group_name]
-                    for child in self._group_payload_for_path(group, path):
-                        if child.active and not child.is_block:
-                            nested_excluded.update(
-                                name
-                                for name in self._group_names(
-                                    child.header, "apply-groups-except"
-                                )
-                                if name in selected_groups
-                            )
-                if not nested_excluded.issubset(expanded_excluded):
-                    expanded_excluded.update(nested_excluded)
-                    changed = True
-                    effective = effective_applications(expanded, expanded_excluded)
-
-                for group_name, rank, chain in effective:
-                    group = groups[group_name]
-                    nested_names: list[str] = []
-                    for child in self._group_payload_for_path(group, path):
-                        if child.active and not child.is_block:
-                            nested_names.extend(
-                                name
-                                for name in self._group_names(child.header, "apply-groups")
-                                if name in selected_groups
-                            )
-                    for index, name in enumerate(nested_names):
-                        application = (
-                            name,
-                            (*rank[:-1], -1, -index, 0),
-                            (*chain, name),
-                        )
-                        if application in known:
-                            continue
-                        known.add(application)
-                        expanded.append(application)
-                        all_applied.add(name)
-                        changed = True
-
-                if not changed:
-                    return (
-                        expanded,
-                        effective_applications(expanded, expanded_excluded),
-                        expanded_excluded,
-                    )
-
-        def walk(
-            node: JunosNode,
-            path: list[str],
-            inherited: list[GroupApplication],
-            inherited_excluded: set[str],
-        ) -> None:
-            """递归计算当前层级的有效 group、排除列表与继承优先级。"""
-            if node.children is None or node is groups_container:
-                return
-            local_excluded = set(inherited_excluded)
-            local_names: list[str] = []
-            for child in node.children:
-                if not child.active or child.is_block:
-                    continue
-                local_names.extend(
-                    name
-                    for name in self._group_names(child.header, "apply-groups")
-                    if name in selected_groups
-                )
-                local_excluded.update(
-                    name
-                    for name in self._group_names(child.header, "apply-groups-except")
-                    if name in selected_groups
-                )
-            all_applied.update(local_names)
-            # 层级越深越优先；同一列表中越靠前越优先。
-            local: list[GroupApplication] = [
-                (name, (len(path), -index, 0), (name,))
-                for index, name in enumerate(local_names)
-            ]
-            active, effective, local_excluded = expand_nested_applications(
-                path,
-                [*local, *inherited],
-                local_excluded,
-            )
-
-            for group_name, rank, _chain in effective:
-                group = groups.get(group_name)
-                if group is None:
-                    continue
-                payload = self._group_payload_for_path(group, path)
-                self._merge_junos_group_children(
-                    node,
-                    payload,
-                    group_name,
-                    rank,
-                    path,
-                    outcome,
-                )
-
-            retained: list[JunosNode] = []
-            for child in node.children:
-                rewritten: str | None = child.header
-                if not child.is_block:
-                    for keyword in ("apply-groups", "apply-groups-except"):
-                        names = self._group_names(child.header, keyword)
-                        if names:
-                            rewritten = self._rewrite_group_control(
-                                child.header,
-                                keyword,
-                                [name for name in names if name not in selected_groups],
-                            )
-                            break
-                if rewritten is not None:
-                    child.header = rewritten
-                    retained.append(child)
-            node.children = retained
-            index = 0
-            while index < len(node.children):
-                child = node.children[index]
-                if child.active and child.is_block and child is not groups_container:
-                    walk(
-                        child,
-                        [*path, self._base_header(child.header)],
-                        active,
-                        local_excluded,
-                    )
-                index += 1
-
-        walk(working, [], [], set())
-        if not all_applied:
-            self.root = original_root
-            return outcome
-
-        # 全部展开成功后才隐藏已物化的定义；无关 group 和应用语句继续保留。
-        if mode == "strict":
-            groups_container.active = False
-        else:
-            # 未应用的 Group 仍按原文保留；它们引用的定义也必须保留，
-            # 避免为了本次业务展开而制造悬空引用。
-            preserved = set(groups) - selected_groups
-            pending = list(preserved)
-            while pending:
-                name = pending.pop()
-                for dependency in dependencies.get(name, []):
-                    if dependency in groups and dependency not in preserved:
-                        preserved.add(dependency)
-                        pending.append(dependency)
-            for group in groups_container.children:
-                name = self._base_header(group.header)
-                if name in selected_groups and name not in preserved:
-                    group.active = False
-            groups_container.active = any(group.active for group in groups_container.children)
-        self.root = working
-        outcome.events.extend(
-            f"已展开 Junos 配置组 {name}" for name in sorted(selected_groups)
-        )
-        return outcome
+        return JunosGroupExpander(self).expand_groups(known_interfaces, mode, policy)
 
     def interface_specs(self) -> list[InterfaceSpec]:
         """提取物理接口和 unit 的父子关系、VLAN 与接口类型。"""
-        result: list[InterfaceSpec] = []
-        for node in self._interface_nodes():
-            parent = self._interface_name(node)
-            units = self._unit_nodes(node)
-            if not units:
-                result.append(InterfaceSpec(parent, parent, None, None, _junos_interface_kind(parent)))
-                continue
-            for unit in units:
-                number = self._unit_number(unit)
-                vlan = self._find_vlan(unit)
-                # IRB unit 编号通常对应业务 VLAN，无显式 vlan-id 时用作提示值。
-                if vlan is None and parent.lower() == "irb" and number.isdigit() and 1 <= int(number) <= 4094:
-                    vlan = int(number)
-                result.append(
-                    InterfaceSpec(
-                        name=f"{parent}.{number}",
-                        parent=parent,
-                        unit=number,
-                        vlan=vlan,
-                        kind=_junos_interface_kind(parent),
-                        inner_vlan=self._find_inner_vlan(unit),
-                    )
-                )
-        return result
+        return self._interfaces().interface_specs(self)
+
+    @staticmethod
+    def _interfaces():
+        """延迟加载接口函数模块，避免语法模型与操作模块循环导入。"""
+        from ..vendor.juniper import interfaces
+
+        return interfaces
 
     def interface_kind(self, name: str) -> InterfaceKind:
         """返回接口类别，供拓扑端点校验复用同一厂商规则。"""
-        return _junos_interface_kind(canonical_junos_interface(name))
+        return self._interfaces().interface_kind(self, name)
 
     def bundle_members(self) -> dict[str, str]:
         """返回物理接口到 ae 聚合接口的映射。"""
-        result: dict[str, str] = {}
-        for node in self._interface_nodes():
-            parent = self._interface_name(node)
-            if _junos_interface_kind(parent) != "physical":
-                continue
-            rendered = self._render_node(node, 0)
-            match = re.search(r"\b802\.3ad\s+(ae\d+)\s*;", rendered)
-            if match:
-                result[parent] = match.group(1)
-        return result
+        return self._interfaces().bundle_members(self)
 
     def resolve_interface(self, value: str) -> str:
         """规范化拓扑中的 Junos 接口名。"""
-        return canonical_junos_interface(value)
+        return self._interfaces().resolve_interface(self, value)
 
     def logical_names_under(self, parent: str) -> list[str]:
         """列出指定父接口下所有已配置 unit。"""
-        parent = canonical_junos_interface(parent)
-        return sorted(
-            {spec.name for spec in self.interface_specs() if spec.parent == parent},
-            key=lambda value: (interface_unit(value) is not None, value),
-        )
+        return self._interfaces().logical_names_under(self, parent)
 
     def business_interface_names(self) -> set[str]:
         """识别承载三层、二层及活跃广播域网关的 Junos 接口。
@@ -877,296 +263,39 @@ class JunosDocument:
         IRB 不因自身配置地址就自动迁移；只有 bridge-domain/vlan 中仍有
         活跃接入口，或其 unit 命中活跃业务 VLAN 时才进入 UNI 计划。
         """
-        specs = self.interface_specs()
-        known = {spec.name for spec in specs}
-        kinds = {spec.name: spec.kind for spec in specs}
-        mappable_kinds = {InterfaceKind.PHYSICAL, InterfaceKind.BUNDLE}
-        active: set[str] = set()
-        business_pattern = re.compile(
-            r"\b(?:family\s+(?:inet6?|ccc|bridge|ethernet-switching)|"
-            r"encapsulation\s+(?:ethernet-ccc|vlan-ccc)|input-vlan-map|output-vlan-map)\b"
-        )
-        for node in self._interface_nodes():
-            parent = self._interface_name(node)
-            units = self._unit_nodes(node)
-            if not units:
-                rendered = self._render_node(node, 0)
-                if (
-                    _junos_interface_kind(parent) in mappable_kinds
-                    and business_pattern.search(rendered)
-                ):
-                    active.add(parent)
-                continue
-            for unit in units:
-                rendered = self._render_node(unit, 0)
-                name = f"{parent}.{self._unit_number(unit)}"
-                if kinds.get(name) in mappable_kinds and business_pattern.search(rendered):
-                    active.add(name)
-
-        # protocols/l2circuit/bridge-domains/vlans/routing-instances 等树中的引用
-        # 均是业务活跃的可验证信号。
-        external = "\n".join(
-            self._render_node(node, 0)
-            for node in (self.root.children or [])
-            if node.active and self._base_header(node.header) not in {"interfaces", "groups"}
-        )
-        for name in known:
-            if kinds.get(name) in mappable_kinds and re.search(
-                rf"(?<![A-Za-z0-9_.-]){re.escape(name)}(?![A-Za-z0-9_.-])", external
-            ):
-                active.add(name)
-        for parent in {spec.parent for spec in specs}:
-            parent_specs = [spec for spec in specs if spec.parent == parent]
-            if parent_specs and parent_specs[0].kind in mappable_kinds and re.search(
-                rf"(?<![A-Za-z0-9_.-]){re.escape(parent)}(?![A-Za-z0-9_.-])", external
-            ):
-                active.update(spec.name for spec in parent_specs)
-
-        def expand_vlan_tokens(value: str) -> set[int]:
-            """展开 Junos VLAN 列表中的单值及 ``100-110`` 范围。"""
-            result: set[int] = set()
-            for start, end, single in re.findall(r"(?:(\d+)\s*-\s*(\d+))|(\d+)", value):
-                if single:
-                    number = int(single)
-                    if 1 <= number <= 4094:
-                        result.add(number)
-                    continue
-                lower, upper = int(start), int(end)
-                if 1 <= lower <= upper <= 4094:
-                    result.update(range(lower, upper + 1))
-            return result
-
-        spec_by_name = {spec.name: spec for spec in specs}
-        active_vlans: set[int] = set()
-        active_vlan_names: set[str] = set()
-        for name in list(active):
-            spec = spec_by_name.get(name)
-            if not spec or spec.kind == "gateway":
-                continue
-            node = self._find_interface_node(spec.parent)
-            if not node:
-                continue
-            units = self._unit_nodes(node)
-            unit = next(
-                (item for item in units if spec.unit is not None and self._unit_number(item) == spec.unit),
-                node if spec.unit is None else None,
-            )
-            if unit is None:
-                continue
-            rendered = self._render_node(unit, 0)
-            is_l2 = bool(
-                re.search(
-                    r"\b(?:family\s+(?:ccc|bridge|ethernet-switching)|"
-                    r"encapsulation\s+(?:ethernet-ccc|vlan-ccc)|"
-                    r"vlan-id-list|vlan\s+members|input-vlan-map|output-vlan-map)\b",
-                    rendered,
-                )
-            )
-            if is_l2 and spec.vlan is not None:
-                active_vlans.add(spec.vlan)
-            for match in re.finditer(r"vlan-id-list\s+\[([^\]]+)\]", rendered):
-                active_vlans.update(expand_vlan_tokens(match.group(1)))
-            for match in re.finditer(r"vlan\s+members\s+(?:\[([^\]]+)\]|([^;\s]+))\s*;", rendered):
-                payload = match.group(1) or match.group(2) or ""
-                active_vlans.update(expand_vlan_tokens(payload))
-                active_vlan_names.update(
-                    token for token in re.findall(r"[A-Za-z_][A-Za-z0-9_.-]*", payload)
-                    if not token.isdigit()
-                )
-
-        # bridge-domains/vlans 既可能位于根层级，也可能嵌在 routing-instance。
-        # 每个广播域只有在关联活跃接入口、活跃 VLAN ID 或活跃 VLAN 名时，
-        # 才把其 routing-interface/l3-interface IRB 纳入迁移。
-        def walk_domains(node: JunosNode) -> None:
-            if node.children is None:
-                return
-            base = self._base_header(node.header).rstrip(";")
-            if base in {"bridge-domains", "vlans"}:
-                for domain in node.children:
-                    if not domain.active or domain.children is None:
-                        continue
-                    rendered = self._render_node(domain, 0)
-                    interfaces = {
-                        canonical_junos_interface(value)
-                        for value in re.findall(r"(?<![-\w])interface\s+([^;\s]+)\s*;", rendered)
-                    }
-                    gateways = {
-                        canonical_junos_interface(value)
-                        for value in re.findall(
-                            r"\b(?:routing-interface|l3-interface)\s+([^;\s]+)\s*;", rendered
-                        )
-                    }
-                    vlan_ids = {
-                        int(value)
-                        for value in re.findall(r"\bvlan-id\s+(\d+)\s*;", rendered)
-                        if 1 <= int(value) <= 4094
-                    }
-                    domain_name = self._base_header(domain.header).split()[0].rstrip(";")
-                    if interfaces & active or vlan_ids & active_vlans or domain_name in active_vlan_names:
-                        active.update(gateway for gateway in gateways if gateway in known)
-            for child in node.children:
-                if child.active:
-                    walk_domains(child)
-
-        walk_domains(self.root)
-        for spec in specs:
-            if spec.kind == "gateway" and spec.vlan in active_vlans:
-                active.add(spec.name)
-        return active
+        return self._interfaces().business_interface_names(self)
 
     def _find_interface_node(self, name: str) -> JunosNode | None:
         """按父接口名查找接口节点。"""
-        canonical = canonical_junos_interface(interface_parent(name))
-        return next((node for node in self._interface_nodes() if self._interface_name(node) == canonical), None)
+        return self._interfaces().find_interface_node(self, name)
 
     def remove_interface(self, name: str, include_children: bool = False) -> None:
         """停用整个接口节点；Junos unit 随父节点一并停用。"""
-        node = self._find_interface_node(name)
-        if node:
-            node.active = False
+        self._interfaces().remove_interface(self, name, include_children)
 
     def rename_interface_tree(self, source: str, target: str, strip_bundle: bool = False) -> None:
         """改名接口节点，并可移除原聚合相关 options。"""
-        node = self._find_interface_node(source)
-        if not node:
-            return
-        node.header = canonical_junos_interface(target)
-        if strip_bundle and node.children is not None:
-            node.children = [
-                child
-                for child in node.children
-                if not (
-                    child.is_block
-                    and self._base_header(child.header) in {"aggregated-ether-options", "gigether-options", "ether-options"}
-                )
-            ]
-        self._merge_duplicate_interface(node)
+        self._interfaces().rename_interface_tree(self, source, target, strip_bundle)
 
     def clone_interface_tree(self, source: str, target: str, strip_bundle: bool = False) -> None:
         """把 Junos 接口树复制到新物理口，用于 M-LAG 按对端拆分。"""
-        source_node = self._find_interface_node(source)
-        interfaces = self._interfaces_block(create=True)
-        assert interfaces is not None and interfaces.children is not None
-        if source_node is None:
-            clone = JunosNode(canonical_junos_interface(target), [])
-        else:
-            clone = source_node.clone()
-            clone.header = canonical_junos_interface(target)
-            clone.active = True
-            if strip_bundle and clone.children is not None:
-                clone.children = [
-                    child
-                    for child in clone.children
-                    if not (
-                        child.is_block
-                        and self._base_header(child.header)
-                        in {"aggregated-ether-options", "gigether-options", "ether-options"}
-                    )
-                ]
-        interfaces.children.append(clone)
-        self._merge_duplicate_interface(clone)
+        self._interfaces().clone_interface_tree(self, source, target, strip_bundle)
 
     def _merge_duplicate_interface(self, preferred: JunosNode) -> None:
         """接口改名碰撞时合并不重复的子节点并停用旧节点。"""
-        name = self._interface_name(preferred)
-        duplicates = [node for node in self._interface_nodes() if self._interface_name(node) == name]
-        if len(duplicates) < 2:
-            return
-        assert preferred.children is not None
-        existing = {self._render_node(child, 0) for child in preferred.children}
-        for node in duplicates:
-            if node is preferred or node.children is None:
-                continue
-            for child in node.children:
-                rendered = self._render_node(child, 0)
-                if rendered not in existing:
-                    preferred.children.append(child)
-                    existing.add(rendered)
-            node.active = False
+        self._interfaces()._merge_duplicate_interface(self, preferred)
 
     def _strip_vlan_termination(self, nodes: list[JunosNode]) -> list[JunosNode]:
         """递归删除旧标签匹配和 VLAN rewrite，同时保留业务 family/CCC 类型。"""
-        blocked_statements = re.compile(
-            r"^(?:vlan-id(?:-list)?|vlan-tags|native-vlan-id|"
-            r"input-vlan-map|output-vlan-map|interface-mode|"
-            r"flexible-vlan-tagging|stacked-vlan-tagging|vlan-tagging)\b"
-        )
-        retained: list[JunosNode] = []
-        for node in nodes:
-            base = self._base_header(node.header).rstrip(";")
-            if blocked_statements.match(base) or re.match(r"^vlan\s+members\b", base):
-                continue
-            # family ethernet-switching/bridge 中的 ``vlan { members ... }``
-            # 整块属于旧入口匹配，不能随 QinQ 目标 unit 保留。
-            if node.is_block and base == "vlan":
-                continue
-            clone = node.clone()
-            if clone.children is not None:
-                clone.children = self._strip_vlan_termination(clone.children)
-            retained.append(clone)
-        return retained
+        return self._interfaces()._strip_vlan_termination(self, nodes)
 
     def _ensure_target_parent(self, target_parent: str) -> JunosNode:
         """确保 UNI 目标口存在并支持灵活 VLAN 封装。"""
-        existing = self._find_interface_node(target_parent)
-        if existing:
-            node = existing
-        else:
-            interfaces = self._interfaces_block(create=True)
-            assert interfaces is not None and interfaces.children is not None
-            node = JunosNode(target_parent, [])
-            interfaces.children.append(node)
-        assert node.children is not None
-        # 目标口可能在原配置中已有单层/堆叠标签设置，统一清理后再写入
-        # 本次转换唯一允许的 flexible QinQ 父接口属性。
-        node.children = [
-            child
-            for original in node.children
-            for child in (
-                [original]
-                if original.is_block and self._base_header(original.header).startswith("unit ")
-                else self._strip_vlan_termination([original])
-            )
-        ]
-        node.children = [
-            child
-            for child in node.children
-            if not re.match(r"^encapsulation\s+(?:ethernet-bridge|vlan-bridge)\b", self._base_header(child.header))
-        ]
-        required = ["flexible-vlan-tagging;", "encapsulation flexible-ethernet-services;"]
-        existing_headers = {self._base_header(child.header) for child in node.children}
-        for statement in reversed(required):
-            if statement not in existing_headers:
-                node.children.insert(0, JunosNode(statement))
-        return node
+        return self._interfaces()._ensure_target_parent(self, target_parent)
 
     def map_uni(self, source: str, target_parent: str, vlan: int, inner_vlan: int) -> str:
         """复制源 unit 到目标父接口，并统一重写为 QinQ vlan-tags。"""
-        source_parent = interface_parent(canonical_junos_interface(source))
-        unit_number = interface_unit(source)
-        source_node = self._find_interface_node(source_parent)
-        target_node = self._ensure_target_parent(target_parent)
-        assert target_node.children is not None
-        unit_node = None
-        if source_node:
-            units = self._unit_nodes(source_node)
-            if unit_number is not None:
-                unit_node = next((item for item in units if self._unit_number(item) == unit_number), None)
-            elif len(units) == 1:
-                unit_node = units[0]
-            elif not units:
-                payload = [child.clone() for child in (source_node.children or [])]
-                unit_node = JunosNode("unit 0", payload)
-        if unit_node is None:
-            unit_node = JunosNode("unit 0", [])
-        else:
-            unit_node = unit_node.clone()
-        unit_node.header = f"unit {vlan}"
-        assert unit_node.children is not None
-        unit_node.children = self._strip_vlan_termination(unit_node.children)
-        unit_node.children.insert(0, JunosNode(f"vlan-tags outer {vlan} inner {inner_vlan};"))
-        target_node.children.append(unit_node)
-        return f"{target_parent}.{vlan}"
+        return self._interfaces().map_uni(self, source, target_parent, vlan, inner_vlan)
 
     def finalize_uni_source(self, source_parent: str) -> None:
         """所有 unit 迁移完成后停用源 UNI 父接口。"""
@@ -1174,73 +303,17 @@ class JunosDocument:
 
     def ensure_parent_interface(self, name: str) -> None:
         """确保 UNI 目标父接口存在。"""
-        self._ensure_target_parent(name)
+        self._interfaces().ensure_parent_interface(self, name)
 
     def adapt_to_simulation(
         self,
         policy: SimulationAdaptationPolicy,
         data_interfaces: set[str],
     ) -> SimulationAdaptationOutcome:
-        """按目标镜像策略清理物理属性并放宽现有 BFD 参数。"""
-        outcome = SimulationAdaptationOutcome()
-        if policy.mode == "off":
-            return outcome
+        """委托给独立的模拟参数适配函数。"""
+        from ..vendor.juniper.simulation import adapt_to_simulation
 
-        targets = {canonical_junos_interface(interface_parent(name)) for name in data_interfaces}
-        blocked_leaf = re.compile(
-            r"^(?:speed|link-mode|fec|no-auto-negotiation|loopback|clocking)\b",
-            re.IGNORECASE,
-        )
-        blocked_blocks = {"aggregated-ether-options", "gigether-options", "ether-options"}
-        for interface in self._interface_nodes():
-            if self._interface_name(interface) not in targets or interface.children is None:
-                continue
-            retained: list[JunosNode] = []
-            for child in interface.children:
-                base = self._base_header(child.header).rstrip(";")
-                first = base.split(maxsplit=1)[0] if base else ""
-                if policy.ensure_data_interfaces_enabled and first == "disable":
-                    outcome.record("removed", "interface-disable")
-                    continue
-                if policy.remove_physical_interface_knobs and (
-                    blocked_leaf.match(base) or (child.is_block and base in blocked_blocks)
-                ):
-                    outcome.record("removed", "physical-interface-knob")
-                    continue
-                retained.append(child)
-            interface.children = retained
-
-        if policy.mode != "stable":
-            return outcome
-
-        interval = re.compile(
-            r"^(?P<key>minimum-interval|minimum-receive-interval|transmit-interval)\s+"
-            r"(?P<value>\d+)\s*;$",
-            re.IGNORECASE,
-        )
-        multiplier = re.compile(r"^(?P<key>multiplier)\s+(?P<value>\d+)\s*;$", re.IGNORECASE)
-
-        def walk(node: JunosNode, inside_bfd: bool = False) -> None:
-            if not node.active:
-                return
-            base = self._base_header(node.header)
-            current_bfd = inside_bfd or base.rstrip(";") == "bfd-liveness-detection"
-            if current_bfd and node.children is None:
-                for pattern, minimum, category in (
-                    (interval, policy.bfd_minimum_interval_ms, "bfd-minimum-interval"),
-                    (multiplier, policy.bfd_minimum_multiplier, "bfd-multiplier"),
-                ):
-                    match = pattern.match(base)
-                    if match and int(match.group("value")) < minimum:
-                        node.header = f'{match.group("key")} {minimum};'
-                        outcome.record("replaced", category)
-                        break
-            if node.children:
-                for child in node.children:
-                    walk(child, current_bfd)
-
-        walk(self.root)
-        return outcome
+        return adapt_to_simulation(self, policy, data_interfaces)
 
     def adjust_simulation_parameters(
         self,
@@ -1250,179 +323,20 @@ class JunosDocument:
         """兼容旧入口；新代码使用 adapt_to_simulation。"""
         return self.adapt_to_simulation(policy, data_interfaces)
 
-    def _node_first_token(self, node: JunosNode) -> str:
-        """返回节点语句的第一个关键字。"""
-        base = self._base_header(node.header)
-        return base.split(maxsplit=1)[0].rstrip(";") if base else ""
-
-    def _disable_matching(
-        self,
-        node: JunosNode,
-        keywords: set[str],
-        category: str,
-        outcome: CleanupOutcome,
-        recursive: bool = False,
-    ) -> None:
-        """按层级关键字停用子节点，并只在需要时递归。"""
-        if node.children is None:
-            return
-        for child in node.children:
-            if not child.active:
-                continue
-            if self._node_first_token(child) in keywords:
-                child.active = False
-                outcome.record(category)
-                continue
-            if recursive:
-                self._disable_matching(child, keywords, category, outcome, recursive=True)
-
     def clean_management_access(self) -> CleanupOutcome:
-        """清理账号、外部认证、远程管理和 SNMP。"""
-        system = self._top_block("system", create=True)
-        assert system is not None and system.children is not None
-        outcome = CleanupOutcome()
-        blocked = {
-            "login",
-            "root-authentication",
-            "authentication-order",
-            "radius-server",
-            "tacplus-server",
-            "radius-options",
-            "tacplus-options",
-            "accounting",
-        }
-        for child in system.children:
-            base = self._base_header(child.header)
-            first = base.split(maxsplit=1)[0].rstrip(";") if base else ""
-            if first in blocked:
-                child.active = False
-                outcome.record(first)
+        """委托给独立的配置清洗函数。"""
+        from ..vendor.juniper.cleaning import clean_management_access
 
-        services = next(
-            (
-                child
-                for child in system.children
-                if child.active and child.is_block and self._base_header(child.header) == "services"
-            ),
-            None,
-        )
-        if services:
-            self._disable_matching(
-                services,
-                {"ssh", "outbound-ssh", "telnet"},
-                "remote-access",
-                outcome,
-                recursive=True,
-            )
-            for child in services.children or []:
-                if (
-                    child.active
-                    and self._node_first_token(child) == "netconf"
-                    and child.children is not None
-                    and not any(grandchild.active for grandchild in child.children)
-                ):
-                    child.active = False
-                    outcome.record("remote-access")
-
-        snmp = self._top_block("snmp")
-        if snmp:
-            snmp.active = False
-            outcome.record("snmp")
-
-        security = self._top_block("security")
-        if security:
-            self._disable_matching(security, {"ssh-known-hosts"}, "ssh-trust", outcome)
-        return outcome
+        return clean_management_access(self)
 
     def clean_optional_features(
         self,
         policy: WashingPolicy,
     ) -> CleanupOutcome:
-        """按显式策略删除协议认证及其他可选能力。"""
-        outcome = CleanupOutcome()
-        system = self._top_block("system")
-        security = self._top_block("security")
+        """委托给独立的配置清洗函数。"""
+        from ..vendor.juniper.cleaning import clean_optional_features
 
-        if policy.protocol_authentication:
-            if security:
-                self._disable_matching(
-                    security,
-                    {"authentication-key-chains"},
-                    "protocol-auth-definition",
-                    outcome,
-                )
-            protocol_keywords = {
-                "authentication",
-                "authentication-key",
-                "authentication-key-chain",
-                "authentication-algorithm",
-                "authentication-type",
-            }
-            for root_name in ("protocols", "routing-instances", "logical-systems", "interfaces"):
-                root = self._top_block(root_name)
-                if root:
-                    self._disable_matching(
-                        root,
-                        protocol_keywords,
-                        "protocol-auth-reference",
-                        outcome,
-                        recursive=True,
-                    )
-
-        if policy.pki:
-            if security:
-                self._disable_matching(security, {"pki", "certificates"}, "pki", outcome)
-            if system:
-                self._disable_matching(system, {"certificates"}, "pki", outcome)
-
-        if policy.hardware:
-            chassis = self._top_block("chassis")
-            if chassis:
-                chassis.active = False
-                outcome.record("hardware")
-
-        if policy.nat:
-            if security:
-                self._disable_matching(security, {"nat"}, "nat", outcome)
-            services_top = self._top_block("services")
-            if services_top:
-                self._disable_matching(
-                    services_top,
-                    {"nat", "nat-rules"},
-                    "nat",
-                    outcome,
-                    recursive=True,
-                )
-
-        if policy.flow_statistics:
-            services_top = self._top_block("services")
-            if services_top:
-                self._disable_matching(
-                    services_top,
-                    {"flow-monitoring"},
-                    "flow-statistics",
-                    outcome,
-                    recursive=True,
-                )
-            forwarding = self._top_block("forwarding-options")
-            if forwarding:
-                self._disable_matching(
-                    forwarding,
-                    {"sampling"},
-                    "flow-statistics",
-                    outcome,
-                    recursive=True,
-                )
-            interfaces = self._top_block("interfaces")
-            if interfaces:
-                self._disable_matching(
-                    interfaces,
-                    {"sampling"},
-                    "flow-statistics",
-                    outcome,
-                    recursive=True,
-                )
-        return outcome
+        return clean_optional_features(self, policy)
 
     def clean_authentication(
         self,
@@ -1434,29 +348,43 @@ class JunosDocument:
         return outcome
 
     def add_lab_account(self) -> None:
-        """写入实验账号，并设置 root 密码以满足 Junos 提交要求。"""
-        system = self._top_block("system", create=True)
-        assert system is not None and system.children is not None
-        system.children.extend(
-            [
-                JunosNode(f'root-authentication encrypted-password "{JUNOS_LAB_PASSWORD_HASH}";'),
-                JunosNode(
-                    "login",
-                    [
-                        JunosNode(
-                            f"user {LAB_USERNAME}",
-                            [
-                                JunosNode("class super-user;"),
-                                JunosNode(
-                                    "authentication",
-                                    [JunosNode(f'encrypted-password "{JUNOS_LAB_PASSWORD_HASH}";')],
-                                ),
-                            ],
-                        )
-                    ],
-                ),
-            ]
-        )
+        """委托给独立的配置清洗函数添加实验账号。"""
+        from ..vendor.juniper.cleaning import add_lab_account
+
+        add_lab_account(self)
+
+    def apply_cleaning_rule(
+        self,
+        match: str,
+        action: str,
+        value: str | None,
+    ) -> int:
+        """递归应用外部规则，同时封装 Junos AST 的遍历细节。"""
+        pattern = re.compile(match, re.IGNORECASE)
+        hits = 0
+
+        def walk(node: JunosNode, path: list[str]) -> None:
+            nonlocal hits
+            if node is self.root:
+                next_path = path
+            else:
+                component = self._base_header(node.header).split(maxsplit=1)[0].rstrip(";")
+                next_path = [*path, component] if component else path
+                dotted = ".".join(next_path)
+                if node.active and (pattern.search(dotted) or pattern.search(node.header)):
+                    hits += 1
+                    if action == "delete":
+                        node.active = False
+                    elif action == "replace":
+                        node.header = pattern.sub(value or "", node.header)
+                    elif action == "mask":
+                        node.header = "<masked>;"
+            if node.children:
+                for child in node.children:
+                    walk(child, next_path)
+
+        walk(self.root, [])
+        return hits
 
     def replace_references(self, replacements: dict[str, list[str]]) -> None:
         """递归更新 interfaces 之外的引用，并复制一对多 M-LAG 节点。"""

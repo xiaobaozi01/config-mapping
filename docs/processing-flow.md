@@ -100,7 +100,7 @@ output/
 生成配置、拓扑、映射和报告
 ```
 
-核心转换采用责任链：
+核心转换采用显式 Pipeline。每个 Stage 不持有下一阶段，由 Pipeline 统一保证顺序并在首次错误后停止：
 
 ```text
 TopologyPreflightHandler
@@ -123,6 +123,8 @@ SimulationAdaptationHandler
 ```
 
 任一阶段产生错误后，责任链停止，不继续执行后续阶段。
+
+NNI 中的聚合链路识别先由纯函数 `plan_nni_components()` 生成不可变的分组计划，校验成功后 Stage 才分配目标端口并修改拓扑和厂商配置。UNI 的 VLAN 冲突由 `allocate_uni_vlans()` 完成。这两类规划函数不依赖 Cisco/Junos AST，因此可以独立测试；实际配置修改仍通过统一厂商配置接口分派。
 
 `TopologyPreflightHandler` 在任何配置改写前验证链路端点，标记超出支持范围的链路，并为本端生成 `action=skip` 的 NNI 映射。后续 Group、NNI 和 UNI 只消费有效链路或明确保留的接口角色，避免跳过的 NNI 被误分类为 UNI。
 
