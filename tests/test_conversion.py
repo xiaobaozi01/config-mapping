@@ -95,6 +95,64 @@ class ConversionTest(unittest.TestCase):
             self.assertNotIn("UNUSED-BARE-PORT", converted)
             self.assertIn("lo0", converted)
 
+    def test_cross_vendor_iosxr_to_junos_nni_and_aggregate(self):
+        """Cisco 与 Juniper 端点独立适配，并共同删除冗余聚合成员行。"""
+        topology, config_dir = self.conversion_fixture("cross_vendor")
+        with tempfile.TemporaryDirectory() as directory:
+            output = Path(directory) / "output"
+            context = convert(topology, config_dir, output)
+            self.assertFalse(context.has_errors)
+
+            cisco = (output / "configs" / "C1.cfg").read_text(encoding="utf-8")
+            self.assertNotIn("Bundle-Ether10", cisco)
+            self.assertIn("interface GigabitEthernet0/0/0/0", cisco)
+            self.assertIn("ipv4 address 10.0.0.1 255.255.255.252", cisco)
+            self.assertIn("interface GigabitEthernet0/0/0/1", cisco)
+            self.assertIn("ipv4 address 10.0.1.1 255.255.255.252", cisco)
+            self.assertIn("  interface GigabitEthernet0/0/0/0", cisco)
+            self.assertIn("  interface GigabitEthernet0/0/0/1", cisco)
+
+            juniper = (output / "configs" / "J1.cfg").read_text(encoding="utf-8")
+            self.assertNotIn("ae20", juniper)
+            self.assertIn("ge-0/0/0", juniper)
+            self.assertIn("address 10.0.0.2/30;", juniper)
+            self.assertIn("ge-0/0/1", juniper)
+            self.assertIn("address 10.0.1.2/30;", juniper)
+            self.assertIn("interface ge-0/0/0.0;", juniper)
+            self.assertIn("interface ge-0/0/1.0;", juniper)
+
+            adapted = load_workbook(output / "topology-adapted.xlsx")
+            links = adapted["链接表"]
+            self.assertEqual(links.max_row, 3)
+            self.assertEqual(links.cell(2, 2).value, "GigabitEthernet0/0/0/0")
+            self.assertEqual(links.cell(2, 4).value, "ge-0/0/0")
+            self.assertEqual(links.cell(3, 2).value, "GigabitEthernet0/0/0/1")
+            self.assertEqual(links.cell(3, 4).value, "ge-0/0/1")
+
+            mappings = json.loads(
+                (output / "interface-mapping.json").read_text(encoding="utf-8")
+            )
+            self.assertTrue(
+                any(
+                    item["device"] == "C1"
+                    and item["source_interface"] == "Bundle-Ether10"
+                    and item["target_interface"] == "GigabitEthernet0/0/0/0"
+                    for item in mappings
+                )
+            )
+            self.assertTrue(
+                any(
+                    item["device"] == "J1"
+                    and item["source_interface"] == "ae20"
+                    and item["target_interface"] == "ge-0/0/0"
+                    for item in mappings
+                )
+            )
+            report = json.loads((output / "report.json").read_text(encoding="utf-8"))
+            self.assertEqual(report["status"], "success")
+            self.assertEqual(report["summary"]["active_links"], 2)
+            self.assertEqual(report["summary"]["skipped_links"], 1)
+
     def test_iosxr_mlag_is_split_by_peer_and_references_are_cloned(self):
         """同一 Bundle 跨对端时分配多个物理口，全局引用同步展开。"""
         topology, config_dir = self.conversion_fixture("iosxr_mlag")
