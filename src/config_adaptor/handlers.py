@@ -69,6 +69,11 @@ class GroupExpansionHandler(ConversionHandler):
 
     def process(self, context: ConversionContext) -> None:
         """逐设备展开 group，并把冲突与失败写入共享上下文。"""
+        mode = context.washing_policy.group_handling
+        if mode == "preserve":
+            context.add_event("group-expansion", "已按策略保留所有厂商 group，不执行静态展开")
+            return
+
         # 拓扑接口即使未显式出现在配置中，也要作为正则/通配 group 的候选对象。
         known_by_device: dict[str, set[str]] = defaultdict(set)
         for link in context.topology.links:
@@ -78,7 +83,11 @@ class GroupExpansionHandler(ConversionHandler):
 
         for device_name in sorted(context.devices):
             device = context.devices[device_name]
-            outcome = device.document.expand_groups(known_by_device[device_name])
+            outcome = device.document.expand_groups(
+                known_by_device[device_name],
+                mode=mode,
+                policy=context.washing_policy,
+            )
             device.warnings.extend(outcome.warnings)
             for message in outcome.events:
                 context.add_event(
@@ -500,14 +509,14 @@ class UNIHandler(ConversionHandler):
             document.ensure_parent_interface(device.profile.uni_parent)
 
 
-class AuthHandler(ConversionHandler):
+class AuthWashingHandler(ConversionHandler):
     """清除原认证和授权体系，再添加统一实验账号。"""
 
     def process(self, context: ConversionContext) -> None:
         """调用厂商实现清理旧认证，并记录分项删除数量。"""
         for device_name in sorted(context.devices):
             device = context.devices[device_name]
-            cleanup = device.document.clean_authentication()
+            cleanup = device.document.clean_authentication(context.washing_policy)
             device.document.add_lab_account()
             context.add_event(
                 "authentication",
@@ -523,6 +532,6 @@ def build_default_chain() -> ConversionHandler:
     groups = GroupExpansionHandler()
     nni = NNIHandler()
     uni = UNIHandler()
-    auth = AuthHandler()
-    groups.set_next(nni).set_next(uni).set_next(auth)
+    auth_washing = AuthWashingHandler()
+    groups.set_next(nni).set_next(uni).set_next(auth_washing)
     return groups

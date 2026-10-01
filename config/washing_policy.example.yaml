@@ -1,0 +1,16 @@
+# 管理账号、AAA、SSH/Telnet、SNMP 和聚合属性始终清理。
+# 下列扩大业务范围的清洗必须显式开启，默认全部关闭。
+group_handling:
+  # relevant（默认）只展开接口、协议引用和管理认证相关 group；
+  # strict 展开所有已应用 group；preserve 完全保留 group。
+  mode: relevant
+
+optional_washing:
+  # 协议认证会同时删除密钥定义及 OSPF/IS-IS/BGP 等引用。
+  protocol_authentication: false
+  # PKI 只匹配明确的证书、信任点和密钥生成配置。
+  pki: false
+  # Junos 开启后会删除整个 chassis；确认目标镜像不需要端口配置后再启用。
+  hardware: false
+  nat: false
+  flow_statistics: false

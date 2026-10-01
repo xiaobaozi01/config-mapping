@@ -27,6 +27,7 @@ group 展开是事务式的，并遵循显式配置、嵌套层级和 group 列�
 - `cross_vendor/`：Cisco XRv9000 与 Juniper vMX 互联时，普通 NNI 和 `Bundle-Ether`/`ae` 聚合两端独立适配样例。
 - `junos_unresolved/`：无法解析 group 时事务回滚样例。
 - `group_configs/`：独立的厂商 group 优先级和通配匹配配置。
+- `washing_configs/`：管理面必清项、默认保留项及五类可选清洗开关样例。
 
 每个端到端样例目录包含一个双 sheet 的 `topology.xlsx` 和对应的 `configs/*.cfg`。
 
@@ -38,10 +39,15 @@ config-adaptor convert \
   --topology topology.xlsx \
   --config-dir configs \
   --output-dir output \
-  --profiles config/image_profiles.yaml
+  --profiles config/image_profiles.yaml \
+  --washing-policy config/washing_policy.example.yaml
 ```
 
 `--profiles` 可调整两类镜像的数据接口列表；列表最后一个接口用于 UNI，其余接口可分配给 NNI。需要增加保守清洗规则时传入 `--rules config/cleaning_rules.example.yaml`。
+
+管理账号、AAA/TACACS/RADIUS、SSH/Telnet 网络管理服务、SSH 信任、SNMP 以及聚合扁平化后的 LACP/门限属性始终清理。`--washing-policy` 同时控制 group 处理模式和默认关闭的协议认证、PKI、硬件、NAT、流量统计扩展清洗；示例文件中的可选清洗开关只有显式改为 `true` 才生效。
+
+group 默认采用 `relevant` 模式：只静态展开会影响接口、聚合、协议接口引用、管理认证以及已开启可选清洗范围的 group；日志、遥测等无关 group 连同其应用语句原样保留，也不会因其无法静态求值而阻断转换。`strict` 保持全量展开和全量校验，`preserve` 则完全跳过 group 展开。模式在策略文件的 `group_handling.mode` 中配置。
 
 Cisco 与 Juniper 的跨厂商 NNI 会按链路两端各自的厂商语法和镜像 Profile 独立分配接口，不要求两端目标接口同名。转换器不审计链路两端的 IP、VLAN、MTU 或封装是否一致，这些业务一致性由输入配置保证。
 

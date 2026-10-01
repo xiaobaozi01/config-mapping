@@ -46,6 +46,7 @@
    - 删除其余冗余成员链路；
    - 将聚合接口及聚合子接口配置迁移到保留链路对应的目标物理接口；
    - 删除成员关系、LACP 和空聚合接口；
+   - 删除 minimum-active links/bandwidth 等只适用于聚合接口的门限；
    - 更新所有对聚合接口的配置引用。
 4. 同一 `Bundle-Ether`/`ae` 的成员若连到不同对端，识别为 M-LAG 形态：
    - 按对端设备分组，每组单独占用一个模拟器物理口；
@@ -81,17 +82,19 @@
 
 ### 4.4 认证清洗
 
-系统删除原配置中的本地账号、TACACS+、RADIUS 和外部 AAA 认证信息，并生成固定实验账号：
+系统删除原配置中的本地账号、TACACS+、RADIUS、外部 AAA、SSH/Telnet 网络管理服务、SSH 信任和 SNMP 信息，并生成固定实验账号：
 
 ```text
 用户名：labadmin
 密码：Gns3Lab@2026
 ```
 
-- IOS XR 删除自定义 `usergroup`、`taskgroup`，以及 `line` 配置中对旧密码、认证方法、授权方法、计费方法和用户组的引用；保留与认证无关的终端参数。新用户直接加入内置 `root-system`。
-- Junos 删除原 `system login`，其中包括本地用户、自定义 login class 和远程用户模板。新用户使用内置 `super-user`，输出配置使用密码哈希；同时配置 root authentication 以保证配置可提交。
+- IOS XR 删除自定义 `usergroup`、`taskgroup`、`snmp-server`、SSH/Telnet server/client，以及 `line` 配置中对旧密码、认证方法、授权方法、计费方法和用户组的引用；保留与认证无关的 console 参数。新用户直接加入内置 `root-system`。
+- Junos 删除原 `system login`、RADIUS/TACACS server/options、accounting、`system services` 下的 SSH/Telnet、`security ssh-known-hosts` 和顶层 `snmp`。新用户使用内置 `super-user`，输出配置使用密码哈希；同时配置 root authentication 以保证配置可提交。
 - `report.json` 按账号、AAA、TACACS、RADIUS、usergroup、taskgroup 和 line 引用等类别记录删除数量。
 - 转换报告不得回显被删除的秘密值。
+
+协议认证、PKI、硬件、NAT 和流量统计属于默认关闭的扩展清洗。用户通过独立 YAML 开关显式启用；未提供策略文件时必须保留这些配置。协议认证启用后，密钥定义和协议引用必须同时清理。
 
 ### 4.5 保守清洗和扩展规则
 
@@ -113,33 +116,37 @@
 转换核心使用责任链模式。配置 group 必须在接口分类前展开，处理顺序为：
 
 ```text
-GroupExpansionHandler -> NNIHandler -> UNIHandler -> AuthHandler
+GroupExpansionHandler -> NNIHandler -> UNIHandler -> AuthWashingHandler
 ```
 
 每个处理器只负责其领域的识别、映射、配置变更和报告，并将上下文传递给下一个处理器。后续处理器可插入链中而不修改已有处理器调用方式。
 
 ### 4.8 配置 Group 展开
 
-1. IOS XR 支持识别并展开已引用的 `group ... end-group`、`apply-group`/`apply-groups`：
+1. Group 处理模式由 `group_handling.mode` 控制：
+   - `relevant`（默认）：仅展开会影响接口、聚合、协议接口引用、管理认证和已启用可选清洗范围的 group；无关定义及其应用/排除语句原样保留；
+   - `strict`：展开并校验所有已应用 group；
+   - `preserve`：完全跳过 group 展开。
+2. IOS XR 支持识别并展开已选中的 `group ... end-group`、`apply-group`/`apply-groups`：
    - 精确接口选择器展开到对应接口；
    - 引号包裹的接口正则选择器按照已知显式接口和拓扑接口展开；
    - 显式配置优先于 group 中的同类配置；
    - 未定义 group、运行时变量或 group 内再次应用其他 group 等无法安全求值的情况触发转换失败；正则选择器当前无匹配对象时视为无继承结果。
    - 显式配置高于 group；内层 `apply-group` 高于外层；同一条应用语句中靠前的 group 优先。
    - 同一 group 中多个正则匹配时，按最长匹配优先，长度相同按表达式词法顺序处理。
-2. Junos 支持识别并展开 `groups {}`、`apply-groups` 和 `apply-groups-except`：
+3. Junos 支持识别并展开已选中的 `groups {}`、`apply-groups` 和 `apply-groups-except`：
    - 支持根层级和局部层级应用；
    - 支持常见 `<ge-*>`、`<*>` 通配节点；
    - 显式配置优先于 group 继承配置；
    - 无法安全解析的已应用 group 触发转换失败，不输出不完整的自适应配置。
    - 显式配置高于 group；嵌套层级的 group 高于外层；同一 `apply-groups` 列表中靠前的 group 优先。
-3. 展开后的接口和认证配置进入后续 NNI、UNI、Auth 处理器。已完整展开的 group 及其应用语句从输出中移除，避免在接口改名后再次引用旧接口。
-4. group 展开必须采用事务模式：整台设备的所有已应用 group 均可安全解析时才提交展开结果；任一已应用 group 无法解析时整体回滚并将本次转换标记为失败，不继续执行 NNI、UNI 和 Auth 处理器。
-5. 配置冲突使用完整层级和语义键判断，不能只比较命令首关键字：
+4. 展开后的接口和认证配置进入后续 NNI、UNI、Auth 处理器。已完整展开的 group 及其应用语句从输出中移除，避免在接口改名后再次引用旧接口；未选中的 group 保持可提交的原始结构。
+5. group 展开必须采用事务模式：本次选中的所有 group 均可安全解析时才提交展开结果；任一选中 group 无法解析时整体回滚并将本次转换标记为失败。`relevant` 模式下，无关 group 的未定义引用、运行时变量或嵌套应用不参与本次校验。
+6. 配置冲突使用完整层级和语义键判断，不能只比较命令首关键字：
    - `ipv4 address` 与 `ipv4 access-group` 是不同配置；
    - Junos多个 `address`、接口列表等可重复配置应同时保留；
    - `mtu`、`description`、`vlan-id` 等单值配置按继承优先级选出唯一值。
-6. 每个冲突记录层级、配置键、胜出/被覆盖的来源和值，并输出到 `report.json.group_conflicts`。
+7. 每个冲突记录层级、配置键、胜出/被覆盖的来源和值，并输出到 `report.json.group_conflicts`。
 
 优先级语义依据厂商文档：Cisco IOS XR 配置组采用本地配置优先、内层组优先及最长正则匹配；Junos采用本地配置优先、嵌套组优先，且同一列表中第一个 group 优先。
 

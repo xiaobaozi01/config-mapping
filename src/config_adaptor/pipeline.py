@@ -13,6 +13,7 @@ from .handlers import build_default_chain
 from .models import ConversionContext, DeviceContext, Vendor
 from .profiles import load_profiles
 from .rules import apply_rules, load_rules
+from .washing import load_washing_policy
 
 
 CONFIG_EXTENSIONS = (".cfg", ".conf", ".txt")
@@ -54,10 +55,12 @@ def prepare_context(
     topology_path: Path,
     config_dir: Path,
     profiles_path: Path | None = None,
+    washing_policy_path: Path | None = None,
 ) -> ConversionContext:
     """加载拓扑、镜像规格和厂商文档，构造一次转换的共享上下文。"""
     topology = load_topology(topology_path)
     profiles = load_profiles(profiles_path)
+    washing_policy = load_washing_policy(washing_policy_path)
     device_contexts: dict[str, DeviceContext] = {}
     warnings: list[str] = []
     errors: list[str] = []
@@ -86,6 +89,7 @@ def prepare_context(
     return ConversionContext(
         topology=topology,
         devices=device_contexts,
+        washing_policy=washing_policy,
         warnings=warnings,
         errors=errors,
     )
@@ -97,9 +101,10 @@ def convert(
     output_dir: Path,
     profiles_path: Path | None = None,
     rules_path: Path | None = None,
+    washing_policy_path: Path | None = None,
 ) -> ConversionContext:
     """执行完整转换；即使失败也写 report，便于定位输入问题。"""
-    context = prepare_context(topology_path, config_dir, profiles_path)
+    context = prepare_context(topology_path, config_dir, profiles_path, washing_policy_path)
     if not context.errors:
         # group 必须先展开，随后依次处理 NNI、UNI 和认证。
         build_default_chain().handle(context)

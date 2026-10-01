@@ -79,7 +79,7 @@ output/
         ↓
 按厂商解析配置
         ↓
-展开配置 Group
+按策略展开配置 Group（默认仅业务相关）
         ↓
 处理 NNI 和聚合扁平化
         ↓
@@ -103,10 +103,12 @@ NNIHandler
         ↓
 UNIHandler
         ↓
-AuthHandler
+AuthWashingHandler
 ```
 
 任一阶段产生错误后，责任链停止，不继续执行后续阶段。
+
+`GroupExpansionHandler` 支持三种模式：`relevant` 只展开接口迁移、协议接口引用、管理认证及已启用可选清洗所需的 group；`strict` 展开所有已应用 group；`preserve` 保留全部 group。默认使用 `relevant`，未被选中的定义、`apply-group(s)` 和排除语句继续保留。
 
 ## 4. 输入准备
 
@@ -505,6 +507,9 @@ tacacs-server / tacacs
 radius-server / radius
 taskgroup / task-group
 usergroup / user-group
+snmp-server
+ssh server / ssh client
+telnet server
 ```
 
 `line` 配置只删除认证相关子命令：
@@ -535,6 +540,8 @@ username labadmin
 ```
 
 `root-system` 是 IOS XR 内置权限组，不需要重新创建 taskgroup 或 usergroup。
+
+Bundle/聚合 UNI 扁平化到普通物理口时，`bundle minimum-active links/bandwidth`、LACP 和其他聚合专属属性由 NNI/UNI 阶段清理，不进入认证处理器。
 
 ## 8. Juniper Junos 处理流程
 
@@ -733,7 +740,12 @@ root-authentication
 authentication-order
 radius-server
 tacplus-server
+radius-options
+tacplus-options
+accounting
 ```
+
+同时删除顶层 `snmp`、`system services` 下的 SSH/Telnet、嵌套的 NETCONF-over-SSH，以及 `security ssh-known-hosts`。GNS3 的 Telnet console 连接由虚拟机串口提供，不依赖设备自身的 Telnet server。
 
 删除整个 `system login` 会同时清除：
 
@@ -762,6 +774,27 @@ system {
 - `super-user` 是 Junos 内置 class。
 - 密码使用 SHA-512 crypt 哈希。
 - root authentication 用于保证配置可以正常提交。
+
+### 8.6 可选扩展清洗
+
+`--washing-policy` 读取独立 YAML，以下开关默认均为 `false`：
+
+```yaml
+optional_washing:
+  protocol_authentication: false
+  pki: false
+  hardware: false
+  nat: false
+  flow_statistics: false
+```
+
+- `protocol_authentication`：删除 OSPF/IS-IS/BGP 等协议认证定义和引用。
+- `pki`：删除明确的 PKI、证书及密钥生成配置。
+- `hardware`：删除目标虚拟镜像不需要的硬件、槽位或 chassis 配置。
+- `nat`：删除 NAT/CGN 配置。
+- `flow_statistics`：删除流量采样和流量监控配置。
+
+这些开关会改变业务能力，只有显式启用才执行；清洗报告只记录类别和数量，不记录秘密值。
 
 ## 9. 全局接口引用更新
 

@@ -9,6 +9,7 @@ from dataclasses import dataclass, field
 from typing import Iterable
 
 from ..constants import LAB_PASSWORD, LAB_USERNAME
+from ..models import WashingPolicy
 from .common import (
     AuthenticationCleanupOutcome,
     GroupExpansionOutcome,
@@ -414,6 +415,73 @@ class CiscoDocument:
         return [token.strip("'\"") for token in match.group(1).strip().strip("[]").split() if token]
 
     @staticmethod
+    def _rewrite_cisco_group_control(command: str, keyword: str, remaining: list[str]) -> str | None:
+        """从 apply/exclude-group 语句中只移除已经展开的 group。"""
+        match = re.match(
+            rf"({re.escape(keyword)}s?)\s+(.+?)\s*$",
+            command.strip(),
+            re.IGNORECASE,
+        )
+        if not match:
+            return command
+        if not remaining:
+            return None
+        original_value = match.group(2).strip()
+        value = " ".join(remaining)
+        if original_value.startswith("[") and original_value.endswith("]"):
+            value = f"[ {value} ]"
+        return f"{match.group(1)} {value}"
+
+    @staticmethod
+    def _cisco_group_path_relevant(path: list[str], policy: WashingPolicy) -> bool:
+        """判断 IOS XR 路径是否会影响接口迁移或已启用的清洗范围。"""
+        if not path:
+            return False
+        top = _normalized_command(path[0])
+        always = (
+            "interface ",
+            "router ",
+            "vrf ",
+            "l2vpn",
+            "mpls ",
+            "segment-routing",
+            "username ",
+            "aaa",
+            "tacacs",
+            "radius",
+            "taskgroup ",
+            "usergroup ",
+            "line ",
+            "snmp-server",
+            "ssh ",
+            "telnet ",
+        )
+        if top.startswith(always):
+            return True
+        if policy.protocol_authentication and top.startswith(("key chain", "key-chain")):
+            return True
+        if policy.pki and top.startswith(("crypto ", "crypto-key", "certificate ")):
+            return True
+        if policy.hardware and top.startswith(("hw-module ", "controller ", "platform ", "slot ")):
+            return True
+        if policy.nat and top.startswith(("nat ", "service-location ")):
+            return True
+        if policy.flow_statistics and top.startswith(("flow ", "flow-exporter ", "flow monitor ")):
+            return True
+        return False
+
+    def _cisco_group_tree_relevant(self, nodes: list[_CiscoNode], policy: WashingPolicy) -> bool:
+        """检查 group 定义中是否包含需要物化后再处理的配置。"""
+        def walk(items: list[_CiscoNode], path: list[str]) -> bool:
+            for item in items:
+                current = [*path, item.command]
+                if self._cisco_group_path_relevant(current, policy) or walk(item.children, current):
+                    return True
+            return False
+
+        return walk(nodes, [])
+
+    @staticmethod
     def _cisco_pattern_match(pattern: str, target: str) -> bool:
         """匹配精确选择器或引号内的 IOS XR 正则选择器。"""
         pattern = " ".join(pattern.strip().split())
@@ -560,10 +628,20 @@ class CiscoDocument:
                     source_origin,
                 )
 
-    def expand_groups(self, known_interfaces: Iterable[str]) -> GroupExpansionOutcome:
+    def expand_groups(
+        self,
+        known_interfaces: Iterable[str],
+        mode: str = "relevant",
+        policy: WashingPolicy | None = None,
+    ) -> GroupExpansionOutcome:
         """事务式展开 IOS XR group，并执行本地/内层优先规则。"""
 
         outcome = GroupExpansionOutcome()
+        policy = policy or WashingPolicy()
+        if mode == "preserve":
+            return outcome
+        if mode not in {"relevant", "strict"}:
+            raise ValueError(f"未知 IOS XR group 处理模式: {mode}")
         # 第一步只收集定义；是否真正删除要等所有 apply-group 都验证成功。
         group_blocks: dict[str, CiscoBlock] = {}
         for block in self.blocks:
@@ -632,6 +710,27 @@ class CiscoDocument:
                 root.children.append(_CiscoNode(f"interface {name}", is_block=True, origin="synthetic"))
                 existing_interfaces.add(name)
 
+        selected_groups: set[str] = set()
+
+        def select_groups(node: _CiscoNode, path: list[str]) -> None:
+            """预先选出本次要展开的 group，未选中的控制语句保持原样。"""
+            for child in node.children:
+                names = self._cisco_group_names(child.command, "apply-group")
+                for name in names:
+                    tree = group_trees.get(name)
+                    if mode == "strict" or (
+                        not path and tree is None
+                    ) or self._cisco_group_path_relevant(path, policy) or (
+                        tree is not None and self._cisco_group_tree_relevant(tree, policy)
+                    ):
+                        selected_groups.add(name)
+                if child.is_block:
+                    select_groups(child, [*path, child.command])
+
+        select_groups(root, [])
+        if not selected_groups:
+            return outcome
+
         all_applied: set[str] = set()
         unresolved = False
 
@@ -645,8 +744,16 @@ class CiscoDocument:
             local_names: list[str] = []
             excluded: set[str] = set()
             for child in node.children:
-                local_names.extend(self._cisco_group_names(child.command, "apply-group"))
-                excluded.update(self._cisco_group_names(child.command, "exclude-group"))
+                local_names.extend(
+                    name
+                    for name in self._cisco_group_names(child.command, "apply-group")
+                    if name in selected_groups
+                )
+                excluded.update(
+                    name
+                    for name in self._cisco_group_names(child.command, "exclude-group")
+                    if name in selected_groups
+                )
             all_applied.update(local_names)
             for name in local_names:
                 if name not in group_trees:
@@ -674,12 +781,22 @@ class CiscoDocument:
                 payload = self._cisco_group_payload(tree, path)
                 self._merge_cisco_group_children(node, payload, group_name, rank, path, outcome)
 
-            node.children = [
-                child
-                for child in node.children
-                if not self._cisco_group_names(child.command, "apply-group")
-                and not self._cisco_group_names(child.command, "exclude-group")
-            ]
+            retained: list[_CiscoNode] = []
+            for child in node.children:
+                rewritten: str | None = child.command
+                for keyword in ("apply-group", "exclude-group"):
+                    names = self._cisco_group_names(child.command, keyword)
+                    if names:
+                        rewritten = self._rewrite_cisco_group_control(
+                            child.command,
+                            keyword,
+                            [name for name in names if name not in selected_groups],
+                        )
+                        break
+                if rewritten is not None:
+                    child.command = rewritten
+                    retained.append(child)
+            node.children = retained
             index = 0
             while index < len(node.children):
                 child = node.children[index]
@@ -700,6 +817,11 @@ class CiscoDocument:
 
         # 只有成功解析全部引用后，才用展开后的树替换原配置块。
         rebuilt: list[CiscoBlock] = []
+        if mode == "relevant":
+            for name, block in group_blocks.items():
+                if name in all_applied:
+                    continue
+                rebuilt.extend([copy.deepcopy(block), CiscoBlock(header="end-group"), CiscoBlock(header="!")])
         for node in root.children:
             rebuilt.append(
                 CiscoBlock(
@@ -737,7 +859,7 @@ class CiscoDocument:
                 block.lines = [
                     line
                     for line in block.lines
-                    if not re.match(r"\s*(bundle\s+id|lacp\b|aggregated-)\b", line, re.IGNORECASE)
+                    if not re.match(r"\s*(?:bundle\b|lacp\b|aggregated-)", line, re.IGNORECASE)
                 ]
             self._merge_duplicate_interface(block)
 
@@ -767,7 +889,7 @@ class CiscoDocument:
                 clone.lines = [
                     line
                     for line in clone.lines
-                    if not re.match(r"\s*(bundle\s+id|lacp\b|aggregated-)", line, re.IGNORECASE)
+                    if not re.match(r"\s*(?:bundle\b|lacp\b|aggregated-)", line, re.IGNORECASE)
                 ]
             clones.extend([clone, CiscoBlock(header="!")])
         self.blocks[insert_at:insert_at] = clones
@@ -802,7 +924,7 @@ class CiscoDocument:
             line
             for line in block.lines
             if not re.match(
-                r"\s*(?:encapsulation\b|rewrite\b|bundle\s+id\b|lacp\b)",
+                r"\s*(?:encapsulation\b|rewrite\b|bundle\b|lacp\b)",
                 line,
                 re.IGNORECASE,
             )
@@ -821,17 +943,54 @@ class CiscoDocument:
         self.blocks.append(CiscoBlock(header=f"interface {canonical}", lines=[" no shutdown"]))
         self.blocks.append(CiscoBlock(header="!"))
 
-    def clean_authentication(self) -> AuthenticationCleanupOutcome:
-        """删除旧账号、AAA、权限组及 line 下的认证引用。"""
+    def clean_authentication(
+        self,
+        policy: WashingPolicy | None = None,
+    ) -> AuthenticationCleanupOutcome:
+        """清理管理面认证，并按策略删除明确启用的扩展配置。"""
+        policy = policy or WashingPolicy()
         outcome = AuthenticationCleanupOutcome()
-        top_level = (
+        top_level: list[tuple[str, re.Pattern[str]]] = [
             ("username", re.compile(r"^username\b", re.IGNORECASE)),
             ("aaa", re.compile(r"^aaa\b", re.IGNORECASE)),
             ("tacacs", re.compile(r"^(?:tacacs-server|tacacs)\b", re.IGNORECASE)),
             ("radius", re.compile(r"^(?:radius-server|radius)\b", re.IGNORECASE)),
             ("taskgroup", re.compile(r"^task-?group\b", re.IGNORECASE)),
             ("usergroup", re.compile(r"^user-?group\b", re.IGNORECASE)),
+            ("snmp", re.compile(r"^snmp-server\b", re.IGNORECASE)),
+            ("ssh", re.compile(r"^ssh\b", re.IGNORECASE)),
+            ("telnet", re.compile(r"^telnet\b", re.IGNORECASE)),
+        ]
+        optional_top_level: list[tuple[bool, str, str]] = [
+            (
+                policy.pki,
+                "pki",
+                r"^(?:crypto\s+(?:pki|ca|key)\b|certificate\b|trustpoint\b)",
+            ),
+            (
+                policy.hardware,
+                "hardware",
+                r"^(?:hw-module|platform|service-location|slot)\b",
+            ),
+            (policy.nat, "nat", r"^(?:nat|cgn|service\s+cgn)\b"),
+            (
+                policy.flow_statistics,
+                "flow-statistics",
+                r"^(?:flow(?:-exporter|-monitor)?|sampler|monitor-session)\b",
+            ),
+        ]
+        top_level.extend(
+            (category, re.compile(pattern, re.IGNORECASE))
+            for enabled, category, pattern in optional_top_level
+            if enabled
         )
+        if policy.protocol_authentication:
+            top_level.append(
+                (
+                    "protocol-auth-definition",
+                    re.compile(r"^(?:key\s+chain|key-?chain)\b", re.IGNORECASE),
+                )
+            )
         line_auth = re.compile(
             r"^(?:password|secret)\b"
             r"|^login\s+authentication\b"
@@ -857,6 +1016,50 @@ class CiscoDocument:
                 retained = [line for line in block.lines if not line_auth.match(line.strip())]
                 outcome.record("line-auth-reference", len(block.lines) - len(retained))
                 block.lines = retained
+        if policy.protocol_authentication:
+            protocol_header = re.compile(
+                r"^(?:router\s+(?:bgp|isis|ospf|ospfv3|rip)|mpls\s+ldp|rsvp)\b",
+                re.IGNORECASE,
+            )
+            protocol_auth = re.compile(
+                r"(?:^|\s)(?:authentication(?:-key(?:-chain)?|-algorithm|-type)?|"
+                r"password|key-?chain)(?:\s|$)",
+                re.IGNORECASE,
+            )
+            interface_auth = re.compile(
+                r"^(?:authentication(?:-key(?:-chain)?|-algorithm|-type)?|key-?chain)\b",
+                re.IGNORECASE,
+            )
+
+            def strip_sections(lines: list[str], pattern: re.Pattern[str]) -> tuple[list[str], int]:
+                """删除命中命令及其更深缩进的子配置。"""
+                retained: list[str] = []
+                removed = 0
+                skipped_indent: int | None = None
+                for line in lines:
+                    stripped = line.strip()
+                    indent = len(line) - len(line.lstrip())
+                    if skipped_indent is not None:
+                        if stripped and indent > skipped_indent:
+                            removed += 1
+                            continue
+                        skipped_indent = None
+                    if pattern.search(stripped):
+                        removed += 1
+                        skipped_indent = indent
+                        continue
+                    retained.append(line)
+                return retained, removed
+
+            for block in self.blocks:
+                if not block.active:
+                    continue
+                if protocol_header.match(block.header.strip()):
+                    block.lines, removed = strip_sections(block.lines, protocol_auth)
+                    outcome.record("protocol-auth-reference", removed)
+                elif block.interface_name:
+                    block.lines, removed = strip_sections(block.lines, interface_auth)
+                    outcome.record("protocol-auth-reference", removed)
         return outcome
 
     def add_lab_account(self) -> None:

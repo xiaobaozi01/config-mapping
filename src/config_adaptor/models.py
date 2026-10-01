@@ -113,6 +113,18 @@ class ImageProfile:
         return None
 
 
+@dataclass(slots=True, frozen=True)
+class WashingPolicy:
+    """Group 处理模式和默认关闭的扩展清洗开关。"""
+
+    group_handling: str = "relevant"
+    protocol_authentication: bool = False
+    pki: bool = False
+    hardware: bool = False
+    nat: bool = False
+    flow_statistics: bool = False
+
+
 @dataclass(slots=True)
 class DeviceContext:
     """单台设备在转换过程中的文档、规格、映射和诊断信息。"""
@@ -159,6 +171,7 @@ class ConversionContext:
     """责任链各处理器共享的一次转换状态。"""
     topology: TopologyWorkbook
     devices: dict[str, DeviceContext]
+    washing_policy: WashingPolicy = field(default_factory=WashingPolicy)
     warnings: list[str] = field(default_factory=list)
     errors: list[str] = field(default_factory=list)
     events: list[dict[str, Any]] = field(default_factory=list)

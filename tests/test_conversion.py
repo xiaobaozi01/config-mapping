@@ -9,9 +9,11 @@ from pathlib import Path
 
 from openpyxl import load_workbook
 
+from config_adaptor.models import WashingPolicy
 from config_adaptor.parsers.cisco_iosxr import CiscoDocument
 from config_adaptor.parsers.juniper_junos import JunosDocument
 from config_adaptor.pipeline import convert
+from config_adaptor.washing import load_washing_policy
 
 
 FIXTURES = Path(__file__).parent / "fixtures"
@@ -24,6 +26,11 @@ class ConversionTest(unittest.TestCase):
     def fixture_config(name: str) -> str:
         """读取单项 group 测试使用的外部配置文件。"""
         return (FIXTURES / "group_configs" / name).read_text(encoding="utf-8")
+
+    @staticmethod
+    def washing_config(name: str) -> str:
+        """读取认证与可选策略清洗使用的外部配置文件。"""
+        return (FIXTURES / "washing_configs" / name).read_text(encoding="utf-8")
 
     @staticmethod
     def conversion_fixture(name: str) -> tuple[Path, Path]:
@@ -153,6 +160,108 @@ class ConversionTest(unittest.TestCase):
             self.assertEqual(report["summary"]["active_links"], 2)
             self.assertEqual(report["summary"]["skipped_links"], 1)
 
+    def test_mandatory_washing_removes_management_access_and_snmp(self):
+        """默认只清管理面必删项，协议认证和业务能力继续保留。"""
+        policy = WashingPolicy()
+
+        cisco_document = CiscoDocument(self.washing_config("iosxr.cfg"))
+        cisco_cleanup = cisco_document.clean_authentication(policy)
+        cisco_document.add_lab_account()
+        cisco = cisco_document.render()
+        self.assertNotIn("username old-user", cisco)
+        self.assertNotIn("tacacs-server", cisco)
+        self.assertNotIn("radius-server", cisco)
+        self.assertNotIn("snmp-server", cisco)
+        self.assertNotIn("ssh server", cisco)
+        self.assertNotIn("ssh client", cisco)
+        self.assertNotIn("telnet vrf", cisco)
+        self.assertNotIn("OLDPASSWORD", cisco)
+        self.assertIn("exec-timeout 10 0", cisco)
+        self.assertIn("username labadmin", cisco)
+        self.assertIn("key chain OSPF_KEYS", cisco)
+        self.assertIn("authentication message-digest keychain OSPF_KEYS", cisco)
+        self.assertIn("crypto pki trustpoint PROD-CA", cisco)
+        self.assertIn("service cgn NAT1", cisco)
+        self.assertIn("flow monitor PROD-FLOW", cisco)
+        self.assertEqual(cisco_cleanup.removed["snmp"], 1)
+        self.assertEqual(cisco_cleanup.removed["ssh"], 2)
+
+        junos_document = JunosDocument(self.washing_config("junos.cfg"))
+        junos_cleanup = junos_document.clean_authentication(policy)
+        junos_document.add_lab_account()
+        junos = junos_document.render()
+        self.assertNotIn("old-user", junos)
+        self.assertNotIn("RADIUSSECRET", junos)
+        self.assertNotIn("TACACSSECRET", junos)
+        self.assertNotIn("radius-options", junos)
+        self.assertNotIn("tacplus-options", junos)
+        self.assertNotIn("accounting", junos)
+        self.assertNotIn("community SNMPSECRET", junos)
+        self.assertNotIn("ssh-known-hosts", junos)
+        self.assertNotIn("authentication-order tacplus", junos)
+        self.assertNotIn("telnet;", junos)
+        self.assertIn("ftp;", junos)
+        self.assertIn("user labadmin", junos)
+        self.assertIn("authentication-key-chains", junos)
+        self.assertIn("simple-password OSPFSECRET", junos)
+        self.assertIn("ca-profile PROD-CA", junos)
+        self.assertIn("rule-set PROD-NAT", junos)
+        self.assertIn("flow-monitoring", junos)
+        self.assertEqual(junos_cleanup.removed["snmp"], 1)
+        self.assertGreaterEqual(junos_cleanup.removed["remote-access"], 3)
+
+    def test_optional_washing_switches_remove_expanded_categories(self):
+        """五个可选开关显式开启后才删除协议和兼容性配置。"""
+        policy = load_washing_policy(FIXTURES / "washing_configs" / "all_optional.yaml")
+
+        cisco_document = CiscoDocument(self.washing_config("iosxr.cfg"))
+        cisco_document.clean_authentication(policy)
+        cisco = cisco_document.render()
+        self.assertNotIn("key chain OSPF_KEYS", cisco)
+        self.assertNotIn("authentication message-digest", cisco)
+        self.assertNotIn("crypto pki", cisco)
+        self.assertNotIn("hw-module", cisco)
+        self.assertNotIn("service cgn", cisco)
+        self.assertNotIn("flow monitor", cisco)
+
+        junos_document = JunosDocument(self.washing_config("junos.cfg"))
+        junos_document.clean_authentication(policy)
+        junos = junos_document.render()
+        self.assertNotIn("authentication-key-chains", junos)
+        self.assertNotIn("simple-password OSPFSECRET", junos)
+        self.assertNotIn("ca-profile PROD-CA", junos)
+        self.assertNotIn("chassis {", junos)
+        self.assertNotIn("rule-set PROD-NAT", junos)
+        self.assertNotIn("nat-rules PROD-NAT", junos)
+        self.assertNotIn("flow-monitoring", junos)
+        self.assertNotIn("sampling {", junos)
+
+        topology, config_dir = self.conversion_fixture("cross_vendor")
+        with tempfile.TemporaryDirectory() as directory:
+            context = convert(
+                topology,
+                config_dir,
+                Path(directory) / "output",
+                washing_policy_path=FIXTURES / "washing_configs" / "all_optional.yaml",
+            )
+            self.assertFalse(context.has_errors)
+            self.assertTrue(context.washing_policy.protocol_authentication)
+            self.assertTrue(context.washing_policy.flow_statistics)
+
+    def test_cisco_bundle_thresholds_are_removed_when_flattened(self):
+        """Bundle 迁移到普通物理口时不遗留 minimum-active 或 LACP。"""
+        document = CiscoDocument(self.washing_config("iosxr.cfg"))
+        document.rename_interface_tree(
+            "Bundle-Ether10",
+            "GigabitEthernet0/0/0/0",
+            strip_bundle=True,
+        )
+        rendered = document.render()
+        self.assertNotIn("bundle minimum-active", rendered)
+        self.assertNotIn("lacp switchover", rendered)
+        self.assertIn("interface GigabitEthernet0/0/0/0", rendered)
+        self.assertIn("ipv4 address 10.0.0.1 255.255.255.252", rendered)
+
     def test_iosxr_mlag_is_split_by_peer_and_references_are_cloned(self):
         """同一 Bundle 跨对端时分配多个物理口，全局引用同步展开。"""
         topology, config_dir = self.conversion_fixture("iosxr_mlag")
@@ -246,6 +355,99 @@ class ConversionTest(unittest.TestCase):
         self.assertIn("mtu 9000;", rendered)
         self.assertNotIn("groups {", rendered)
         self.assertNotIn("apply-groups COMMON", rendered)
+
+    def test_relevant_mode_preserves_unrelated_iosxr_groups(self):
+        source = """group BUSINESS
+ interface 'GigabitEthernet.*'
+  mtu 9000
+ !
+end-group
+!
+group TELEMETRY
+ telemetry model-driven
+  destination-group LAB
+  apply-group MISSING
+ !
+end-group
+!
+apply-group BUSINESS TELEMETRY
+!
+interface GigabitEthernet0/0/0/5
+!
+end
+"""
+        document = CiscoDocument(source)
+        outcome = document.expand_groups(["GigabitEthernet0/0/0/5"])
+        rendered = document.render()
+        self.assertTrue(outcome.success)
+        self.assertIn("mtu 9000", rendered)
+        self.assertNotIn("group BUSINESS", rendered)
+        self.assertIn("group TELEMETRY", rendered)
+        self.assertIn("apply-group TELEMETRY", rendered)
+        self.assertEqual(rendered.count("telemetry model-driven"), 1)
+
+    def test_relevant_mode_preserves_unrelated_junos_groups(self):
+        source = """groups {
+    BUSINESS {
+        interfaces {
+            <ge-*> {
+                mtu 9000;
+            }
+        }
+    }
+    LOGGING {
+        system {
+            syslog {
+                file messages {
+                    any notice;
+                    apply-groups MISSING;
+                }
+            }
+        }
+    }
+}
+interfaces {
+    ge-0/0/5 {
+        unit 0;
+    }
+}
+apply-groups [ BUSINESS LOGGING ];
+"""
+        document = JunosDocument(source)
+        outcome = document.expand_groups([])
+        rendered = document.render()
+        self.assertTrue(outcome.success)
+        self.assertIn("mtu 9000;", rendered)
+        self.assertNotIn("BUSINESS {", rendered)
+        self.assertIn("LOGGING {", rendered)
+        self.assertIn("apply-groups [ LOGGING ];", rendered)
+        self.assertIn("apply-groups MISSING;", rendered)
+        self.assertEqual(rendered.count("syslog {"), 1)
+
+    def test_strict_and_preserve_group_modes(self):
+        source = """groups {
+    LOGGING {
+        system {
+            syslog {
+                file messages {
+                    any notice;
+                }
+            }
+        }
+    }
+}
+apply-groups LOGGING;
+"""
+        strict = JunosDocument(source)
+        strict_outcome = strict.expand_groups([], mode="strict")
+        self.assertTrue(strict_outcome.success)
+        self.assertNotIn("groups {", strict.render())
+        self.assertIn("syslog {", strict.render())
+
+        preserved = JunosDocument(source)
+        preserve_outcome = preserved.expand_groups([], mode="preserve")
+        self.assertTrue(preserve_outcome.success)
+        self.assertEqual(preserved.render(), source)
 
     def test_iosxr_group_conflict_precedence_and_semantic_keys(self):
         document = CiscoDocument(self.fixture_config("iosxr_group_conflicts.cfg"))

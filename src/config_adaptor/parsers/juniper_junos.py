@@ -9,6 +9,7 @@ from dataclasses import dataclass
 from typing import Iterable
 
 from ..constants import JUNOS_LAB_PASSWORD_HASH, LAB_USERNAME
+from ..models import WashingPolicy
 from .common import (
     AuthenticationCleanupOutcome,
     GroupExpansionOutcome,
@@ -233,6 +234,90 @@ class JunosDocument:
         value = match.group(1).strip().strip("[]").strip()
         return [token.strip("'\"") for token in value.split() if token]
 
+    @classmethod
+    def _rewrite_group_control(cls, statement: str, keyword: str, remaining: list[str]) -> str | None:
+        """从 apply-groups 语句中只移除已经展开的 group。"""
+        base = cls._base_header(statement)
+        match = re.match(rf"({re.escape(keyword)})\s+(.+?)\s*;\s*$", base)
+        if not match:
+            return statement
+        if not remaining:
+            return None
+        prefix = statement[: statement.find(base)] if base in statement else ""
+        original_value = match.group(2).strip()
+        value = " ".join(remaining)
+        if original_value.startswith("[") and original_value.endswith("]"):
+            value = f"[ {value} ]"
+        return f"{prefix}{match.group(1)} {value};"
+
+    @classmethod
+    def _group_path_relevant(cls, path: list[str], policy: WashingPolicy) -> bool:
+        """判断 Junos 路径是否影响接口迁移或已启用的清洗范围。"""
+        if not path:
+            return False
+        normalized = [_normalized_command(cls._base_header(component)) for component in path]
+        top = normalized[0]
+        if top in {
+            "interfaces",
+            "protocols",
+            "routing-instances",
+            "logical-systems",
+            "bridge-domains",
+            "vlans",
+            "l2vpn",
+            "routing-options",
+        }:
+            return True
+        if top == "snmp":
+            return True
+        if top == "system" and len(normalized) > 1:
+            second = normalized[1]
+            if second.startswith(
+                (
+                    "login",
+                    "root-authentication",
+                    "authentication-order",
+                    "radius-",
+                    "tacplus-",
+                    "accounting",
+                )
+            ):
+                return True
+            if second == "services" and len(normalized) > 2:
+                return normalized[2].startswith(("ssh", "telnet", "netconf"))
+        if top == "security" and len(normalized) > 1:
+            second = normalized[1]
+            if second == "ssh-known-hosts":
+                return True
+            if policy.protocol_authentication and second == "authentication-key-chains":
+                return True
+            if policy.pki and second in {"pki", "certificates"}:
+                return True
+            if policy.nat and second in {"nat", "services"}:
+                return True
+        if policy.hardware and top == "chassis":
+            return True
+        if policy.nat and top in {"services", "service-set"}:
+            return True
+        if policy.flow_statistics and top == "forwarding-options":
+            return True
+        return False
+
+    def _group_tree_relevant(self, group: JunosNode, policy: WashingPolicy) -> bool:
+        """检查 group 定义中是否包含需要物化后再处理的配置。"""
+        def walk(items: list[JunosNode], path: list[str]) -> bool:
+            for item in items:
+                if not item.active:
+                    continue
+                current = [*path, self._base_header(item.header)]
+                if self._group_path_relevant(current, policy):
+                    return True
+                if item.children is not None and walk(item.children, current):
+                    return True
+            return False
+
+        return walk(group.children or [], [])
+
     @staticmethod
     def _junos_selector_specificity(header: str) -> tuple[int, str]:
         """以通配表达式中的字面量长度衡量选择器具体程度。"""
@@ -345,10 +430,20 @@ class JunosDocument:
                 self._record_junos_conflict(outcome, path, identity, existing, candidate)
         return True
 
-    def expand_groups(self, known_interfaces: Iterable[str]) -> GroupExpansionOutcome:
+    def expand_groups(
+        self,
+        known_interfaces: Iterable[str],
+        mode: str = "relevant",
+        policy: WashingPolicy | None = None,
+    ) -> GroupExpansionOutcome:
         """事务式展开 Junos groups，并执行本地/内层优先规则。"""
 
         outcome = GroupExpansionOutcome()
+        policy = policy or WashingPolicy()
+        if mode == "preserve":
+            return outcome
+        if mode not in {"relevant", "strict"}:
+            raise ValueError(f"未知 Junos group 处理模式: {mode}")
         # 所有修改都发生在深拷贝上；任一引用无法解析即可整体回滚。
         original_root = self.root
         working = copy.deepcopy(self.root)
@@ -393,6 +488,32 @@ class JunosDocument:
                 interfaces.children.append(JunosNode(name, [], origin="synthetic"))
                 existing_names.add(name)
 
+        selected_groups: set[str] = set()
+
+        def select_groups(node: JunosNode, path: list[str]) -> None:
+            """预先选出本次要展开的 group，未选中的控制语句保持原样。"""
+            if node.children is None or node is groups_container:
+                return
+            for child in node.children:
+                if not child.active:
+                    continue
+                names = self._group_names(child.header, "apply-groups") if not child.is_block else []
+                for name in names:
+                    group = groups.get(name)
+                    if mode == "strict" or (
+                        not path and group is None
+                    ) or self._group_path_relevant(path, policy) or (
+                        group is not None and self._group_tree_relevant(group, policy)
+                    ):
+                        selected_groups.add(name)
+                if child.is_block:
+                    select_groups(child, [*path, self._base_header(child.header)])
+
+        select_groups(working, [])
+        if not selected_groups:
+            self.root = original_root
+            return outcome
+
         all_applied: set[str] = set()
         unresolved = False
 
@@ -411,8 +532,16 @@ class JunosDocument:
             for child in node.children:
                 if not child.active or child.is_block:
                     continue
-                local_names.extend(self._group_names(child.header, "apply-groups"))
-                local_excluded.update(self._group_names(child.header, "apply-groups-except"))
+                local_names.extend(
+                    name
+                    for name in self._group_names(child.header, "apply-groups")
+                    if name in selected_groups
+                )
+                local_excluded.update(
+                    name
+                    for name in self._group_names(child.header, "apply-groups-except")
+                    if name in selected_groups
+                )
             all_applied.update(local_names)
             for name in local_names:
                 if name not in groups:
@@ -442,12 +571,23 @@ class JunosDocument:
                 ):
                     unresolved = True
 
-            node.children = [
-                child
-                for child in node.children
-                if not self._group_names(child.header, "apply-groups")
-                and not self._group_names(child.header, "apply-groups-except")
-            ]
+            retained: list[JunosNode] = []
+            for child in node.children:
+                rewritten: str | None = child.header
+                if not child.is_block:
+                    for keyword in ("apply-groups", "apply-groups-except"):
+                        names = self._group_names(child.header, keyword)
+                        if names:
+                            rewritten = self._rewrite_group_control(
+                                child.header,
+                                keyword,
+                                [name for name in names if name not in selected_groups],
+                            )
+                            break
+                if rewritten is not None:
+                    child.header = rewritten
+                    retained.append(child)
+            node.children = retained
             index = 0
             while index < len(node.children):
                 child = node.children[index]
@@ -472,8 +612,14 @@ class JunosDocument:
             self.root = original_root
             return outcome
 
-        # 全部展开成功后才隐藏 groups 定义和 apply 语句。
-        groups_container.active = False
+        # 全部展开成功后才隐藏已物化的定义；无关 group 和应用语句继续保留。
+        if mode == "strict":
+            groups_container.active = False
+        else:
+            for group in groups_container.children:
+                if self._base_header(group.header) in all_applied:
+                    group.active = False
+            groups_container.active = any(group.active for group in groups_container.children)
         self.root = working
         outcome.events.extend(f"已展开 Junos 配置组 {name}" for name in sorted(all_applied))
         return outcome
@@ -831,18 +977,137 @@ class JunosDocument:
         """确保 UNI 目标父接口存在。"""
         self._ensure_target_parent(name)
 
-    def clean_authentication(self) -> AuthenticationCleanupOutcome:
-        """删除原 login/class、root 密码、认证顺序和外部服务器。"""
+    def clean_authentication(
+        self,
+        policy: WashingPolicy | None = None,
+    ) -> AuthenticationCleanupOutcome:
+        """清理管理面认证，并按策略删除明确启用的扩展配置。"""
+        policy = policy or WashingPolicy()
         system = self._top_block("system", create=True)
         assert system is not None and system.children is not None
         outcome = AuthenticationCleanupOutcome()
-        blocked = {"login", "root-authentication", "authentication-order", "radius-server", "tacplus-server"}
+        blocked = {
+            "login",
+            "root-authentication",
+            "authentication-order",
+            "radius-server",
+            "tacplus-server",
+            "radius-options",
+            "tacplus-options",
+            "accounting",
+        }
         for child in system.children:
             base = self._base_header(child.header)
             first = base.split(maxsplit=1)[0].rstrip(";") if base else ""
             if first in blocked:
                 child.active = False
                 outcome.record(first)
+
+        def first_token(node: JunosNode) -> str:
+            """返回节点语句的第一个关键字。"""
+            base = self._base_header(node.header)
+            return base.split(maxsplit=1)[0].rstrip(";") if base else ""
+
+        def disable_matching(
+            node: JunosNode,
+            keywords: set[str],
+            category: str,
+            recursive: bool = False,
+        ) -> None:
+            """按层级关键字停用子节点，并只在需要时递归。"""
+            if node.children is None:
+                return
+            for child in node.children:
+                if not child.active:
+                    continue
+                if first_token(child) in keywords:
+                    child.active = False
+                    outcome.record(category)
+                    continue
+                if recursive:
+                    disable_matching(child, keywords, category, recursive=True)
+
+        services = next(
+            (
+                child
+                for child in system.children
+                if child.active and child.is_block and self._base_header(child.header) == "services"
+            ),
+            None,
+        )
+        if services:
+            disable_matching(services, {"ssh", "outbound-ssh", "telnet"}, "remote-access", True)
+            for child in services.children or []:
+                if (
+                    child.active
+                    and first_token(child) == "netconf"
+                    and child.children is not None
+                    and not any(grandchild.active for grandchild in child.children)
+                ):
+                    child.active = False
+                    outcome.record("remote-access")
+
+        snmp = self._top_block("snmp")
+        if snmp:
+            snmp.active = False
+            outcome.record("snmp")
+
+        security = self._top_block("security")
+        if security:
+            disable_matching(security, {"ssh-known-hosts"}, "ssh-trust")
+
+        if policy.protocol_authentication:
+            if security:
+                disable_matching(
+                    security,
+                    {"authentication-key-chains"},
+                    "protocol-auth-definition",
+                )
+            protocol_keywords = {
+                "authentication",
+                "authentication-key",
+                "authentication-key-chain",
+                "authentication-algorithm",
+                "authentication-type",
+            }
+            for root_name in ("protocols", "routing-instances", "logical-systems", "interfaces"):
+                root = self._top_block(root_name)
+                if root:
+                    disable_matching(
+                        root,
+                        protocol_keywords,
+                        "protocol-auth-reference",
+                        recursive=True,
+                    )
+
+        if policy.pki:
+            if security:
+                disable_matching(security, {"pki", "certificates"}, "pki")
+            disable_matching(system, {"certificates"}, "pki")
+
+        if policy.hardware:
+            chassis = self._top_block("chassis")
+            if chassis:
+                chassis.active = False
+                outcome.record("hardware")
+
+        if policy.nat:
+            if security:
+                disable_matching(security, {"nat"}, "nat")
+            services_top = self._top_block("services")
+            if services_top:
+                disable_matching(services_top, {"nat", "nat-rules"}, "nat", recursive=True)
+
+        if policy.flow_statistics:
+            services_top = self._top_block("services")
+            if services_top:
+                disable_matching(services_top, {"flow-monitoring"}, "flow-statistics", True)
+            forwarding = self._top_block("forwarding-options")
+            if forwarding:
+                disable_matching(forwarding, {"sampling"}, "flow-statistics", True)
+            interfaces = self._top_block("interfaces")
+            if interfaces:
+                disable_matching(interfaces, {"sampling"}, "flow-statistics", True)
         return outcome
 
     def add_lab_account(self) -> None:
