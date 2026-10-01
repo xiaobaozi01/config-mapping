@@ -152,12 +152,14 @@ TopologyPreflightHandler -> GroupExpansionHandler -> NNIHandler -> UNIHandler
    - 同一 group 中多个正则匹配时，按最长匹配优先，长度相同按表达式词法顺序处理。
 3. Junos 支持识别并展开已选中的 `groups {}`、`apply-groups` 和 `apply-groups-except`：
    - 支持根层级和局部层级应用；
+   - 支持 Group 内递归应用其他 Group，并按传递依赖共同参与相关性判断；
+   - 间接未定义引用或 Group 循环引用触发事务回滚；
    - 支持常见 `<ge-*>`、`<*>` 通配节点；
    - 显式配置优先于 group 继承配置；
    - 无法安全解析的已应用 group 触发转换失败，不输出不完整的自适应配置。
    - 显式配置高于 group；嵌套层级的 group 高于外层；同一 `apply-groups` 列表中靠前的 group 优先。
 4. 展开后的接口和认证配置进入后续 NNI、UNI、Auth 处理器。已完整展开的 group 及其应用语句从输出中移除，避免在接口改名后再次引用旧接口；未选中的 group 保持可提交的原始结构。
-5. group 展开必须采用事务模式：本次选中的所有 group 均可安全解析时才提交展开结果；任一选中 group 无法解析时整体回滚并将本次转换标记为失败。`relevant` 模式下，无关 group 的未定义引用、运行时变量或嵌套应用不参与本次校验。
+5. group 展开必须采用事务模式：本次选中的所有 group 均可安全解析时才提交展开结果；任一选中 group 无法解析时整体回滚并将本次转换标记为失败。`relevant` 模式下，无关 group 的未定义引用或 IOS XR 运行时变量、嵌套应用不参与本次校验。
 6. 配置冲突使用完整层级和语义键判断，不能只比较命令首关键字：
    - `ipv4 address` 与 `ipv4 access-group` 是不同配置；
    - Junos多个 `address`、接口列表等可重复配置应同时保留；

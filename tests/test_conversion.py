@@ -643,6 +643,182 @@ apply-groups LOGGING;
         self.assertIn("address 10.0.0.2/32;", rendered)
         self.assertTrue(outcome.conflicts)
 
+    def test_junos_group_can_apply_groups_transitively(self):
+        """Group 内的传递引用按本地、父 Group、子 Group 的顺序求值。"""
+        source = """groups {
+    BASE {
+        interfaces {
+            <ge-*> {
+                mtu 9000;
+            }
+        }
+    }
+    REGIONAL {
+        apply-groups BASE;
+        interfaces {
+            <ge-*> {
+                mtu 8000;
+            }
+        }
+    }
+    EDGE {
+        apply-groups REGIONAL;
+    }
+}
+interfaces {
+    ge-0/0/0 {
+        mtu 1500;
+        unit 0;
+    }
+    ge-0/0/1 {
+        unit 0;
+    }
+}
+apply-groups EDGE;
+"""
+        document = JunosDocument(source)
+        outcome = document.expand_groups([])
+        rendered = document.render()
+        self.assertTrue(outcome.success)
+        self.assertFalse(outcome.warnings)
+        self.assertIn("mtu 1500;", rendered)
+        self.assertIn("mtu 8000;", rendered)
+        self.assertNotIn("mtu 9000;", rendered)
+        self.assertNotIn("groups {", rendered)
+        self.assertNotIn("apply-groups", rendered)
+        self.assertEqual(
+            set(outcome.events),
+            {
+                "已展开 Junos 配置组 BASE",
+                "已展开 Junos 配置组 EDGE",
+                "已展开 Junos 配置组 REGIONAL",
+            },
+        )
+
+    def test_junos_nested_group_honors_apply_groups_except(self):
+        """Group 内继承的 Group 可在更深层级被 apply-groups-except 排除。"""
+        source = """groups {
+    BASE {
+        interfaces {
+            <ge-*> {
+                mtu 9000;
+            }
+        }
+    }
+    EDGE {
+        apply-groups BASE;
+        interfaces {
+            ge-0/0/0 {
+                apply-groups-except BASE;
+            }
+        }
+    }
+}
+interfaces {
+    ge-0/0/0 {
+        unit 0;
+    }
+    ge-0/0/1 {
+        unit 0;
+    }
+}
+apply-groups EDGE;
+"""
+        document = JunosDocument(source)
+        outcome = document.expand_groups([])
+        rendered = document.render()
+        self.assertTrue(outcome.success)
+        self.assertEqual(rendered.count("mtu 9000;"), 1)
+        first_interface, second_interface = rendered.split("    ge-0/0/1", maxsplit=1)
+        self.assertNotIn("mtu 9000;", first_interface)
+        self.assertIn("mtu 9000;", second_interface)
+        self.assertNotIn("apply-groups", rendered)
+
+    def test_junos_nested_group_cycle_and_missing_reference_roll_back(self):
+        """循环与间接未定义引用均在写回前失败并保留原配置。"""
+        cycle = """groups {
+    A {
+        apply-groups B;
+        interfaces {
+            <ge-*> {
+                mtu 9000;
+            }
+        }
+    }
+    B {
+        apply-groups A;
+    }
+}
+interfaces {
+    ge-0/0/0 {
+        unit 0;
+    }
+}
+apply-groups A;
+"""
+        cycle_document = JunosDocument(cycle)
+        cycle_outcome = cycle_document.expand_groups([])
+        self.assertFalse(cycle_outcome.success)
+        self.assertTrue(any("循环引用" in warning for warning in cycle_outcome.warnings))
+        self.assertEqual(cycle_document.render(), cycle)
+
+        missing = """groups {
+    A {
+        apply-groups MISSING;
+        interfaces {
+            <ge-*> {
+                mtu 9000;
+            }
+        }
+    }
+}
+interfaces {
+    ge-0/0/0 {
+        unit 0;
+    }
+}
+apply-groups A;
+"""
+        missing_document = JunosDocument(missing)
+        missing_outcome = missing_document.expand_groups([])
+        self.assertFalse(missing_outcome.success)
+        self.assertTrue(any("MISSING" in warning for warning in missing_outcome.warnings))
+        self.assertEqual(missing_document.render(), missing)
+
+    def test_junos_keeps_dependencies_of_unapplied_groups(self):
+        """相关 Group 展开后，不删除仍被未应用 Group 引用的定义。"""
+        source = """groups {
+    BASE {
+        interfaces {
+            <ge-*> {
+                mtu 9000;
+            }
+        }
+    }
+    EDGE {
+        apply-groups BASE;
+    }
+    UNUSED-TEMPLATE {
+        apply-groups BASE;
+    }
+}
+interfaces {
+    ge-0/0/0 {
+        unit 0;
+    }
+}
+apply-groups EDGE;
+"""
+        document = JunosDocument(source)
+        outcome = document.expand_groups([])
+        rendered = document.render()
+        self.assertTrue(outcome.success)
+        self.assertIn("BASE {", rendered)
+        self.assertIn("UNUSED-TEMPLATE {", rendered)
+        self.assertNotIn("EDGE {", rendered)
+        self.assertIn("apply-groups BASE;", rendered)
+        self.assertEqual(rendered.count("mtu 9000;"), 2)
+
     def test_group_expansion_rolls_back_on_unresolved_reference(self):
         source = self.fixture_config("junos_group_unresolved.cfg")
         document = JunosDocument(source)

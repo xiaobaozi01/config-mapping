@@ -628,6 +628,11 @@ apply-groups [ GROUP-A GROUP-B ];
 apply-groups-except GROUP-A;
 ```
 
+Group 定义内可以继续应用其他 Group。系统递归求取依赖闭包，在真实配置
+层级上动态展开，因此间接 Group 中的通配节点和局部
+`apply-groups-except` 仍按最终接口路径生效。未应用 Group 所引用的定义会
+继续保留，避免相关 Group 展开后产生悬空引用。
+
 优先级从高到低：
 
 ```text
@@ -672,7 +677,7 @@ apply-groups-except GROUP-A;
 以下情况回滚：
 
 - `apply-groups` 引用未定义 Group。
-- Group 内再次应用其他 Group。
+- Group 直接或间接形成循环引用。
 - 配置层级无法安全求值。
 
 成功后才停用原 `groups` 块，并删除已经处理的 apply 语句。

@@ -82,7 +82,7 @@ class JunosNode:
     children: list["JunosNode"] | None = None
     active: bool = True
     origin: str = "explicit"
-    rank: tuple[int, int] = (1_000_000, 0)
+    rank: tuple[int, ...] = (1_000_000, 0)
 
     @property
     def is_block(self) -> bool:
@@ -369,21 +369,20 @@ class JunosDocument:
         target: JunosNode,
         source_children: list[JunosNode],
         group_name: str,
-        rank: tuple[int, int],
+        rank: tuple[int, ...],
         path: list[str],
         outcome: GroupExpansionOutcome,
-    ) -> bool:
+    ) -> None:
         """按显式、嵌套层级和列表顺序合并 group 子节点。"""
         assert target.children is not None
         for source in source_children:
             if not source.active or not source.header:
                 continue
-            if self._group_names(source.header, "apply-groups"):
-                outcome.warnings.append(
-                    f"Junos 组 {group_name} 内再次引用 apply-groups，整台设备的 group 展开已回滚"
-                )
-                return False
-            if self._group_names(source.header, "apply-groups-except"):
+            if self._group_names(source.header, "apply-groups") or self._group_names(
+                source.header, "apply-groups-except"
+            ):
+                # Group 控制语句由 expand_groups 的依赖求值器处理，不作为
+                # 普通配置写入目标树。
                 continue
             if source.is_block:
                 matches = [
@@ -429,7 +428,6 @@ class JunosDocument:
                 existing.rank = candidate.rank
             else:
                 self._record_junos_conflict(outcome, path, identity, existing, candidate)
-        return True
 
     def expand_groups(
         self,
@@ -489,7 +487,45 @@ class JunosDocument:
                 interfaces.children.append(JunosNode(name, [], origin="synthetic"))
                 existing_names.add(name)
 
-        selected_groups: set[str] = set()
+        def group_dependencies(group: JunosNode) -> list[str]:
+            """按出现顺序收集一个 Group 内直接引用的其他 Group。"""
+            result: list[str] = []
+
+            def collect(node: JunosNode) -> None:
+                if node.children is None:
+                    for name in self._group_names(node.header, "apply-groups"):
+                        if name not in result:
+                            result.append(name)
+                    return
+                for child in node.children:
+                    if child.active:
+                        collect(child)
+
+            collect(group)
+            return result
+
+        dependencies = {name: group_dependencies(group) for name, group in groups.items()}
+        relevance_cache: dict[str, bool] = {}
+
+        def group_is_relevant(name: str, visiting: set[str] | None = None) -> bool:
+            """Group 的相关性包含其传递引用，循环稍后由依赖校验报告。"""
+            if name in relevance_cache:
+                return relevance_cache[name]
+            group = groups.get(name)
+            if group is None:
+                return False
+            visiting = set(visiting or ())
+            if name in visiting:
+                return False
+            visiting.add(name)
+            relevant = self._group_tree_relevant(group, policy) or any(
+                group_is_relevant(dependency, visiting)
+                for dependency in dependencies.get(name, [])
+            )
+            relevance_cache[name] = relevant
+            return relevant
+
+        selected_roots: set[str] = set()
 
         def select_groups(node: JunosNode, path: list[str]) -> None:
             """预先选出本次要展开的 group，未选中的控制语句保持原样。"""
@@ -504,28 +540,163 @@ class JunosDocument:
                     if mode == "strict" or (
                         not path and group is None
                     ) or self._group_path_relevant(path, policy) or (
-                        group is not None and self._group_tree_relevant(group, policy)
+                        group is not None and group_is_relevant(name)
                     ):
-                        selected_groups.add(name)
+                        selected_roots.add(name)
                 if child.is_block:
                     select_groups(child, [*path, self._base_header(child.header)])
 
         select_groups(working, [])
-        if not selected_groups:
+        if not selected_roots:
             self.root = original_root
             return outcome
 
-        all_applied: set[str] = set()
+        # 对本次选中的 Group 求传递依赖闭包，并在改写配置前完成未定义
+        # 引用和循环引用校验，确保失败时可以无损回滚。
+        selected_groups: set[str] = set()
+        dependency_state: dict[str, int] = {}
+        dependency_stack: list[str] = []
         unresolved = False
+
+        def select_dependency(name: str) -> None:
+            nonlocal unresolved
+            state = dependency_state.get(name, 0)
+            if state == 2:
+                return
+            if state == 1:
+                start = dependency_stack.index(name)
+                cycle = [*dependency_stack[start:], name]
+                outcome.warnings.append(
+                    f"Junos group 存在循环引用: {' -> '.join(cycle)}"
+                )
+                unresolved = True
+                return
+            group = groups.get(name)
+            if group is None:
+                outcome.warnings.append(f"Junos apply-groups 引用了未定义的组 {name}")
+                unresolved = True
+                return
+            dependency_state[name] = 1
+            dependency_stack.append(name)
+            selected_groups.add(name)
+            for dependency in dependencies.get(name, []):
+                select_dependency(dependency)
+            dependency_stack.pop()
+            dependency_state[name] = 2
+
+        for name in sorted(selected_roots):
+            select_dependency(name)
+
+        if unresolved:
+            self.root = original_root
+            outcome.events.append("Junos group 展开未完整解析，已整体回滚并保留原配置")
+            outcome.success = False
+            return outcome
+
+        all_applied: set[str] = set()
+
+        # (Group 名称, 优先级, 引用链)。引用链使 apply-groups-except 能够
+        # 同时排除某 Group 及仅通过它引入的传递依赖；保留所有候选路径，
+        # 则被排除高优先级路径后仍可回退到独立应用的同名 Group。
+        GroupApplication = tuple[str, tuple[int, ...], tuple[str, ...]]
+
+        def eligible_applications(
+            applications: list[GroupApplication],
+            excluded: set[str],
+        ) -> list[GroupApplication]:
+            return [
+                application
+                for application in applications
+                if not any(name in excluded for name in application[2])
+            ]
+
+        def effective_applications(
+            applications: list[GroupApplication],
+            excluded: set[str],
+        ) -> list[GroupApplication]:
+            """每个 Group 只采用当前未排除路径中优先级最高的一次应用。"""
+            result: list[GroupApplication] = []
+            seen: set[str] = set()
+            for application in sorted(
+                eligible_applications(applications, excluded),
+                key=lambda item: item[1],
+                reverse=True,
+            ):
+                if application[0] in seen:
+                    continue
+                seen.add(application[0])
+                result.append(application)
+            return result
+
+        def expand_nested_applications(
+            path: list[str],
+            applications: list[GroupApplication],
+            excluded: set[str],
+        ) -> tuple[list[GroupApplication], list[GroupApplication], set[str]]:
+            """在当前真实配置路径求值 Group 内的 apply/except 控制语句。"""
+            expanded = list(applications)
+            expanded_excluded = set(excluded)
+            known = set(expanded)
+
+            while True:
+                changed = False
+                effective = effective_applications(expanded, expanded_excluded)
+
+                # 先应用排除，再沿仍有效的引用路径增加传递 Group。
+                nested_excluded: set[str] = set()
+                for group_name, _rank, _chain in effective:
+                    group = groups[group_name]
+                    for child in self._group_payload_for_path(group, path):
+                        if child.active and not child.is_block:
+                            nested_excluded.update(
+                                name
+                                for name in self._group_names(
+                                    child.header, "apply-groups-except"
+                                )
+                                if name in selected_groups
+                            )
+                if not nested_excluded.issubset(expanded_excluded):
+                    expanded_excluded.update(nested_excluded)
+                    changed = True
+                    effective = effective_applications(expanded, expanded_excluded)
+
+                for group_name, rank, chain in effective:
+                    group = groups[group_name]
+                    nested_names: list[str] = []
+                    for child in self._group_payload_for_path(group, path):
+                        if child.active and not child.is_block:
+                            nested_names.extend(
+                                name
+                                for name in self._group_names(child.header, "apply-groups")
+                                if name in selected_groups
+                            )
+                    for index, name in enumerate(nested_names):
+                        application = (
+                            name,
+                            (*rank[:-1], -1, -index, 0),
+                            (*chain, name),
+                        )
+                        if application in known:
+                            continue
+                        known.add(application)
+                        expanded.append(application)
+                        all_applied.add(name)
+                        changed = True
+
+                if not changed:
+                    return (
+                        expanded,
+                        effective_applications(expanded, expanded_excluded),
+                        expanded_excluded,
+                    )
 
         def walk(
             node: JunosNode,
             path: list[str],
-            inherited: list[tuple[str, tuple[int, int]]],
+            inherited: list[GroupApplication],
             inherited_excluded: set[str],
         ) -> None:
             """递归计算当前层级的有效 group、排除列表与继承优先级。"""
-            nonlocal unresolved
             if node.children is None or node is groups_container:
                 return
             local_excluded = set(inherited_excluded)
@@ -544,33 +715,30 @@ class JunosDocument:
                     if name in selected_groups
                 )
             all_applied.update(local_names)
-            for name in local_names:
-                if name not in groups:
-                    outcome.warnings.append(f"Junos apply-groups 引用了未定义的组 {name}")
-                    unresolved = True
-
             # 层级越深越优先；同一列表中越靠前越优先。
-            local = [(name, (len(path), -index)) for index, name in enumerate(local_names)]
-            active: list[tuple[str, tuple[int, int]]] = []
-            for item in [*local, *inherited]:
-                if item[0] in local_excluded or any(existing[0] == item[0] for existing in active):
-                    continue
-                active.append(item)
+            local: list[GroupApplication] = [
+                (name, (len(path), -index, 0), (name,))
+                for index, name in enumerate(local_names)
+            ]
+            active, effective, local_excluded = expand_nested_applications(
+                path,
+                [*local, *inherited],
+                local_excluded,
+            )
 
-            for group_name, rank in active:
+            for group_name, rank, _chain in effective:
                 group = groups.get(group_name)
                 if group is None:
                     continue
                 payload = self._group_payload_for_path(group, path)
-                if not self._merge_junos_group_children(
+                self._merge_junos_group_children(
                     node,
                     payload,
                     group_name,
                     rank,
                     path,
                     outcome,
-                ):
-                    unresolved = True
+                )
 
             retained: list[JunosNode] = []
             for child in node.children:
@@ -602,13 +770,6 @@ class JunosDocument:
                 index += 1
 
         walk(working, [], [], set())
-        if unresolved:
-            # 不把 working 写回，确保用户原始配置保持完整。
-            self.root = original_root
-            outcome.events.append("Junos group 展开未完整解析，已整体回滚并保留原配置")
-            outcome.conflicts.clear()
-            outcome.success = False
-            return outcome
         if not all_applied:
             self.root = original_root
             return outcome
@@ -617,12 +778,25 @@ class JunosDocument:
         if mode == "strict":
             groups_container.active = False
         else:
+            # 未应用的 Group 仍按原文保留；它们引用的定义也必须保留，
+            # 避免为了本次业务展开而制造悬空引用。
+            preserved = set(groups) - selected_groups
+            pending = list(preserved)
+            while pending:
+                name = pending.pop()
+                for dependency in dependencies.get(name, []):
+                    if dependency in groups and dependency not in preserved:
+                        preserved.add(dependency)
+                        pending.append(dependency)
             for group in groups_container.children:
-                if self._base_header(group.header) in all_applied:
+                name = self._base_header(group.header)
+                if name in selected_groups and name not in preserved:
                     group.active = False
             groups_container.active = any(group.active for group in groups_container.children)
         self.root = working
-        outcome.events.extend(f"已展开 Junos 配置组 {name}" for name in sorted(all_applied))
+        outcome.events.extend(
+            f"已展开 Junos 配置组 {name}" for name in sorted(selected_groups)
+        )
         return outcome
 
     def interface_specs(self) -> list[InterfaceSpec]:
