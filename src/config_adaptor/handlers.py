@@ -8,7 +8,7 @@ from .application.nni import NniEndpointPlan, plan_nni_components
 from .application.pipeline import ConversionPipeline
 from .application.uni import VlanSpaceExhausted, allocate_uni_vlans
 from .parsers import InterfaceKind, interface_parent, interface_unit
-from .models import ConversionContext, InterfaceMapping, Link
+from .models import ConversionContext, InterfaceMapping, Link, Vendor
 
 
 class TopologyPreflightHandler:
@@ -422,6 +422,29 @@ class UNIHandler:
                     )
             if not source_specs:
                 continue
+
+            # BVI 编号不是 VLAN。显式广播域关系也无法给出唯一标签时，
+            # 保守地自动分配运输 VLAN，并留下可审计告警。
+            if device.device.vendor == Vendor.CISCO_IOSXR:
+                for spec in source_specs:
+                    if (
+                        spec.kind != InterfaceKind.GATEWAY
+                        or spec.vlan is not None
+                        or spec.inner_vlan is not None
+                    ):
+                        continue
+                    message = (
+                        f"设备 {device_name} 的网关接口 {spec.name} 未找到唯一明确的"
+                        "接入口 VLAN；不使用 BVI 编号，将自动分配运输 VLAN"
+                    )
+                    device.warnings.append(message)
+                    context.add_event(
+                        "gateway-vlan-warning",
+                        message,
+                        device=device_name,
+                        interface=spec.name,
+                        action="allocate-transport-vlan",
+                    )
 
             # interface_specs 保留源配置顺序，业务映射也沿用该顺序。
             try:

@@ -61,7 +61,7 @@
 1. NNI 处理完成后，仅剩余有效业务 UNI 映射到目标镜像最后一个数据接口的子接口。
 2. UNI 不生成 GNS3 拓扑链路。
 3. 有效业务的识别条件为：配置 IP，或承载 L2VC/L2Circuit、L2 transport/CCC/bridge，或被 L2VPN、bridge-domain、VLAN、routing-instance 及路由协议引用。
-4. 物理口下的子接口/unit、聚合关系和业务引用作为一个依赖闭包处理。Cisco 沿 `l2transport/bridge-domain` 关联 BVI，Juniper 沿 `bridge-domains`/`vlans` 的接口、VLAN ID或名称关联 IRB；只有广播域仍包含活跃 UNI 时，网关才作为 UNI 逻辑口迁移。
+4. 物理口下的子接口/unit、聚合关系和业务引用作为一个依赖闭包处理。Cisco 沿 `l2transport/bridge-domain` 关联 BVI，Juniper 沿 `bridge-domains`/`vlans` 的接口、VLAN ID或名称关联 IRB；只有广播域仍包含活跃 UNI 时，网关才作为 UNI 逻辑口迁移。BVI 接口编号不得默认解释为 VLAN ID；只有同一 bridge-domain 存在唯一明确的接入口标签时，才能将其作为网关的内层业务 VLAN。
 5. 无 IP、无 L2 绑定且无外部业务引用的裸口不保留；无业务聚合的成员口一并删除。
 6. 目标 UNI 统一使用 QinQ，原 VLAN 标签匹配、rewrite、`vlan-id-list`、`vlan members`、接口模式及 VLAN map 配置清除后重写；`vlan-ccc` 等决定业务类型而非标签匹配的封装语义保留：
    - 外层 VLAN 在设备内唯一，同时作为目标子接口/unit 编号；

@@ -253,8 +253,8 @@ class CiscoDocument:
 
         直接业务包括 IPv4/IPv6、l2transport、xconnect 等；此外，
         被 L2VPN、bridge-domain、路由协议等全局配置引用的接口也视为活跃业务口。
-        BVI 不因自身有 IP 就自动迁移，只有所在 bridge-domain 还包含活跃
-        attachment circuit，或编号命中活跃业务 VLAN 时才作为网关迁移。
+        BVI 不因自身有 IP 或编号类似 VLAN 就自动迁移，只有显式关联它的
+        bridge-domain 仍包含活跃 attachment circuit 时才作为网关迁移。
         """
         return self._interfaces().business_interface_names(self)
 

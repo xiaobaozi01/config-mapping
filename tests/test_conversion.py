@@ -162,6 +162,40 @@ class ConversionTest(unittest.TestCase):
         self.assertNotIn("FutureVirtual0.500", business)
         self.assertNotIn("BVI500", business)
 
+    def test_bvi_number_is_not_used_as_vlan(self):
+        """BVI 编号不参与 VLAN 推断，业务标签只能来自显式广播域关系。"""
+        document = CiscoDocument(
+            "interface Bundle-Ether10.100 l2transport\n"
+            " encapsulation dot1q 100\n"
+            "!\n"
+            "interface GigabitEthernet0/0/0/1.300 l2transport\n"
+            " encapsulation dot1q 300\n"
+            " xconnect 192.0.2.1 300 encapsulation mpls\n"
+            "!\n"
+            "interface BVI300\n"
+            " ipv4 address 192.0.2.254 255.255.255.0\n"
+            "!\n"
+            "interface BVI400\n"
+            " ipv4 address 198.51.100.254 255.255.255.0\n"
+            "!\n"
+            "l2vpn\n"
+            " bridge group TEST\n"
+            "  bridge-domain CUSTOMER-A\n"
+            "   interface Bundle-Ether10.100\n"
+            "   routed interface BVI300\n"
+            "!\n"
+            "end\n"
+        )
+
+        specs = {spec.name: spec for spec in document.interface_specs()}
+        self.assertIsNone(specs["BVI300"].vlan)
+        self.assertEqual(specs["BVI300"].inner_vlan, 100)
+        self.assertIsNone(specs["BVI400"].vlan)
+        self.assertIsNone(specs["BVI400"].inner_vlan)
+        business = document.business_interface_names()
+        self.assertIn("BVI300", business)
+        self.assertNotIn("BVI400", business)
+
     def test_non_physical_nni_endpoint_fails_before_mapping(self):
         """链接表引用未知接口时必须失败，不能猜测为物理口继续转换。"""
         topology, source_config_dir = self.conversion_fixture("iosxr_bundle")
@@ -561,9 +595,16 @@ class ConversionTest(unittest.TestCase):
             self.assertNotIn("UNUSED-BARE-PORT", converted)
             self.assertNotIn("interface BVI300", converted)
             self.assertNotIn("interface BVI400", converted)
-            self.assertIn("interface GigabitEthernet0/0/0/7.300", converted)
+            self.assertIn("interface GigabitEthernet0/0/0/7.3", converted)
+            self.assertIn("encapsulation dot1q 3 second-dot1q 3", converted)
             self.assertIn("ipv4 address 198.51.100.1 255.255.255.0", converted)
             self.assertNotIn("203.0.113.1", converted)
+            self.assertTrue(
+                any(
+                    "BVI300" in warning and "不使用 BVI 编号" in warning
+                    for warning in context.devices["A"].warnings
+                )
+            )
             self.assertIn("interface GigabitEthernet0/0/0/0.100", converted)
             self.assertIn("interface GigabitEthernet0/0/0/1.100", converted)
 

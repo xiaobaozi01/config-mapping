@@ -41,10 +41,6 @@ def interface_specs(document: CiscoDocument) -> list[InterfaceSpec]:
                 vlan = int(match.group(1))
                 inner_vlan = int(match.group(2)) if match.group(2) else None
                 break
-        if vlan is None:
-            bvi = re.fullmatch(r"BVI(\d+)", interface_parent(name), re.IGNORECASE)
-            if bvi and 1 <= int(bvi.group(1)) <= 4094:
-                vlan = int(bvi.group(1))
         result.append(
             InterfaceSpec(
                 name=name,
@@ -55,7 +51,92 @@ def interface_specs(document: CiscoDocument) -> list[InterfaceSpec]:
                 inner_vlan=inner_vlan,
             )
         )
+
+    # BVI 编号只是接口标识，不能当作 VLAN。仅当同一 bridge-domain 的
+    # attachment circuit 给出唯一明确的标签时，才把它作为网关的内层业务 VLAN。
+    gateway_hints = _gateway_inner_vlan_hints(document, result)
+    for spec in result:
+        if spec.kind == InterfaceKind.GATEWAY:
+            spec.inner_vlan = gateway_hints.get(spec.name)
     return result
+
+
+def _descendants(node: Any) -> list[Any]:
+    result: list[Any] = []
+    for child in node.children:
+        result.append(child)
+        result.extend(_descendants(child))
+    return result
+
+
+def _bridge_domain_bindings(
+    document: CiscoDocument,
+) -> list[tuple[set[str], set[str]]]:
+    """返回每个 bridge-domain 中的 attachment circuit 与 routed interface。"""
+    result: list[tuple[set[str], set[str]]] = []
+    for block in document.blocks:
+        if not block.active or not re.match(
+            r"^l2vpn\b",
+            block.header.strip(),
+            re.IGNORECASE,
+        ):
+            continue
+        for node in document._parse_cisco_nodes(block.lines):
+            stack = [node]
+            while stack:
+                current = stack.pop()
+                stack.extend(current.children)
+                if not re.match(r"^bridge-domain\b", current.command, re.IGNORECASE):
+                    continue
+                attachments: set[str] = set()
+                gateways: set[str] = set()
+                for child in _descendants(current):
+                    gateway_match = re.match(
+                        r"^routed\s+interface\s+(.+)$",
+                        child.command,
+                        re.IGNORECASE,
+                    )
+                    if gateway_match:
+                        gateways.add(canonical_cisco_interface(gateway_match.group(1)))
+                        continue
+                    interface_match = re.match(
+                        r"^interface\s+(.+)$",
+                        child.command,
+                        re.IGNORECASE,
+                    )
+                    if interface_match:
+                        attachments.add(canonical_cisco_interface(interface_match.group(1)))
+                result.append((attachments, gateways))
+    return result
+
+
+def _gateway_inner_vlan_hints(
+    document: CiscoDocument,
+    specs: list[InterfaceSpec],
+) -> dict[str, int]:
+    """从显式 bridge-domain 关系推导唯一的 BVI 内层业务 VLAN。"""
+    spec_by_name = {spec.name: spec for spec in specs}
+    hints: dict[str, set[int]] = {}
+    mappable_kinds = {InterfaceKind.PHYSICAL, InterfaceKind.BUNDLE}
+    for attachments, gateways in _bridge_domain_bindings(document):
+        service_vlans: set[int] = set()
+        for attachment in attachments:
+            attachment_spec = spec_by_name.get(attachment)
+            if attachment_spec is None or attachment_spec.kind not in mappable_kinds:
+                continue
+            service_vlan = attachment_spec.inner_vlan or attachment_spec.vlan
+            if service_vlan is not None:
+                service_vlans.add(service_vlan)
+        if len(service_vlans) != 1:
+            continue
+        service_vlan = next(iter(service_vlans))
+        for gateway in gateways:
+            hints.setdefault(gateway, set()).add(service_vlan)
+    return {
+        gateway: next(iter(vlans))
+        for gateway, vlans in hints.items()
+        if len(vlans) == 1
+    }
 
 
 def interface_kind(document: CiscoDocument, name: str) -> InterfaceKind:
@@ -129,66 +210,9 @@ def business_interface_names(document: CiscoDocument) -> set[str]:
         ):
             active.update(spec.name for spec in parent_specs)
 
-    spec_by_name = {spec.name: spec for spec in specs}
-    active_vlans: set[int] = set()
-    for name in active:
-        spec = spec_by_name.get(name)
-        block = find_interface_block(document, name)
-        if not spec or not block or spec.kind == InterfaceKind.GATEWAY or spec.vlan is None:
-            continue
-        rendered = "\n".join(block.lines)
-        if block.l2transport or re.search(
-            r"^\s*(?:xconnect|bridge-domain|l2vpn|ethernet-services)\b",
-            rendered,
-            re.IGNORECASE | re.MULTILINE,
-        ):
-            active_vlans.add(spec.vlan)
-
-    def descendants(node) -> list[Any]:
-        result: list[Any] = []
-        for child in node.children:
-            result.append(child)
-            result.extend(descendants(child))
-        return result
-
-    for block in document.blocks:
-        if not block.active or not re.match(
-            r"^l2vpn\b",
-            block.header.strip(),
-            re.IGNORECASE,
-        ):
-            continue
-        for node in document._parse_cisco_nodes(block.lines):
-            stack = [node]
-            while stack:
-                current = stack.pop()
-                stack.extend(current.children)
-                if not re.match(r"^bridge-domain\b", current.command, re.IGNORECASE):
-                    continue
-                attachments: set[str] = set()
-                gateways: set[str] = set()
-                for child in descendants(current):
-                    gateway_match = re.match(
-                        r"^routed\s+interface\s+(.+)$",
-                        child.command,
-                        re.IGNORECASE,
-                    )
-                    if gateway_match:
-                        gateways.add(canonical_cisco_interface(gateway_match.group(1)))
-                        continue
-                    interface_match = re.match(
-                        r"^interface\s+(.+)$",
-                        child.command,
-                        re.IGNORECASE,
-                    )
-                    if interface_match:
-                        attachments.add(canonical_cisco_interface(interface_match.group(1)))
-                if attachments & active:
-                    active.update(gateway for gateway in gateways if gateway in known)
-
-    for spec in specs:
-        if spec.kind == InterfaceKind.GATEWAY and spec.vlan in active_vlans:
-            active.add(spec.name)
+    for attachments, gateways in _bridge_domain_bindings(document):
+        if attachments & active:
+            active.update(gateway for gateway in gateways if gateway in known)
     return active
 
 

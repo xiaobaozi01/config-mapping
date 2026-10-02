@@ -594,6 +594,10 @@ flowchart TD
     Active -->|否| Remove[作为无效 UNI 删除]
 ```
 
+对 Cisco 而言，`BVI300` 中的 `300` 只是接口编号，不自动等于 VLAN 300。
+系统只从同一 bridge-domain 的显式 attachment circuit 推导业务 VLAN；关系缺失
+或标签不唯一时不猜测，由目标运输 VLAN 分配器选择空闲值。
+
 ### 10.3 VLAN 分配算法
 
 VLAN 分配范围是 `2..4094`，并在每台设备内保证唯一：

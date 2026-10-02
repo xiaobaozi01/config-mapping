@@ -472,9 +472,10 @@ UNI 候选必须满足：
 所有 UNI 映射到最后一个镜像接口的子接口。
 只有描述、MTU 等非业务属性的裸口会被删除，不消耗模拟器资源。
 
-BVI 不会因为自身存在 IP 地址就自动迁移。系统先从活跃 L2 attachment
-circuit 收集 VLAN，并分析 `bridge-domain` 中的 `routed interface`；只有
-与活跃业务关联的 BVI 才迁移，未关联的网关作为无效 UNI 删除。
+BVI 不会因为自身存在 IP 地址，或接口编号恰好落在 VLAN 范围内就自动迁移。
+系统只沿 `bridge-domain` 中显式的 `interface` 与 `routed interface` 关系确认
+业务闭包；只有与活跃 attachment circuit 关联的 BVI 才迁移。BVI 编号不作为
+VLAN，只有同一广播域存在唯一明确的接入口标签时，才将该标签作为内层业务 VLAN。
 
 #### VLAN 分配
 
