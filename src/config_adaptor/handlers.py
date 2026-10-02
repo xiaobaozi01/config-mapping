@@ -3,12 +3,13 @@
 from __future__ import annotations
 
 from collections import defaultdict
+from dataclasses import dataclass
 
 from .application.nni import NniEndpointPlan, plan_nni_components
 from .application.pipeline import ConversionPipeline
 from .application.uni import VlanSpaceExhausted, allocate_uni_vlans
-from .parsers import InterfaceKind, interface_parent, interface_unit
-from .models import ConversionContext, InterfaceMapping, Link, Vendor
+from .parsers import InterfaceKind, InterfaceSpec, interface_parent, interface_unit
+from .models import ConversionContext, DeviceContext, InterfaceMapping, Link, Vendor
 
 
 class TopologyPreflightHandler:
@@ -145,22 +146,53 @@ class InterfaceClassificationHandler:
                 )
 
 
+@dataclass(slots=True)
+class _NniAnalysis:
+    """NNI 端点解析结果，集中传递后续规划所需的只读索引。"""
+
+    member_maps: dict[str, dict[str, str]]
+    resolved: dict[tuple[int, str], str]
+    bundles: dict[tuple[int, str], str | None]
+
+
 class NNIHandler:
     """识别并扁平化聚合 NNI，再分配目标镜像物理接口。"""
 
     def process(self, context: ConversionContext) -> None:
-        """识别聚合成员、分配目标端口并改写设备配置。"""
-        supported_links = [link for link in context.topology.links if link.active]
-        original_by_row = {link.row: link for link in context.topology.links}
-
-        if not supported_links:
+        """编排 NNI 分析、规划、分配和配置改写。"""
+        links = [link for link in context.topology.links if link.active]
+        if not links:
             return
 
-        # 源接口可能是聚合成员；需要先解析为真正承载三层配置的逻辑接口。
-        member_maps = {name: item.document.bundle_members() for name, item in context.devices.items()}
+        analysis = self._analyze_endpoints(context, links)
+        if context.has_errors:
+            return
+
+        component_rows = self._plan_components(context, links, analysis.bundles)
+        if context.has_errors:
+            return
+
+        plans = self._allocate_targets(context, links, component_rows, analysis)
+        for device_name, device_plans in plans.items():
+            self._apply_device_plans(
+                context,
+                device_name,
+                device_plans,
+                analysis.member_maps[device_name],
+            )
+
+    @staticmethod
+    def _analyze_endpoints(
+        context: ConversionContext,
+        links: list[Link],
+    ) -> _NniAnalysis:
+        member_maps = {
+            name: item.document.bundle_members()
+            for name, item in context.devices.items()
+        }
         resolved: dict[tuple[int, str], str] = {}
         bundles: dict[tuple[int, str], str | None] = {}
-        for link in supported_links:
+        for link in links:
             for device_name, raw_interface in link.endpoints():
                 device = context.devices[device_name]
                 source = device.document.resolve_interface(raw_interface)
@@ -168,45 +200,51 @@ class NNIHandler:
                 resolved[(link.row, device_name)] = parent
                 bundles[(link.row, device_name)] = member_maps[device_name].get(parent)
                 kind = device.document.interface_kind(parent)
-                if kind not in {InterfaceKind.PHYSICAL, InterfaceKind.BUNDLE}:
-                    message = (
-                        f"链接表第 {link.row} 行：设备 {device_name} 的端点 {raw_interface} "
-                        f"属于 {kind.value} 接口，不能作为物理 NNI 端点"
-                    )
-                    device.errors.append(message)
-                    context.errors.append(message)
-
-        # 端点分类不安全时不得开始链路合并或配置改写。
-        if context.has_errors:
-            return
-
-        # 仅在“同一对端设备”范围内合并聚合成员。同一 Bundle/ae
-        # 的成员若连到不同对端，视为 M-LAG，必须分配不同模拟器物理口。
-        component_plan = plan_nni_components(supported_links, bundles)
-        context.errors.extend(component_plan.errors)
-        component_rows = component_plan.component_rows
-        # 规划阶段不修改输入；只有计划通过校验后才把冗余链路标为 inactive。
-        if not context.has_errors:
-            for row, keep in component_plan.redundant_rows.items():
-                link = original_by_row[row]
-                link.active = False
-                link.skip_reason = f"聚合 NNI 扁平化，保留第 {keep} 行"
-                context.add_event(
-                    "flatten-link",
-                    f"删除聚合冗余成员链路第 {row} 行",
-                    row=row,
-                    retained_row=keep,
+                if kind in {InterfaceKind.PHYSICAL, InterfaceKind.BUNDLE}:
+                    continue
+                message = (
+                    f"链接表第 {link.row} 行：设备 {device_name} 的端点 {raw_interface} "
+                    f"属于 {kind.value} 接口，不能作为物理 NNI 端点"
                 )
+                device.errors.append(message)
+                context.errors.append(message)
+        return _NniAnalysis(member_maps, resolved, bundles)
 
-        # 保守策略：成员关系有歧义时不开始接口配置改写。
+    @staticmethod
+    def _plan_components(
+        context: ConversionContext,
+        links: list[Link],
+        bundles: dict[tuple[int, str], str | None],
+    ) -> dict[int, tuple[int, ...]]:
+        plan = plan_nni_components(links, bundles)
+        context.errors.extend(plan.errors)
         if context.has_errors:
-            return
+            return plan.component_rows
 
-        # 按原 Excel 行号稳定分配镜像接口，确保相同输入始终得到相同结果。
-        active_links = sorted((link for link in supported_links if link.active), key=lambda item: item.row)
+        links_by_row = {link.row: link for link in context.topology.links}
+        for row, keep in plan.redundant_rows.items():
+            link = links_by_row[row]
+            link.active = False
+            link.skip_reason = f"聚合 NNI 扁平化，保留第 {keep} 行"
+            context.add_event(
+                "flatten-link",
+                f"删除聚合冗余成员链路第 {row} 行",
+                row=row,
+                retained_row=keep,
+            )
+        return plan.component_rows
+
+    @staticmethod
+    def _allocate_targets(
+        context: ConversionContext,
+        links: list[Link],
+        component_rows: dict[int, tuple[int, ...]],
+        analysis: _NniAnalysis,
+    ) -> dict[str, list[NniEndpointPlan]]:
         plans: dict[str, list[NniEndpointPlan]] = defaultdict(list)
         allocated: dict[str, int] = defaultdict(int)
-        for link in active_links:
+        # 按 Excel 行号稳定分配目标口，保证相同输入每次产生相同结果。
+        for link in sorted((item for item in links if item.active), key=lambda item: item.row):
             for device_name, _ in link.endpoints():
                 device = context.devices[device_name]
                 index = allocated[device_name]
@@ -220,304 +258,451 @@ class NNIHandler:
                     continue
                 target = device.profile.nni_interfaces[index]
                 allocated[device_name] += 1
-                rows = component_rows.get(link.row, [link.row])
-                logical_sources = list(
-                    dict.fromkeys(
-                        bundles[(row, device_name)] or resolved[(row, device_name)]
-                        for row in rows
-                    )
-                )
+                # 同一聚合组件可以对应多行物理成员，但只占用一个目标 NNI。
+                rows = component_rows.get(link.row, (link.row,))
                 plans[device_name].append(
                     NniEndpointPlan(
-                        logical_sources=tuple(logical_sources),
+                        logical_sources=tuple(
+                            dict.fromkeys(
+                                analysis.bundles[(row, device_name)]
+                                or analysis.resolved[(row, device_name)]
+                                for row in rows
+                            )
+                        ),
                         bundles=tuple(
                             dict.fromkeys(
                                 bundle
                                 for row in rows
-                                if (bundle := bundles[(row, device_name)])
+                                if (bundle := analysis.bundles[(row, device_name)])
                             )
                         ),
                         target=target,
-                        link_rows=tuple(rows),
+                        link_rows=rows,
                         source_members=tuple(
-                            resolved[(row, device_name)]
-                            for row in rows
+                            analysis.resolved[(row, device_name)] for row in rows
                         ),
                     )
                 )
                 link.set_interface_for(device_name, target)
+        return plans
 
-        for device_name, device_plans in plans.items():
-            device = context.devices[device_name]
-            document = device.document
-            members = member_maps[device_name]
-            plans_by_logical: dict[str, list[NniEndpointPlan]] = defaultdict(list)
-            for plan in device_plans:
-                for logical in plan.logical_sources:
-                    plans_by_logical[logical].append(plan)
-            staged_targets: list[tuple[str, str]] = []
+    def _apply_device_plans(
+        self,
+        context: ConversionContext,
+        device_name: str,
+        plans: list[NniEndpointPlan],
+        members: dict[str, str],
+    ) -> None:
+        device = context.devices[device_name]
+        plans_by_logical: dict[str, list[NniEndpointPlan]] = defaultdict(list)
+        for plan in plans:
+            for logical in plan.logical_sources:
+                plans_by_logical[logical].append(plan)
+        self._record_mlag_splits(context, device_name, plans_by_logical)
 
-            # 同一逻辑聚合出现在多个对端计划中即为 M-LAG。
-            for logical, logical_plans in plans_by_logical.items():
-                if len({plan.target for plan in logical_plans}) > 1:
-                    context.add_event(
-                        "mlag-split",
-                        f"设备 {device_name} 的聚合 {logical} 已按对端拆分",
-                        device=device_name,
-                        source_interface=logical,
-                        target_interfaces=[plan.target for plan in logical_plans],
-                        link_rows=sorted({row for plan in logical_plans for row in plan.link_rows}),
-                    )
+        # 先将所有逻辑口克隆到占位口：M-LAG 的同一源聚合需被多次复制，
+        # 若过早删除源口，后续对端将失去可复制的配置树。
+        staged_targets = self._stage_logical_interfaces(
+            device_name,
+            device,
+            plans,
+            plans_by_logical,
+        )
 
-            # 每个对端计划只使用一个占位口。计划中通常只有一个聚合
-            # 逻辑源；logical_sources 保留列表结构，用于诊断异常成员关系。
-            for stage_index, plan in enumerate(device_plans):
-                placeholder = f"ADAPT-NNI-{stage_index}"
-                staged_targets.append((placeholder, plan.target))
-                for logical in plan.logical_sources:
-                    logical_names = document.logical_names_under(logical) or [logical]
-                    document.clone_interface_tree(logical, placeholder, strip_bundle=True)
-                    split_count = len({item.target for item in plans_by_logical[logical]})
-                    is_bundle = logical in plan.bundles
-                    for source_name in logical_names:
-                        suffix = source_name[len(logical) :]
-                        device.mappings.append(
-                            InterfaceMapping(
-                                device=device_name,
-                                source_interface=source_name,
-                                role="NNI",
-                                action="clone-flatten" if split_count > 1 else ("flatten" if is_bundle else "map"),
-                                target_interface=plan.target + suffix,
-                                link_rows=plan.link_rows,
-                                reason="M-LAG 按对端拆分" if split_count > 1 else ("聚合接口扁平化" if is_bundle else "NNI 物理接口映射"),
-                            )
-                        )
-                    if logical not in logical_names:
-                        device.mappings.append(
-                            InterfaceMapping(
-                                device=device_name,
-                                source_interface=logical,
-                                role="NNI",
-                                action="clone-parent" if split_count > 1 else ("flatten-parent" if is_bundle else "map-parent"),
-                                target_interface=plan.target,
-                                link_rows=plan.link_rows,
-                                reason="NNI 父接口引用映射",
-                            )
-                        )
+        # 克隆全部成功后再删源口和聚合成员，最后落到真实目标名，
+        # 避免源名、目标名互相占用导致覆盖。
+        for logical in plans_by_logical:
+            device.document.remove_interface(logical, include_children=True)
+        self._remove_bundle_members(device_name, device, plans, members)
+        for placeholder, target in staged_targets:
+            device.document.rename_interface_tree(
+                placeholder,
+                target,
+                strip_bundle=True,
+            )
 
-            # 所有占位克隆完成后再统一删除原逻辑接口，避免 M-LAG
-            # 第一个目标处理后就失去后续目标的复制源。
-            for logical in plans_by_logical:
-                document.remove_interface(logical, include_children=True)
+    @staticmethod
+    def _record_mlag_splits(
+        context: ConversionContext,
+        device_name: str,
+        plans_by_logical: dict[str, list[NniEndpointPlan]],
+    ) -> None:
+        for logical, plans in plans_by_logical.items():
+            if len({plan.target for plan in plans}) <= 1:
+                continue
+            context.add_event(
+                "mlag-split",
+                f"设备 {device_name} 的聚合 {logical} 已按对端拆分",
+                device=device_name,
+                source_interface=logical,
+                target_interfaces=[plan.target for plan in plans],
+                link_rows=sorted({row for plan in plans for row in plan.link_rows}),
+            )
 
-            # 物理成员按“对端分组”记录目标；未出现在拓扑的剩余成员只删除。
-            planned_member_targets: dict[str, tuple[str, list[int]]] = {}
-            transformed_bundles = {
-                bundle for plan in device_plans for bundle in plan.bundles
-            }
-            for plan in device_plans:
-                if not plan.bundles:
-                    continue
-                for member in plan.source_members:
-                    planned_member_targets[member] = (plan.target, plan.link_rows)
-            for member, bundle in sorted(members.items()):
-                if bundle not in transformed_bundles:
-                    continue
-                document.remove_interface(member, include_children=True)
-                target_info = planned_member_targets.get(member)
-                device.mappings.append(
-                    InterfaceMapping(
-                        device=device_name,
-                        source_interface=member,
-                        role="NNI",
-                        action="selected-member" if target_info else "remove",
-                        target_interface=target_info[0] if target_info else None,
-                        link_rows=target_info[1] if target_info else [],
-                        reason="聚合 NNI 扁平化",
-                    )
+    @staticmethod
+    def _stage_logical_interfaces(
+        device_name: str,
+        device: DeviceContext,
+        plans: list[NniEndpointPlan],
+        plans_by_logical: dict[str, list[NniEndpointPlan]],
+    ) -> list[tuple[str, str]]:
+        staged_targets: list[tuple[str, str]] = []
+        for stage_index, plan in enumerate(plans):
+            # 一个对端计划使用一个占位口；M-LAG 会为同一逻辑源创建多个占位口。
+            placeholder = f"ADAPT-NNI-{stage_index}"
+            staged_targets.append((placeholder, plan.target))
+            for logical in plan.logical_sources:
+                logical_names = device.document.logical_names_under(logical) or [logical]
+                device.document.clone_interface_tree(
+                    logical,
+                    placeholder,
+                    strip_bundle=True,
                 )
+                split_count = len(
+                    {item.target for item in plans_by_logical[logical]}
+                )
+                is_bundle = logical in plan.bundles
+                # 父口和子接口都需审计；suffix 保留原有子接口编号。
+                for source_name in logical_names:
+                    suffix = source_name[len(logical) :]
+                    device.mappings.append(
+                        InterfaceMapping(
+                            device=device_name,
+                            source_interface=source_name,
+                            role="NNI",
+                            action=(
+                                "clone-flatten"
+                                if split_count > 1
+                                else "flatten" if is_bundle else "map"
+                            ),
+                            target_interface=plan.target + suffix,
+                            link_rows=plan.link_rows,
+                            reason=(
+                                "M-LAG 按对端拆分"
+                                if split_count > 1
+                                else "聚合接口扁平化"
+                                if is_bundle
+                                else "NNI 物理接口映射"
+                            ),
+                        )
+                    )
+                if logical not in logical_names:
+                    device.mappings.append(
+                        InterfaceMapping(
+                            device=device_name,
+                            source_interface=logical,
+                            role="NNI",
+                            action=(
+                                "clone-parent"
+                                if split_count > 1
+                                else "flatten-parent" if is_bundle else "map-parent"
+                            ),
+                            target_interface=plan.target,
+                            link_rows=plan.link_rows,
+                            reason="NNI 父接口引用映射",
+                        )
+                    )
+        return staged_targets
 
-            # 原物理成员已全部删除，此时再把占位接口落到真实目标名。
-            for placeholder, target in staged_targets:
-                document.rename_interface_tree(placeholder, target, strip_bundle=True)
+    @staticmethod
+    def _remove_bundle_members(
+        device_name: str,
+        device: DeviceContext,
+        plans: list[NniEndpointPlan],
+        members: dict[str, str],
+    ) -> None:
+        # 拓扑中实际被选中的成员会记录目标口；同聚合的其余成员只删除。
+        planned_targets: dict[str, tuple[str, tuple[int, ...]]] = {}
+        transformed_bundles = {bundle for plan in plans for bundle in plan.bundles}
+        for plan in plans:
+            if not plan.bundles:
+                continue
+            for member in plan.source_members:
+                planned_targets[member] = (plan.target, plan.link_rows)
+
+        for member, bundle in sorted(members.items()):
+            if bundle not in transformed_bundles:
+                continue
+            device.document.remove_interface(member, include_children=True)
+            target_info = planned_targets.get(member)
+            device.mappings.append(
+                InterfaceMapping(
+                    device=device_name,
+                    source_interface=member,
+                    role="NNI",
+                    action="selected-member" if target_info else "remove",
+                    target_interface=target_info[0] if target_info else None,
+                    link_rows=target_info[1] if target_info else [],
+                    reason="聚合 NNI 扁平化",
+                )
+            )
 
 
 class UNIHandler:
     """把剩余的有效 UNI 业务汇聚到最后一个接口的 QinQ 子接口。"""
 
     def process(self, context: ConversionContext) -> None:
-        """为每台设备规划唯一 VLAN，并迁移所有 UNI 配置。"""
+        """逐设备编排 UNI 选择、VLAN 分配和配置迁移。"""
         for device_name in sorted(context.devices):
-            device = context.devices[device_name]
-            document = device.document
-            specs = document.interface_specs()
-            nni_interfaces = {
-                interface_parent(value)
-                for mapping in device.mappings
-                if mapping.role == "NNI"
-                for value in (mapping.source_interface, mapping.target_interface)
-                if value
-            }
-            member_map = document.bundle_members()
-            member_parents = set(member_map)
-            business_names = document.business_interface_names()
+            self._process_device(context, device_name)
 
-            # Loopback、管理口、NNI、UNI 目标父口和聚合成员不能被当成独立 UNI。
-            # gateway 只会在厂商解析器确认其广播域仍有活跃业务后进入 business_names。
-            candidates = [
-                spec
-                for spec in specs
-                if spec.kind
-                in {InterfaceKind.PHYSICAL, InterfaceKind.BUNDLE, InterfaceKind.GATEWAY}
-                and spec.parent not in nni_interfaces
-                and spec.parent != device.profile.uni_parent
-                and spec.parent not in member_parents
-            ]
-            source_specs = [spec for spec in candidates if spec.name in business_names]
+    def _process_device(
+        self,
+        context: ConversionContext,
+        device_name: str,
+    ) -> None:
+        device = context.devices[device_name]
+        candidates, sources, member_map = self._select_sources(device)
+        self._remove_inactive_interfaces(
+            device_name,
+            device,
+            candidates,
+            sources,
+            member_map,
+        )
+        if not sources:
+            return
 
-            source_parents = {spec.parent for spec in source_specs}
-            # 同一父接口（典型是 irb）可能同时包含活跃和非活跃 unit。
-            # 父接口会整体进入占位迁移，因此在此单独记录未迁移 unit，
-            # 避免它随源父接口删除时没有审计记录。
-            for spec in candidates:
-                if spec.name in business_names or spec.parent not in source_parents:
-                    continue
-                device.mappings.append(
-                    InterfaceMapping(
-                        device=device_name,
-                        source_interface=spec.name,
-                        role="UNI",
-                        action="remove-bare",
-                        target_interface=None,
-                        reason="同一父接口下未关联活跃业务的逻辑单元",
-                    )
-                )
-            bare_parents = sorted({spec.parent for spec in candidates} - source_parents)
-            for parent in bare_parents:
-                document.remove_interface(parent, include_children=True)
-                device.mappings.append(
-                    InterfaceMapping(
-                        device=device_name,
-                        source_interface=parent,
-                        role="UNI",
-                        action="remove-bare",
-                        target_interface=None,
-                        reason="无 IP、无 L2 绑定且无业务引用的裸口",
-                    )
-                )
-                # 裸聚合本身删除后，其物理成员也不应残留在模拟器配置中。
-                for member, bundle in sorted(member_map.items()):
-                    if bundle != parent:
-                        continue
-                    document.remove_interface(member, include_children=True)
-                    device.mappings.append(
-                        InterfaceMapping(
-                            device=device_name,
-                            source_interface=member,
-                            role="UNI",
-                            action="remove-bare",
-                            target_interface=None,
-                            reason=f"无业务聚合 {parent} 的物理成员",
-                        )
-                    )
-            if not source_specs:
+        self._warn_ambiguous_gateway_vlans(context, device_name, device, sources)
+        try:
+            vlan_plan = allocate_uni_vlans(sources)
+        except VlanSpaceExhausted as exc:
+            message = f"设备 {device_name} 的 {exc}"
+            device.errors.append(message)
+            context.errors.append(message)
+            return
+        self._migrate_sources(device_name, device, sources, member_map, vlan_plan)
+
+    @staticmethod
+    def _select_sources(
+        device: DeviceContext,
+    ) -> tuple[list[InterfaceSpec], list[InterfaceSpec], dict[str, str]]:
+        document = device.document
+        specs = document.interface_specs()
+        # NNI 映射中的源口和目标口都必须排除，防止再次被当作 UNI 迁移。
+        nni_interfaces = {
+            interface_parent(value)
+            for mapping in device.mappings
+            if mapping.role == "NNI"
+            for value in (mapping.source_interface, mapping.target_interface)
+            if value
+        }
+        member_map = document.bundle_members()
+        business_names = document.business_interface_names()
+        # 聚合物理成员由聚合父口统一处理，不能作为独立 UNI 候选。
+        candidates = [
+            spec
+            for spec in specs
+            if spec.kind
+            in {InterfaceKind.PHYSICAL, InterfaceKind.BUNDLE, InterfaceKind.GATEWAY}
+            and spec.parent not in nni_interfaces
+            and spec.parent != device.profile.uni_parent
+            and spec.parent not in member_map
+        ]
+        sources = [spec for spec in candidates if spec.name in business_names]
+        return candidates, sources, member_map
+
+    @staticmethod
+    def _remove_inactive_interfaces(
+        device_name: str,
+        device: DeviceContext,
+        candidates: list[InterfaceSpec],
+        sources: list[InterfaceSpec],
+        member_map: dict[str, str],
+    ) -> None:
+        source_names = {spec.name for spec in sources}
+        source_parents = {spec.parent for spec in sources}
+        # 活跃父口下可能同时存在未被业务引用的 unit；父口会迁移，
+        # 但这些 unit 不迁移，因此先单独留下删除审计记录。
+        for spec in candidates:
+            if spec.name in source_names or spec.parent not in source_parents:
                 continue
+            device.mappings.append(
+                InterfaceMapping(
+                    device=device_name,
+                    source_interface=spec.name,
+                    role="UNI",
+                    action="remove-bare",
+                    target_interface=None,
+                    reason="同一父接口下未关联活跃业务的逻辑单元",
+                )
+            )
 
-            # BVI 编号不是 VLAN。显式广播域关系也无法给出唯一标签时，
-            # 保守地自动分配运输 VLAN，并留下可审计告警。
-            if device.device.vendor == Vendor.CISCO_IOSXR:
-                for spec in source_specs:
-                    if (
-                        spec.kind != InterfaceKind.GATEWAY
-                        or spec.vlan is not None
-                        or spec.inner_vlan is not None
-                    ):
-                        continue
-                    message = (
-                        f"设备 {device_name} 的网关接口 {spec.name} 未找到唯一明确的"
-                        "接入口 VLAN；不使用 BVI 编号，将自动分配运输 VLAN"
-                    )
-                    device.warnings.append(message)
-                    context.add_event(
-                        "gateway-vlan-warning",
-                        message,
-                        device=device_name,
-                        interface=spec.name,
-                        action="allocate-transport-vlan",
-                    )
+        # 整个父口都没有业务时，父口及其聚合物理成员可一并删除。
+        bare_parents = sorted({spec.parent for spec in candidates} - source_parents)
+        for parent in bare_parents:
+            device.document.remove_interface(parent, include_children=True)
+            device.mappings.append(
+                InterfaceMapping(
+                    device=device_name,
+                    source_interface=parent,
+                    role="UNI",
+                    action="remove-bare",
+                    target_interface=None,
+                    reason="无 IP、无 L2 绑定且无业务引用的裸口",
+                )
+            )
+        UNIHandler._remove_bundle_members(
+            device_name,
+            device,
+            bare_parents,
+            member_map,
+            inactive=True,
+        )
 
-            # interface_specs 保留源配置顺序，业务映射也沿用该顺序。
-            try:
-                vlan_plan = allocate_uni_vlans(source_specs)
-            except VlanSpaceExhausted as exc:
-                message = f"设备 {device_name} 的 {exc}"
-                device.errors.append(message)
-                context.errors.append(message)
+    @staticmethod
+    def _remove_bundle_members(
+        device_name: str,
+        device: DeviceContext,
+        bundles: list[str],
+        member_map: dict[str, str],
+        *,
+        inactive: bool,
+    ) -> None:
+        bundle_names = set(bundles)
+        for member, bundle in sorted(member_map.items()):
+            if bundle not in bundle_names:
                 continue
-
-            source_parents = list(dict.fromkeys(spec.parent for spec in source_specs))
-            placeholder_by_parent = {
-                parent: f"ADAPT-UNI-{index}" for index, parent in enumerate(source_parents)
-            }
-
-            # 聚合 UNI 的物理成员不会各自生成子接口，只迁移聚合逻辑配置。
-            for member, bundle in sorted(member_map.items()):
-                if bundle not in source_parents:
-                    continue
-                document.remove_interface(member, include_children=True)
-                device.mappings.append(
-                    InterfaceMapping(
-                        device=device_name,
-                        source_interface=member,
-                        role="UNI",
-                        action="remove",
-                        target_interface=None,
-                        reason=f"UNI 聚合 {bundle} 扁平化，删除物理成员",
-                    )
+            device.document.remove_interface(member, include_children=True)
+            device.mappings.append(
+                InterfaceMapping(
+                    device=device_name,
+                    source_interface=member,
+                    role="UNI",
+                    action="remove-bare" if inactive else "remove",
+                    target_interface=None,
+                    reason=(
+                        f"无业务聚合 {bundle} 的物理成员"
+                        if inactive
+                        else f"UNI 聚合 {bundle} 扁平化，删除物理成员"
+                    ),
                 )
+            )
 
-            for parent in source_parents:
-                document.rename_interface_tree(parent, placeholder_by_parent[parent], strip_bundle=True)
+    @staticmethod
+    def _warn_ambiguous_gateway_vlans(
+        context: ConversionContext,
+        device_name: str,
+        device: DeviceContext,
+        sources: list[InterfaceSpec],
+    ) -> None:
+        if device.device.vendor != Vendor.CISCO_IOSXR:
+            return
+        for spec in sources:
+            if (
+                spec.kind != InterfaceKind.GATEWAY
+                or spec.vlan is not None
+                or spec.inner_vlan is not None
+            ):
+                continue
+            message = (
+                f"设备 {device_name} 的网关接口 {spec.name} 未找到唯一明确的"
+                "接入口 VLAN；不使用 BVI 编号，将自动分配运输 VLAN"
+            )
+            device.warnings.append(message)
+            context.add_event(
+                "gateway-vlan-warning",
+                message,
+                device=device_name,
+                interface=spec.name,
+                action="allocate-transport-vlan",
+            )
 
-            for spec in source_specs:
-                staged_name = placeholder_by_parent[spec.parent]
-                if spec.unit is not None:
-                    staged_name += f".{spec.unit}"
-                vlan = vlan_plan[spec.name]
-                # 外层 VLAN 是模拟器内唯一的运输标签；内层优先保留原业务 VLAN。
-                # 原配置无可识别 VLAN 时，两层使用同一自动分配值。
-                inner_vlan = spec.inner_vlan or (
-                    spec.vlan if spec.vlan is not None and 1 <= spec.vlan <= 4094 else vlan
+    @staticmethod
+    def _migrate_sources(
+        device_name: str,
+        device: DeviceContext,
+        sources: list[InterfaceSpec],
+        member_map: dict[str, str],
+        vlan_plan: dict[str, int],
+    ) -> None:
+        source_parents = list(dict.fromkeys(spec.parent for spec in sources))
+        # 先改到不会与目标 UNI 冲突的占位名，再逐个拆成 QinQ 子接口。
+        placeholders = {
+            parent: f"ADAPT-UNI-{index}"
+            for index, parent in enumerate(source_parents)
+        }
+        UNIHandler._remove_bundle_members(
+            device_name,
+            device,
+            source_parents,
+            member_map,
+            inactive=False,
+        )
+        for parent in source_parents:
+            device.document.rename_interface_tree(
+                parent,
+                placeholders[parent],
+                strip_bundle=True,
+            )
+        UNIHandler._map_sources(device_name, device, sources, placeholders, vlan_plan)
+        UNIHandler._finalize_sources(device_name, device, sources, placeholders)
+        device.document.ensure_parent_interface(device.profile.uni_parent)
+
+    @staticmethod
+    def _map_sources(
+        device_name: str,
+        device: DeviceContext,
+        sources: list[InterfaceSpec],
+        placeholders: dict[str, str],
+        vlan_plan: dict[str, int],
+    ) -> None:
+        for spec in sources:
+            staged_name = placeholders[spec.parent]
+            if spec.unit is not None:
+                staged_name += f".{spec.unit}"
+            vlan = vlan_plan[spec.name]
+            # 外层 VLAN 是新的运输标签；内层优先保留原业务 VLAN。
+            # 原标签缺失或非法时，使用新分配的 VLAN 保证生成配置可用。
+            inner_vlan = spec.inner_vlan or (
+                spec.vlan
+                if spec.vlan is not None and 1 <= spec.vlan <= 4094
+                else vlan
+            )
+            target = device.document.map_uni(
+                staged_name,
+                device.profile.uni_parent,
+                vlan,
+                inner_vlan,
+            )
+            action = "map" if spec.vlan == vlan else "re-vlan"
+            device.mappings.append(
+                InterfaceMapping(
+                    device=device_name,
+                    source_interface=spec.name,
+                    role="UNI",
+                    action=action,
+                    target_interface=target,
+                    reason=(
+                        "保留原 VLAN"
+                        if action == "map"
+                        else "无 VLAN 或 VLAN 冲突，自动分配"
+                    ),
                 )
-                target = document.map_uni(staged_name, device.profile.uni_parent, vlan, inner_vlan)
-                action = "map" if spec.vlan == vlan else "re-vlan"
-                device.mappings.append(
-                    InterfaceMapping(
-                        device=device_name,
-                        source_interface=spec.name,
-                        role="UNI",
-                        action=action,
-                        target_interface=target,
-                        reason="保留原 VLAN" if action == "map" else "无 VLAN 或 VLAN 冲突，自动分配",
-                    )
+            )
+
+    @staticmethod
+    def _finalize_sources(
+        device_name: str,
+        device: DeviceContext,
+        sources: list[InterfaceSpec],
+        placeholders: dict[str, str],
+    ) -> None:
+        source_names = {spec.name for spec in sources}
+        for parent, placeholder in placeholders.items():
+            device.document.finalize_uni_source(placeholder)
+            if parent in source_names:
+                continue
+            device.mappings.append(
+                InterfaceMapping(
+                    device=device_name,
+                    source_interface=parent,
+                    role="UNI",
+                    action="collapse-parent",
+                    target_interface=device.profile.uni_parent,
+                    reason="UNI 父接口汇聚",
                 )
-
-            for parent, placeholder in placeholder_by_parent.items():
-                document.finalize_uni_source(placeholder)
-                # 只有逻辑单元、没有独立父接口块时，仍需记录父级引用映射。
-                if not any(spec.name == parent for spec in source_specs):
-                    device.mappings.append(
-                        InterfaceMapping(
-                            device=device_name,
-                            source_interface=parent,
-                            role="UNI",
-                            action="collapse-parent",
-                            target_interface=device.profile.uni_parent,
-                            reason="UNI 父接口汇聚",
-                        )
-                    )
-
-            document.ensure_parent_interface(device.profile.uni_parent)
+            )
 
 
 class ReferenceRewriteHandler:

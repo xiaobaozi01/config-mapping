@@ -5,6 +5,7 @@ from __future__ import annotations
 import copy
 import re
 import textwrap
+from dataclasses import dataclass, field
 from typing import Iterable
 
 from ...models import WashingPolicy
@@ -15,6 +16,19 @@ from ...parsers.cisco_iosxr import (
     canonical_cisco_interface,
 )
 from ...parsers.common import GroupExpansionOutcome, normalized_command as _normalized_command
+
+
+@dataclass(slots=True)
+class _CiscoExpansionState:
+    """一次 group 展开中的共享状态，避免递归方法参数膨胀。"""
+
+    trees: dict[str, list[_CiscoNode]]
+    variable_groups: set[str]
+    nested_groups: set[str]
+    selected_groups: set[str]
+    outcome: GroupExpansionOutcome
+    applied_groups: set[str] = field(default_factory=set)
+    unresolved: bool = False
 
 
 class CiscoGroupExpander:
@@ -226,6 +240,7 @@ class CiscoGroupExpander:
     ) -> None:
         """按显式配置、层级和列表顺序把 group 子节点合入目标节点。"""
         for source in source_children:
+            # apply/exclude 是继承控制语句，不是需要合并的业务配置。
             if self._cisco_group_names(source.command, "apply-group") or self._cisco_group_names(
                 source.command, "exclude-group"
             ):
@@ -238,6 +253,7 @@ class CiscoGroupExpander:
                 ]
                 if matches:
                     continue
+                # 正则选择器只能应用到已有具体节点，不能把正则本身生成为配置块。
                 if "'" in source.command or '"' in source.command:
                     continue
                 target.children.append(
@@ -269,6 +285,7 @@ class CiscoGroupExpander:
                 )
                 continue
             source_origin = f"group:{group_name}"
+            # 显式配置永远优先；group 之间则由层级深度和引用顺序 rank 决定。
             if existing.origin != "explicit" and rank > existing.rank:
                 self._record_group_conflict(
                     outcome,
@@ -299,51 +316,115 @@ class CiscoGroupExpander:
         mode: str = "relevant",
         policy: WashingPolicy | None = None,
     ) -> GroupExpansionOutcome:
-        """事务式展开 IOS XR group，并执行本地/内层优先规则。"""
-
+        """编排 IOS XR group 的选择、展开、校验和事务式提交。"""
         outcome = GroupExpansionOutcome()
         policy = policy or WashingPolicy()
         if mode == "preserve":
             return outcome
         if mode not in {"relevant", "strict"}:
             raise ValueError(f"未知 IOS XR group 处理模式: {mode}")
-        # 第一步只收集定义；是否真正删除要等所有 apply-group 都验证成功。
-        group_blocks: dict[str, CiscoBlock] = {}
-        for block in self.blocks:
-            match = re.match(r"group\s+(\S+)\s*$", block.header.strip(), re.IGNORECASE)
-            if match and block.active:
-                group_blocks[match.group(1)] = block
+
+        # 定义解析和工作树构建均不修改原 blocks，便于任何失败直接回滚。
+        group_blocks, trees, variable_groups, nested_groups = (
+            self._load_group_definitions()
+        )
         if not group_blocks:
             return outcome
 
-        # 带运行时变量或嵌套 apply-group 的组目前无法可靠静态求值。
-        group_trees: dict[str, list[_CiscoNode]] = {}
+        root, terminal_commands = self._build_working_tree(known_interfaces)
+        selected_groups = self._select_groups(root, trees, mode, policy)
+        if not selected_groups:
+            return outcome
+
+        # 递归期间会共享选中集、已应用集和错误状态，避免每层传递大量参数。
+        state = _CiscoExpansionState(
+            trees=trees,
+            variable_groups=variable_groups,
+            nested_groups=nested_groups,
+            selected_groups=selected_groups,
+            outcome=outcome,
+        )
+        self._expand_node(root, [], [], state)
+        if state.unresolved:
+            outcome.events.append(
+                "IOS XR group 展开未完整解析，已整体回滚并保留原配置"
+            )
+            outcome.conflicts.clear()
+            outcome.success = False
+            return outcome
+        if not state.applied_groups:
+            return outcome
+
+        # 只有完整展开成功才替换原 blocks，这里是事务式提交点。
+        self.blocks = self._rebuild_blocks(
+            root,
+            terminal_commands,
+            group_blocks,
+            state.applied_groups,
+            mode,
+        )
+        outcome.events.extend(
+            f"已展开 IOS XR 配置组 {name}"
+            for name in sorted(state.applied_groups)
+        )
+        return outcome
+
+    def _load_group_definitions(
+        self,
+    ) -> tuple[
+        dict[str, CiscoBlock],
+        dict[str, list[_CiscoNode]],
+        set[str],
+        set[str],
+    ]:
+        """一次性解析 group 定义，并标记无法静态展开的类型。"""
+        blocks: dict[str, CiscoBlock] = {}
+        for block in self.blocks:
+            match = re.match(
+                r"group\s+(\S+)\s*$",
+                block.header.strip(),
+                re.IGNORECASE,
+            )
+            if match and block.active:
+                blocks[match.group(1)] = block
+
+        trees: dict[str, list[_CiscoNode]] = {}
         variable_groups: set[str] = set()
-        nested_apply_groups: set[str] = set()
+        nested_groups: set[str] = set()
 
         def contains_group_control(nodes: list[_CiscoNode]) -> bool:
-            """检测 group 内是否再次 apply 其他 group。"""
             return any(
                 self._cisco_group_names(node.command, "apply-group")
                 or contains_group_control(node.children)
                 for node in nodes
             )
 
-        for name, block in group_blocks.items():
+        for name, block in blocks.items():
             body = textwrap.dedent("\n".join(block.lines))
+            # 运行时变量和嵌套 apply-group 无法在离线阶段安全求值，
+            # 先标记，等确定它们真的被应用时再触发整体回滚。
             if "$" in body:
                 variable_groups.add(name)
-            group_trees[name] = self._parse_cisco_nodes(body.splitlines(), origin=f"group:{name}")
-            if contains_group_control(group_trees[name]):
-                nested_apply_groups.add(name)
+            trees[name] = self._parse_cisco_nodes(
+                body.splitlines(),
+                origin=f"group:{name}",
+            )
+            if contains_group_control(trees[name]):
+                nested_groups.add(name)
+        return blocks, trees, variable_groups, nested_groups
 
-        # 在临时树上工作，失败时不写回 self.blocks，从而实现整体回滚。
+    def _build_working_tree(
+        self,
+        known_interfaces: Iterable[str],
+    ) -> tuple[_CiscoNode, list[str]]:
         root = _CiscoNode("<root>", is_block=True)
         terminal_commands: list[str] = []
         for block in self.blocks:
             header = block.header.strip()
             if not block.active or header in {"", "!", "end-group"} or re.match(
-                r"group\s+\S+", header, re.IGNORECASE
+                r"group\s+\S+",
+                header,
+                re.IGNORECASE,
             ):
                 continue
             if header.lower() in {"end", "commit"}:
@@ -351,142 +432,212 @@ class CiscoGroupExpander:
                 continue
             structural = bool(
                 re.match(
-                    r"(interface|router|vrf|l2vpn|mpls|username|line|segment-routing|telemetry)\b",
+                    r"(interface|router|vrf|l2vpn|mpls|username|line|"
+                    r"segment-routing|telemetry)\b",
                     header,
                     re.IGNORECASE,
                 )
             )
-            node = _CiscoNode(
-                block.header,
-                self._parse_cisco_nodes(block.lines),
-                is_block=bool(block.lines) or structural,
+            root.children.append(
+                _CiscoNode(
+                    block.header,
+                    self._parse_cisco_nodes(block.lines),
+                    is_block=bool(block.lines) or structural,
+                )
             )
-            root.children.append(node)
 
-        # 为只出现在 Excel 中的接口创建临时节点，使正则 group 也能命中它们。
-        existing_interfaces = {
+        # 拓扑中出现但配置未声明的接口也需参与通配 group 匹配。
+        existing = {
             canonical_cisco_interface(node.command.split(maxsplit=1)[1])
             for node in root.children
             if re.match(r"interface\s+\S+", node.command, re.IGNORECASE)
         }
         for raw_name in known_interfaces:
             name = canonical_cisco_interface(raw_name)
-            if name not in existing_interfaces:
-                root.children.append(_CiscoNode(f"interface {name}", is_block=True, origin="synthetic"))
-                existing_interfaces.add(name)
+            if name in existing:
+                continue
+            root.children.append(
+                _CiscoNode(
+                    f"interface {name}",
+                    is_block=True,
+                    origin="synthetic",
+                )
+            )
+            existing.add(name)
+        return root, terminal_commands
 
-        selected_groups: set[str] = set()
+    def _select_groups(
+        self,
+        root: _CiscoNode,
+        group_trees: dict[str, list[_CiscoNode]],
+        mode: str,
+        policy: WashingPolicy,
+    ) -> set[str]:
+        selected: set[str] = set()
 
-        def select_groups(node: _CiscoNode, path: list[str]) -> None:
-            """预先选出本次要展开的 group，未选中的控制语句保持原样。"""
+        def walk(node: _CiscoNode, path: list[str]) -> None:
             for child in node.children:
-                names = self._cisco_group_names(child.command, "apply-group")
-                for name in names:
+                for name in self._cisco_group_names(child.command, "apply-group"):
                     tree = group_trees.get(name)
-                    if mode == "strict" or (
-                        not path and tree is None
-                    ) or self._cisco_group_path_relevant(path, policy) or (
-                        tree is not None and self._cisco_group_tree_relevant(tree, policy)
-                    ):
-                        selected_groups.add(name)
-                if child.is_block:
-                    select_groups(child, [*path, child.command])
-
-        select_groups(root, [])
-        if not selected_groups:
-            return outcome
-
-        all_applied: set[str] = set()
-        unresolved = False
-
-        def expand_node(
-            node: _CiscoNode,
-            path: list[str],
-            inherited: list[tuple[str, tuple[int, int]]],
-        ) -> None:
-            """递归计算当前路径的有效 group 列表并合并继承配置。"""
-            nonlocal unresolved
-            local_names: list[str] = []
-            excluded: set[str] = set()
-            for child in node.children:
-                local_names.extend(
-                    name
-                    for name in self._cisco_group_names(child.command, "apply-group")
-                    if name in selected_groups
-                )
-                excluded.update(
-                    name
-                    for name in self._cisco_group_names(child.command, "exclude-group")
-                    if name in selected_groups
-                )
-            all_applied.update(local_names)
-            for name in local_names:
-                if name not in group_trees:
-                    outcome.warnings.append(f"IOS XR apply-group 引用了未定义的组 {name}")
-                    unresolved = True
-                elif name in variable_groups:
-                    outcome.warnings.append(f"IOS XR 组 {name} 包含运行时变量，无法安全静态展开")
-                    unresolved = True
-                elif name in nested_apply_groups:
-                    outcome.warnings.append(f"IOS XR 组 {name} 内再次引用 apply-group，无法安全静态展开")
-                    unresolved = True
-
-            # rank 越大优先级越高：路径越深越优先，同列表越靠前越优先。
-            local = [(name, (len(path), -index)) for index, name in enumerate(local_names)]
-            active: list[tuple[str, tuple[int, int]]] = []
-            for item in [*local, *inherited]:
-                if item[0] in excluded or any(existing[0] == item[0] for existing in active):
-                    continue
-                active.append(item)
-
-            for group_name, rank in active:
-                tree = group_trees.get(group_name)
-                if tree is None:
-                    continue
-                payload = self._cisco_group_payload(tree, path)
-                self._merge_cisco_group_children(node, payload, group_name, rank, path, outcome)
-
-            retained: list[_CiscoNode] = []
-            for child in node.children:
-                rewritten: str | None = child.command
-                for keyword in ("apply-group", "exclude-group"):
-                    names = self._cisco_group_names(child.command, keyword)
-                    if names:
-                        rewritten = self._rewrite_cisco_group_control(
-                            child.command,
-                            keyword,
-                            [name for name in names if name not in selected_groups],
+                    # strict 展开所有引用；relevant 只展开影响转换/清洗的路径。
+                    # 根层未定义引用仍要选中，否则会被错误地忽略而无法报错。
+                    if (
+                        mode == "strict"
+                        or (not path and tree is None)
+                        or self._cisco_group_path_relevant(path, policy)
+                        or (
+                            tree is not None
+                            and self._cisco_group_tree_relevant(tree, policy)
                         )
-                        break
-                if rewritten is not None:
-                    child.command = rewritten
-                    retained.append(child)
-            node.children = retained
-            index = 0
-            while index < len(node.children):
-                child = node.children[index]
+                    ):
+                        selected.add(name)
                 if child.is_block:
-                    expand_node(child, [*path, child.command], active)
-                index += 1
+                    walk(child, [*path, child.command])
 
-        expand_node(root, [], [])
-        if unresolved:
-            # 任一引用无法求值都放弃临时树，原配置保持原样。
-            outcome.events.append("IOS XR group 展开未完整解析，已整体回滚并保留原配置")
-            outcome.conflicts.clear()
-            outcome.success = False
-            return outcome
+        walk(root, [])
+        return selected
 
-        if not all_applied:
-            return outcome
+    def _expand_node(
+        self,
+        node: _CiscoNode,
+        path: list[str],
+        inherited: list[tuple[str, tuple[int, int]]],
+        state: _CiscoExpansionState,
+    ) -> None:
+        """递归展开一棵工作树；只传递节点、路径和层级继承关系。"""
+        active = self._resolve_active_groups(node, path, inherited, state)
+        for group_name, rank in active:
+            tree = state.trees.get(group_name)
+            if tree is None:
+                continue
+            self._merge_cisco_group_children(
+                node,
+                self._cisco_group_payload(tree, path),
+                group_name,
+                rank,
+                path,
+                state.outcome,
+            )
 
-        # 只有成功解析全部引用后，才用展开后的树替换原配置块。
+        self._rewrite_group_controls(node, state.selected_groups)
+        index = 0
+        while index < len(node.children):
+            child = node.children[index]
+            if child.is_block:
+                self._expand_node(
+                    child,
+                    [*path, child.command],
+                    active,
+                    state,
+                )
+            index += 1
+
+    def _resolve_active_groups(
+        self,
+        node: _CiscoNode,
+        path: list[str],
+        inherited: list[tuple[str, tuple[int, int]]],
+        state: _CiscoExpansionState,
+    ) -> list[tuple[str, tuple[int, int]]]:
+        """解析当前层级的 apply/exclude，校验后计算有效继承顺序。"""
+        local_names: list[str] = []
+        excluded: set[str] = set()
+        for child in node.children:
+            local_names.extend(
+                name
+                for name in self._cisco_group_names(child.command, "apply-group")
+                if name in state.selected_groups
+            )
+            excluded.update(
+                name
+                for name in self._cisco_group_names(child.command, "exclude-group")
+                if name in state.selected_groups
+            )
+
+        state.applied_groups.update(local_names)
+        # 只校验当前实际应用的 group；relevant 模式下未用到的复杂 group 可原样保留。
+        for name in local_names:
+            if name not in state.trees:
+                state.outcome.warnings.append(
+                    f"IOS XR apply-group 引用了未定义的组 {name}"
+                )
+                state.unresolved = True
+            elif name in state.variable_groups:
+                state.outcome.warnings.append(
+                    f"IOS XR 组 {name} 包含运行时变量，无法安全静态展开"
+                )
+                state.unresolved = True
+            elif name in state.nested_groups:
+                state.outcome.warnings.append(
+                    f"IOS XR 组 {name} 内再次引用 apply-group，无法安全静态展开"
+                )
+                state.unresolved = True
+
+        local = [
+            (name, (len(path), -index))
+            for index, name in enumerate(local_names)
+        ]
+        # 路径越深越具体，优先级越高；同层列表中越靠前越优先。
+        # 本层 exclude 同时抑制本地引用和从父层继承下来的同名 group。
+        active: list[tuple[str, tuple[int, int]]] = []
+        for item in [*local, *inherited]:
+            if item[0] in excluded or any(
+                existing[0] == item[0] for existing in active
+            ):
+                continue
+            active.append(item)
+        return active
+
+    def _rewrite_group_controls(
+        self,
+        node: _CiscoNode,
+        selected_groups: set[str],
+    ) -> None:
+        """只移除已展开 group，未选中的引用保持原样。"""
+        retained: list[_CiscoNode] = []
+        for child in node.children:
+            rewritten: str | None = child.command
+            for keyword in ("apply-group", "exclude-group"):
+                names = self._cisco_group_names(child.command, keyword)
+                if not names:
+                    continue
+                rewritten = self._rewrite_cisco_group_control(
+                    child.command,
+                    keyword,
+                    # 一条语句可同时引用多个 group，因此只摘掉本次已展开的名称。
+                    [
+                        name
+                        for name in names
+                        if name not in selected_groups
+                    ],
+                )
+                break
+            if rewritten is not None:
+                child.command = rewritten
+                retained.append(child)
+        node.children = retained
+
+    def _rebuild_blocks(
+        self,
+        root: _CiscoNode,
+        terminal_commands: list[str],
+        group_blocks: dict[str, CiscoBlock],
+        all_applied: set[str],
+        mode: str,
+    ) -> list[CiscoBlock]:
         rebuilt: list[CiscoBlock] = []
         if mode == "relevant":
+            # relevant 模式必须保留未应用 group 的定义，以及它们原有的引用关系。
             for name, block in group_blocks.items():
                 if name in all_applied:
                     continue
-                rebuilt.extend([copy.deepcopy(block), CiscoBlock(header="end-group"), CiscoBlock(header="!")])
+                rebuilt.extend(
+                    [
+                        copy.deepcopy(block),
+                        CiscoBlock(header="end-group"),
+                        CiscoBlock(header="!"),
+                    ]
+                )
         for node in root.children:
             rebuilt.append(
                 CiscoBlock(
@@ -497,6 +648,4 @@ class CiscoGroupExpander:
             rebuilt.append(CiscoBlock(header="!"))
         for command in terminal_commands or ["end"]:
             rebuilt.append(CiscoBlock(header=command))
-        self.blocks = rebuilt
-        outcome.events.extend(f"已展开 IOS XR 配置组 {name}" for name in sorted(all_applied))
-        return outcome
+        return rebuilt
