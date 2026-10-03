@@ -174,14 +174,23 @@ class _NniAnalysis:
 
 
 class NNIHandler:
-    """识别并扁平化聚合 NNI，再分配目标镜像物理接口。"""
+    """识别并扁平化聚合 NNI，再分配目标镜像物理接口。
+
+    处理分为三段：先解析拓扑端点与聚合成员关系，再把属于同一条逻辑
+    NNI 的 Excel 行合并成组件，最后才修改厂商配置树。分析和规划阶段不
+    改配置，因而任一端点非法时可以在写入发生前安全终止。
+    """
 
     def process(self, context: ConversionContext) -> None:
         """编排 NNI 分析、规划、分配和配置改写。"""
+        # 预检阶段已经把越界或不支持的链路设为 inactive；这里不能让它们
+        # 消耗镜像的 NNI 端口，也不能据此删除设备配置。
         links = [link for link in context.topology.links if link.active]
         if not links:
             return
 
+        # 前两个阶段只构造索引和计划。任何错误都必须阻止后面的 AST 改写，
+        # 避免生成一半成功、一半失败的设备配置。
         analysis = self._analyze_endpoints(context, links)
         if context.has_errors:
             return
@@ -204,15 +213,21 @@ class NNIHandler:
         context: ConversionContext,
         links: list[Link],
     ) -> _NniAnalysis:
+        # member_maps 的方向是“物理成员 -> 聚合父口”。后续既用它判断链路
+        # 是否属于 Bundle/ae，也用它删除扁平化后不再需要的物理成员。
         member_maps = {
             name: item.document.bundle_members()
             for name, item in context.devices.items()
         }
+        # 两个索引都以 (Excel 行号, 设备名) 为键，因为同一条链路的 A/Z
+        # 两端可能分别采用普通物理口和聚合口，不能只按行号存一个结果。
         resolved: dict[tuple[int, str], str] = {}
         bundles: dict[tuple[int, str], str | None] = {}
         for link in links:
             for device_name, raw_interface in link.endpoints():
                 device = context.devices[device_name]
+                # resolve_interface 处理厂商别名，interface_parent 再去掉 unit/
+                # 子接口后缀；NNI 的物理合法性必须在父接口层面判断。
                 source = device.document.resolve_interface(raw_interface)
                 parent = interface_parent(source)
                 resolved[(link.row, device_name)] = parent
@@ -234,12 +249,16 @@ class NNIHandler:
         links: list[Link],
         bundles: dict[tuple[int, str], str | None],
     ) -> dict[int, tuple[int, ...]]:
+        # planner 只根据拓扑和聚合关系做纯计算，不接触配置 AST。若一组
+        # 成员在任一设备侧无法归入同一聚合，它会返回错误而不是猜测。
         plan = plan_nni_components(links, bundles)
         context.errors.extend(plan.errors)
         if context.has_errors:
             return plan.component_rows
 
         links_by_row = {link.row: link for link in context.topology.links}
+        # 一个聚合可能在 Excel 中表现为多条成员链路。转换后的模拟拓扑只
+        # 保留行号最小的一条，其余行标为 inactive，同时保留审计原因。
         for row, keep in plan.redundant_rows.items():
             link = links_by_row[row]
             link.active = False
@@ -280,6 +299,9 @@ class NNIHandler:
                 rows = component_rows.get(link.row, (link.row,))
                 plans[device_name].append(
                     NniEndpointPlan(
+                        # logical_sources 是需要复制配置的逻辑父口。普通链路取
+                        # 物理父口，聚合链路则取 Bundle/ae；dict.fromkeys 在
+                        # 保持拓扑顺序的同时去重。
                         logical_sources=tuple(
                             dict.fromkeys(
                                 analysis.bundles[(row, device_name)]
@@ -301,6 +323,8 @@ class NNIHandler:
                         ),
                     )
                 )
+                # 配置和 Excel 拓扑必须引用同一个目标口，因此端口分配后立即
+                # 回写保留链路；冗余成员行已经在规划阶段停用。
                 link.set_interface_for(device_name, target)
         return plans
 
@@ -316,6 +340,8 @@ class NNIHandler:
         for plan in plans:
             for logical in plan.logical_sources:
                 plans_by_logical[logical].append(plan)
+        # 同一个逻辑聚合映射到多个目标口意味着 M-LAG：配置树需要复制多份，
+        # replacement_map 也会据此把外部引用展开为一对多。
         self._record_mlag_splits(context, device_name, plans_by_logical)
 
         # 先将所有逻辑口克隆到占位口：M-LAG 的同一源聚合需被多次复制，
@@ -367,6 +393,7 @@ class NNIHandler:
         staged_targets: list[tuple[str, str]] = []
         for stage_index, plan in enumerate(plans):
             # 一个对端计划使用一个占位口；M-LAG 会为同一逻辑源创建多个占位口。
+            # 占位名还隔离了“某个目标口恰好也是另一个源口”的重命名碰撞。
             placeholder = f"ADAPT-NNI-{stage_index}"
             staged_targets.append((placeholder, plan.target))
             for logical in plan.logical_sources:
@@ -457,7 +484,12 @@ class NNIHandler:
 
 
 class UNIHandler:
-    """把剩余的有效 UNI 业务汇聚到最后一个接口的 QinQ 子接口。"""
+    """把剩余的有效 UNI 业务汇聚到最后一个接口的 QinQ 子接口。
+
+    NNI 阶段完成后，未被 NNI 占用且确有业务绑定的物理口、聚合口和网关
+    接口才是 UNI 源。每个业务逻辑单元获得唯一外层运输 VLAN，原业务 VLAN
+    尽量作为内层标签保留，最终全部挂到 Profile 指定的 UNI 父接口下。
+    """
 
     def process(self, context: ConversionContext) -> None:
         """逐设备编排 UNI 选择、VLAN 分配和配置迁移。"""
@@ -470,6 +502,8 @@ class UNIHandler:
         device_name: str,
     ) -> None:
         device = context.devices[device_name]
+        # candidates 用于找出应清理的裸口；sources 是真正需要迁移的业务口。
+        # 两者必须分开，否则“没有业务”与“不属于 UNI 范围”会被混为一谈。
         candidates, sources, member_map = self._select_sources(device)
         self._remove_inactive_interfaces(
             device_name,
@@ -483,6 +517,8 @@ class UNIHandler:
 
         self._warn_ambiguous_gateway_vlans(context, device_name, device, sources)
         try:
+            # 分配器按 sources 的稳定顺序优先保留原 VLAN，重复、缺失或越界
+            # 时改用最小可用 VLAN；失败时尚未开始迁移配置树。
             vlan_plan = allocate_uni_vlans(sources)
         except VlanSpaceExhausted as exc:
             message = f"设备 {device_name} 的 {exc}"
@@ -498,6 +534,8 @@ class UNIHandler:
         document = device.document
         specs = document.interface_specs()
         # NNI 映射中的源口和目标口都必须排除，防止再次被当作 UNI 迁移。
+        # 排除目标口同样重要：NNI 阶段已将配置写到镜像接口，UNI 阶段若再次
+        # 选择它，会把刚生成的 NNI 配置迁到 UNI 汇聚口。
         nni_interfaces = {
             interface_parent(value)
             for mapping in device.mappings
@@ -506,6 +544,8 @@ class UNIHandler:
             if value
         }
         member_map = document.bundle_members()
+        # business_interface_names 由厂商 AST 根据 IP、二层绑定及相关业务引用
+        # 计算；不能简单地把所有配置中出现的接口都视为活跃 UNI。
         business_names = document.business_interface_names()
         # 聚合物理成员由聚合父口统一处理，不能作为独立 UNI 候选。
         candidates = [
@@ -546,7 +586,8 @@ class UNIHandler:
                 )
             )
 
-        # 整个父口都没有业务时，父口及其聚合物理成员可一并删除。
+        # 整个父口都没有业务时，父口及其聚合物理成员可一并删除。注意这里
+        # 只处理 candidates，未知接口和虚拟控制接口不会被误删。
         bare_parents = sorted({spec.parent for spec in candidates} - source_parents)
         for parent in bare_parents:
             device.document.remove_interface(parent, include_children=True)
@@ -636,6 +677,8 @@ class UNIHandler:
     ) -> None:
         source_parents = list(dict.fromkeys(spec.parent for spec in sources))
         # 先改到不会与目标 UNI 冲突的占位名，再逐个拆成 QinQ 子接口。
+        # 同一父口下可能有多个 unit；父口只暂存一次，各 unit 随接口树一起
+        # 移动，之后再按各自的 vlan_plan 分别生成目标子接口。
         placeholders = {
             parent: f"ADAPT-UNI-{index}"
             for index, parent in enumerate(source_parents)
@@ -654,7 +697,10 @@ class UNIHandler:
                 strip_bundle=True,
             )
         UNIHandler._map_sources(device_name, device, sources, placeholders, vlan_plan)
+        # map_uni 已把活跃业务复制/改写到最终 UNI 子接口。此时清除占位树，
+        # 并补记只有子接口参与迁移时的父口折叠映射。
         UNIHandler._finalize_sources(device_name, device, sources, placeholders)
+        # 即使所有业务都落在子接口，目标配置仍需显式存在 UNI 物理父口。
         device.document.ensure_parent_interface(device.profile.uni_parent)
 
     @staticmethod
