@@ -43,23 +43,35 @@ class JunosGroupExpander:
     """事务式展开 Junos groups，并维护嵌套继承与排除规则。"""
 
     def __init__(self, document: JunosDocument):
+        """绑定待处理的 Junos 文档；构造阶段不解析或修改配置树。"""
         self._document = document
 
     @property
     def root(self) -> JunosNode:
+        """读取底层文档当前的 Junos 配置根节点。"""
         return self._document.root
 
     @root.setter
     def root(self, value: JunosNode) -> None:
+        """以成功展开的工作树原子替换底层文档根节点。"""
         self._document.root = value
 
     @staticmethod
     def _base_header(header: str) -> str:
+        """返回用于 group 匹配的规范节点头文本。
+
+        具体归一化由 ``JunosDocument`` 统一实现，会去除 ``inactive:``、
+        ``protect:`` 等控制前缀，避免展开器与解析器采用不同语义。
+        """
         return JunosDocument._base_header(header)
 
     @classmethod
     def _header_matches(cls, pattern_header: str, target_header: str) -> bool:
-        """匹配精确节点名或 ``<ge-*>`` 一类 Junos 通配节点。"""
+        """判断 group 节点选择器是否匹配目标配置节点。
+
+        普通头部使用基础文本精确匹配；尖括号内的 Junos 通配表达式通过
+        ``fnmatch`` 转换后参与整串匹配。表达式非法时返回 ``False``。
+        """
         pattern = cls._base_header(pattern_header)
         target = cls._base_header(target_header)
         if "<" not in pattern:
@@ -78,7 +90,11 @@ class JunosGroupExpander:
 
     @classmethod
     def _group_names(cls, statement: str, keyword: str) -> list[str]:
-        """解析 apply-groups 或 apply-groups-except 的名称列表。"""
+        """解析控制语句中按声明顺序出现的 group 名称。
+
+        同时支持单个名称、方括号列表和带引号名称，并忽略 inactive/protect
+        前缀；语句不匹配指定关键字时返回空列表。
+        """
         base = cls._base_header(statement).rstrip(";").strip()
         match = re.match(rf"{re.escape(keyword)}\s+(.+)$", base)
         if not match:
@@ -88,7 +104,11 @@ class JunosGroupExpander:
 
     @classmethod
     def _rewrite_group_control(cls, statement: str, keyword: str, remaining: list[str]) -> str | None:
-        """从 apply-groups 语句中只移除已经展开的 group。"""
+        """使用剩余名称重写一条 apply-groups/except 语句。
+
+        保留控制前缀、关键字和原方括号列表风格；没有剩余名称时返回
+        ``None`` 表示删除整条语句，不匹配指定关键字时原样返回。
+        """
         base = cls._base_header(statement)
         match = re.match(rf"({re.escape(keyword)})\s+(.+?)\s*;\s*$", base)
         if not match:
@@ -104,7 +124,11 @@ class JunosGroupExpander:
 
     @classmethod
     def _group_path_relevant(cls, path: list[str], policy: WashingPolicy) -> bool:
-        """判断 Junos 路径是否影响接口迁移或已启用的清洗范围。"""
+        """判断配置路径是否落在本次转换需要物化的范围内。
+
+        接口、协议、路由实例、二层业务和管理访问路径始终相关；安全、硬件、
+        NAT、PKI 和流量统计路径根据清洗策略开关决定。空路径返回 ``False``。
+        """
         if not path:
             return False
         normalized = [_normalized_command(cls._base_header(component)) for component in path]
@@ -156,7 +180,11 @@ class JunosGroupExpander:
         return False
 
     def _group_tree_relevant(self, group: JunosNode, policy: WashingPolicy) -> bool:
-        """检查 group 定义中是否包含需要物化后再处理的配置。"""
+        """递归判断一个 group 定义是否包含相关的有效配置路径。
+
+        inactive 节点被跳过；任一节点或后代命中 ``_group_path_relevant`` 即
+        返回 ``True``。该结果只用于 relevant 模式筛选，不修改 group。
+        """
         def walk(items: list[JunosNode], path: list[str]) -> bool:
             for item in items:
                 if not item.active:
@@ -172,12 +200,20 @@ class JunosGroupExpander:
 
     @staticmethod
     def _junos_selector_specificity(header: str) -> tuple[int, str]:
-        """以通配表达式中的字面量长度衡量选择器具体程度。"""
+        """计算 Junos 通配选择器的确定性排序键。
+
+        第一项是去掉通配元字符后的字面量长度，越长越具体；第二项使用原
+        header 稳定打破并列，确保相同输入得到相同匹配顺序。
+        """
         literal = re.sub(r"<([^>]+)>", lambda item: re.sub(r"[*?\[\]]", "", item.group(1)), header)
         return (len(literal), header)
 
     def _group_payload_for_path(self, group: JunosNode, path: list[str]) -> list[JunosNode]:
-        """沿配置路径找到 group 在该层级应继承的子节点。"""
+        """定位某个 group 在目标配置路径上提供的直接子配置。
+
+        每一级只保留有效且匹配的块节点，并按选择器具体程度排序后合并其
+        子节点作为下一层候选；任一级无匹配时返回空列表。
+        """
         assert group.children is not None
         candidates = group.children
         for component in path:
@@ -201,7 +237,11 @@ class JunosGroupExpander:
         winner: JunosNode,
         loser: JunosNode,
     ) -> None:
-        """记录值不同的 group 冲突，完全相同的重复语句不记录。"""
+        """把一次不同值的语义覆盖追加到展开报告。
+
+        记录配置路径、semantic identity、胜负来源和值，并在可用时附带规则
+        ID；归一化后相同的重复语句不算冲突。本方法不修改工作树。
+        """
         if _normalized_command(winner.header) == _normalized_command(loser.header):
             return
         conflict = {
@@ -227,7 +267,13 @@ class JunosGroupExpander:
         outcome: GroupExpansionOutcome,
         policy: WashingPolicy,
     ) -> None:
-        """按显式、嵌套层级和列表顺序合并 group 子节点。"""
+        """把一个 group 在当前路径的子节点合并到目标工作树节点。
+
+        apply/except 控制语句交给依赖求值器处理，不复制为业务配置；块节点
+        只在不存在且不是通配选择器时创建。叶子节点通过语义规则定位槽位，
+        显式配置始终胜出，group 之间按 ``rank`` 覆盖，并同步更新冲突、规则
+        命中、fallback 和歧义报告；fail 策略会把 outcome 标为失败。
+        """
         assert target.children is not None
         for source in source_children:
             if not source.active or not source.header:
@@ -342,7 +388,12 @@ class JunosGroupExpander:
         mode: str = "relevant",
         policy: WashingPolicy | None = None,
     ) -> GroupExpansionOutcome:
-        """编排 Junos group 的选择、依赖校验、展开和事务式提交。"""
+        """编排 Junos group 的选择、依赖校验、展开和事务式提交。
+
+        ``relevant`` 只物化影响转换或清洗的 group，``strict`` 物化全部引用，
+        ``preserve`` 保持原文不变。返回值汇总事件、告警、冲突和规则命中数；
+        循环、缺失依赖或不安全语义冲突都会阻止工作树提交。
+        """
         outcome = GroupExpansionOutcome()
         policy = policy or WashingPolicy()
         if mode == "preserve":
@@ -405,6 +456,11 @@ class JunosGroupExpander:
         self,
         known_interfaces: Iterable[str],
     ) -> tuple[JunosNode, JunosNode, dict[str, JunosNode]] | None:
+        """深拷贝原配置并建立 group、接口等展开阶段需要的工作索引。
+
+        拓扑中存在但配置未声明的接口会作为 synthetic 节点加入，以支持通配
+        group 匹配；没有有效 ``groups`` 容器时返回 ``None``。
+        """
         # 事务边界：本方法以后的所有变更都只发生在 working 上。
         working = copy.deepcopy(self.root)
         assert working.children is not None
@@ -455,6 +511,11 @@ class JunosGroupExpander:
         return working, groups_container, groups
 
     def _group_dependencies(self, group: JunosNode) -> list[str]:
+        """递归收集一个 group 定义内声明的 apply-groups 依赖。
+
+        结果按首次出现顺序去重，仅遍历有效节点；它描述定义中的直接引用，
+        传递闭包和循环检查由 ``_select_dependency_closure`` 完成。
+        """
         result: list[str] = []
 
         def collect(node: JunosNode) -> None:
@@ -477,6 +538,11 @@ class JunosGroupExpander:
         policy: WashingPolicy,
         state: _JunosExpansionState,
     ) -> set[str]:
+        """从非 group 工作树中选择本次展开的根 group。
+
+        strict 模式选择所有引用；relevant 模式结合当前配置路径、group 内容
+        及传递依赖判断相关性，并缓存结果避免重复遍历。
+        """
         selected: set[str] = set()
         relevance_cache: dict[str, bool] = {}
 
@@ -531,7 +597,12 @@ class JunosGroupExpander:
         roots: set[str],
         state: _JunosExpansionState,
     ) -> bool:
-        """校验并计算选中 group 的传递依赖闭包。"""
+        """校验根 group 并计算其完整传递依赖集合。
+
+        使用三色深度优先遍历区分未访问、递归中和已完成节点，从而发现循环；
+        缺失定义或循环会写入告警并返回 ``False``。成功时把所有可达 group
+        加入 ``state.selected_groups``，但尚不修改工作树。
+        """
         states: dict[str, int] = {}
         stack: list[str] = []
         unresolved = False
@@ -573,7 +644,11 @@ class JunosGroupExpander:
         applications: list[GroupApplication],
         excluded: set[str],
     ) -> list[GroupApplication]:
-        """每个 group 只采用当前未排除路径中优先级最高的一次应用。"""
+        """从候选引用中计算当前路径实际生效的 group 应用。
+
+        引用链中任一名称被 except 排除时整条应用失效；其余候选按 rank 从
+        高到低排序，每个 group 只保留优先级最高的一次。输入列表不会被修改。
+        """
         # chain 中任何 group 被 except 排除，整条传递引入路径都失效。
         eligible = [
             application
@@ -600,7 +675,12 @@ class JunosGroupExpander:
         excluded: set[str],
         state: _JunosExpansionState,
     ) -> tuple[list[GroupApplication], list[GroupApplication], set[str]]:
-        """在当前配置路径上求值 group 内嵌套的 apply/except。"""
+        """求解当前路径上由 group 内部继续引入的 apply/except 关系。
+
+        先累积嵌套排除，再沿仍有效的引用链加入新的 group，反复迭代直至
+        应用集与排除集稳定。返回全部应用、去重后的有效应用和最终排除集，
+        并把新发现的依赖加入 ``state.applied_groups``。
+        """
         expanded = list(applications)
         expanded_excluded = set(excluded)
         known = set(expanded)
@@ -675,7 +755,12 @@ class JunosGroupExpander:
         inherited_excluded: set[str],
         state: _JunosExpansionState,
     ) -> None:
-        """递归合并当前层级有效的 group，并传递继承与排除关系。"""
+        """递归展开工作树当前节点，并向子层传递继承和排除关系。
+
+        方法合并本地引用与父层引用，求解嵌套应用后按优先级写入 payload，
+        再移除已消费的控制语句。合并可能追加新配置块，因此索引循环会继续
+        处理新物化节点；groups 定义容器本身不会被展开。
+        """
         if node.children is None or node is state.groups_container:
             return
 
@@ -738,7 +823,11 @@ class JunosGroupExpander:
         inherited_excluded: set[str],
         selected_groups: set[str],
     ) -> tuple[list[str], set[str]]:
-        """收集当前层级新增的 group 应用和累积排除集。"""
+        """读取当前节点直接声明的 apply-groups 和 except。
+
+        只返回本次已选中的 group；排除集从父层复制后追加本层规则，使本层
+        except 同时作用于本地引用和从祖先继承的引用。工作树保持不变。
+        """
         assert node.children is not None
         local_names: list[str] = []
         local_excluded = set(inherited_excluded)
@@ -765,7 +854,11 @@ class JunosGroupExpander:
         node: JunosNode,
         selected_groups: set[str],
     ) -> None:
-        """只移除已展开 group，未选中的 apply/except 保持原样。"""
+        """从当前节点的控制语句中移除本次已经物化的 group 名称。
+
+        一条列表中未选中的名称按原格式保留；全部名称均已展开时删除整条
+        语句。普通配置节点和配置块不受影响。
+        """
         assert node.children is not None
         retained: list[JunosNode] = []
         for child in node.children:
@@ -795,6 +888,11 @@ class JunosGroupExpander:
         state: _JunosExpansionState,
         mode: str,
     ) -> None:
+        """在工作树中隐藏已物化且不再被保留 group 依赖的定义。
+
+        strict 模式隐藏整个 groups 容器；relevant 模式保留未展开定义及其传递
+        依赖，防止留下悬空的 ``apply-groups`` 引用。
+        """
         groups_container = state.groups_container
         assert groups_container.children is not None
         if mode == "strict":

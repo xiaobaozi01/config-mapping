@@ -37,31 +37,49 @@ class CiscoGroupExpander:
     """事务式展开 IOS XR group，并维护继承优先级与冲突规则。"""
 
     def __init__(self, document):
+        """绑定待处理的 IOS XR 文档；构造阶段不解析或修改配置。"""
         self._document = document
 
     @property
     def vendor(self) -> str:
+        """返回底层文档的厂商标识，供冲突和审计记录使用。"""
         return self._document.vendor
 
     @property
     def blocks(self) -> list[CiscoBlock]:
+        """读取底层文档当前的顶层 IOS XR 配置块。"""
         return self._document.blocks
 
     @blocks.setter
     def blocks(self, value: list[CiscoBlock]) -> None:
+        """以展开完成的新配置块原子替换底层文档内容。"""
         self._document.blocks = value
 
     @staticmethod
     def parse_nodes(lines: Iterable[str], origin: str = "explicit") -> list[_CiscoNode]:
+        """把 IOS XR 块内文本解析为可供 group 合并的临时语法树。
+
+        ``origin`` 会写入每个节点，用来区分显式配置和继承配置；此方法是
+        厂商文档层复用的公开入口，不会修改传入文档。
+        """
         return CiscoGroupExpander._parse_cisco_nodes(lines, origin)
 
     @staticmethod
     def render_nodes(nodes: list[_CiscoNode], depth: int = 1) -> list[str]:
+        """将临时语法树递归渲染为 IOS XR 缩进文本。
+
+        ``depth`` 表示顶层节点的空格数，子节点每深入一级增加一个空格；
+        返回新字符串列表，不修改节点本身。
+        """
         return CiscoGroupExpander._render_cisco_nodes(nodes, depth)
 
     @staticmethod
     def _parse_cisco_nodes(lines: Iterable[str], origin: str = "explicit") -> list[_CiscoNode]:
-        """把块内缩进文本转成树，以便按完整路径合并 group。"""
+        """根据缩进关系把配置行转换为父子节点树。
+
+        空行和 ``!`` 分隔符会被忽略；缩进不大于当前节点时退栈。每个节点
+        携带来源信息，父节点在出现子项后标记为块，以支持后续按完整路径匹配。
+        """
         root = _CiscoNode("<root>", is_block=True, origin=origin)
         stack: list[tuple[int, _CiscoNode]] = [(-1, root)]
         for raw in lines:
@@ -80,7 +98,11 @@ class CiscoGroupExpander:
 
     @staticmethod
     def _render_cisco_nodes(nodes: list[_CiscoNode], depth: int = 1) -> list[str]:
-        """把临时语法树重新渲染为 IOS XR 缩进文本。"""
+        """递归渲染一组临时节点，并保持节点当前的顺序。
+
+        该方法只负责结构到文本的转换，不输出 ``!`` 或顶层块头；这些内容
+        由 ``_rebuild_blocks`` 在最终提交阶段补齐。
+        """
         lines: list[str] = []
         for node in nodes:
             lines.append(" " * depth + node.command)
@@ -89,7 +111,11 @@ class CiscoGroupExpander:
 
     @staticmethod
     def _cisco_group_names(command: str, keyword: str) -> list[str]:
-        """解析 apply/exclude-group 后的单个名称或名称列表。"""
+        """解析 group 控制语句中按声明顺序出现的名称。
+
+        同时接受关键字单复数、单个名称、方括号列表及带引号名称；命令不
+        匹配时返回空列表，供调用方把它当作普通配置处理。
+        """
         match = re.match(rf"{re.escape(keyword)}s?\s+(.+?)\s*$", command.strip(), re.IGNORECASE)
         if not match:
             return []
@@ -97,7 +123,11 @@ class CiscoGroupExpander:
 
     @staticmethod
     def _rewrite_cisco_group_control(command: str, keyword: str, remaining: list[str]) -> str | None:
-        """从 apply/exclude-group 语句中只移除已经展开的 group。"""
+        """使用剩余名称重写一条 apply/exclude-group 控制语句。
+
+        保留原关键字形式和方括号列表风格；``remaining`` 为空表示整条控制
+        语句已无意义，此时返回 ``None``。不匹配指定关键字时原样返回。
+        """
         match = re.match(
             rf"({re.escape(keyword)}s?)\s+(.+?)\s*$",
             command.strip(),
@@ -115,7 +145,11 @@ class CiscoGroupExpander:
 
     @staticmethod
     def _cisco_group_path_relevant(path: list[str], policy: WashingPolicy) -> bool:
-        """判断 IOS XR 路径是否会影响接口迁移或已启用的清洗范围。"""
+        """判断配置路径是否落在本次转换需要物化的范围内。
+
+        接口、路由、业务和管理访问路径始终相关；认证、PKI、硬件、NAT 和
+        流量统计路径仅在相应清洗开关启用时相关。空路径返回 ``False``。
+        """
         if not path:
             return False
         top = _normalized_command(path[0])
@@ -152,7 +186,11 @@ class CiscoGroupExpander:
         return False
 
     def _cisco_group_tree_relevant(self, nodes: list[_CiscoNode], policy: WashingPolicy) -> bool:
-        """检查 group 定义中是否包含需要物化后再处理的配置。"""
+        """递归判断一个 group 定义是否包含相关配置路径。
+
+        只要任一节点自身或其后代命中 ``_cisco_group_path_relevant`` 就返回
+        ``True``；该结果用于 relevant 模式选择 group，不会修改树。
+        """
         def walk(items: list[_CiscoNode], path: list[str]) -> bool:
             for item in items:
                 current = [*path, item.command]
@@ -164,7 +202,12 @@ class CiscoGroupExpander:
 
     @staticmethod
     def _cisco_pattern_match(pattern: str, target: str) -> bool:
-        """匹配精确选择器或引号内的 IOS XR 正则选择器。"""
+        """判断 group 路径选择器是否匹配目标配置节点。
+
+        无引号时执行忽略大小写的精确匹配，其中接口名先展开缩写再比较；
+        引号内文本按正则表达式处理，其余部分按字面量处理。非法正则返回
+        ``False``，不会中断整个展开流程。
+        """
         pattern = " ".join(pattern.strip().split())
         target = " ".join(target.strip().split())
         if "'" not in pattern and '"' not in pattern:
@@ -187,7 +230,11 @@ class CiscoGroupExpander:
 
     @staticmethod
     def _selector_specificity(command: str) -> tuple[int, str]:
-        """以正则中的字面量长度衡量选择器具体程度。"""
+        """计算 IOS XR 选择器的确定性排序键。
+
+        第一项是去掉正则元字符后的字面量长度，越长越具体；第二项使用原
+        命令稳定打破并列，确保相同输入始终选中同一候选。
+        """
         literal = re.sub(r"(['\"])(.*?)\1", lambda item: re.sub(r"[.*+?\[\](){}|\\]", "", item.group(2)), command)
         return (len(literal), command)
 
@@ -196,7 +243,11 @@ class CiscoGroupExpander:
         group_roots: list[_CiscoNode],
         path: list[str],
     ) -> list[_CiscoNode]:
-        """沿目标路径查找一个 group 应继承的配置片段。"""
+        """定位某个 group 在目标配置路径上提供的直接子配置。
+
+        路径每深入一级，都选择所有匹配项并优先处理更具体的选择器，再把
+        它们的子节点作为下一层候选；任一级无匹配时返回空列表。
+        """
         candidates = group_roots
         for component in path:
             matches = [node for node in candidates if self._cisco_pattern_match(node.command, component)]
@@ -217,7 +268,11 @@ class CiscoGroupExpander:
         loser_command: str,
         loser_origin: str,
     ) -> None:
-        """记录真实值冲突；内容完全相同的重复配置不算冲突。"""
+        """把一次不同值的语义覆盖追加到展开报告。
+
+        记录路径、semantic identity、胜负来源和值，并在可用时附带规则 ID；
+        归一化后内容相同的重复配置不算冲突。本方法不改工作树。
+        """
         if _normalized_command(winner.command) == _normalized_command(loser_command):
             return
         conflict = {
@@ -243,7 +298,13 @@ class CiscoGroupExpander:
         outcome: GroupExpansionOutcome,
         policy: WashingPolicy,
     ) -> None:
-        """按显式配置、层级和列表顺序把 group 子节点合入目标节点。"""
+        """把一个 group 在当前路径的子节点合并到目标工作树节点。
+
+        group 控制语句不会作为业务配置复制；块节点只在目标不存在且不是
+        正则选择器时创建。叶子节点通过语义规则确定配置槽位，显式配置始终
+        胜出，group 之间按 ``rank`` 决定覆盖顺序，同时更新冲突、规则命中、
+        fallback 和未知语义歧义报告；fail 策略会把 outcome 标为失败。
+        """
         for source in source_children:
             # apply/exclude 是继承控制语句，不是需要合并的业务配置。
             if self._cisco_group_names(source.command, "apply-group") or self._cisco_group_names(
@@ -360,7 +421,12 @@ class CiscoGroupExpander:
         mode: str = "relevant",
         policy: WashingPolicy | None = None,
     ) -> GroupExpansionOutcome:
-        """编排 IOS XR group 的选择、展开、校验和事务式提交。"""
+        """编排 IOS XR group 的选择、展开、校验和事务式提交。
+
+        ``relevant`` 只物化影响转换或清洗的 group，``strict`` 物化全部引用，
+        ``preserve`` 保持原文不变。返回值汇总事件、告警、冲突和规则命中数；
+        只有完整展开成功才替换原文档，任何未解析引用都会整体回滚。
+        """
         outcome = GroupExpansionOutcome()
         policy = policy or WashingPolicy()
         if mode == "preserve":
@@ -422,7 +488,12 @@ class CiscoGroupExpander:
         set[str],
         set[str],
     ]:
-        """一次性解析 group 定义，并标记无法静态展开的类型。"""
+        """收集并解析文档中的全部有效 group 定义。
+
+        返回原始定义块、对应临时语法树、包含运行时变量的 group 集合以及
+        含嵌套 apply-group 的集合。这里只建立索引，不立即报错；只有这些
+        group 实际被选中应用时才触发事务回滚。
+        """
         blocks: dict[str, CiscoBlock] = {}
         for block in self.blocks:
             match = re.match(
@@ -462,6 +533,11 @@ class CiscoGroupExpander:
         self,
         known_interfaces: Iterable[str],
     ) -> tuple[_CiscoNode, list[str]]:
+        """从非 group 配置构建工作树，并补充拓扑中已知的接口节点。
+
+        返回临时根节点和需在输出末尾恢复的 ``end``/``commit`` 命令；原始
+        ``blocks`` 不会在此阶段被修改。
+        """
         root = _CiscoNode("<root>", is_block=True)
         terminal_commands: list[str] = []
         for block in self.blocks:
@@ -518,6 +594,11 @@ class CiscoGroupExpander:
         mode: str,
         policy: WashingPolicy,
     ) -> set[str]:
+        """从工作树收集本次需要物化的顶层 group 引用。
+
+        strict 模式选择所有引用；relevant 模式只选择命中相关配置路径或定义
+        内容的 group，同时保留根层未定义引用以便后续给出明确错误。
+        """
         selected: set[str] = set()
 
         def walk(node: _CiscoNode, path: list[str]) -> None:
@@ -549,7 +630,12 @@ class CiscoGroupExpander:
         inherited: list[tuple[str, tuple[int, int]]],
         state: _CiscoExpansionState,
     ) -> None:
-        """递归展开一棵工作树；只传递节点、路径和层级继承关系。"""
+        """在当前节点应用有效 group，并递归处理其所有配置块。
+
+        方法先合并当前路径对应的 group payload，再移除已消费的控制语句；
+        合并可能追加新块，因此使用索引循环确保新物化节点也继续展开。
+        ``state`` 会累计已应用 group、冲突和无法解析状态。
+        """
         active = self._resolve_active_groups(node, path, inherited, state)
         for group_name, rank in active:
             tree = state.trees.get(group_name)
@@ -585,7 +671,12 @@ class CiscoGroupExpander:
         inherited: list[tuple[str, tuple[int, int]]],
         state: _CiscoExpansionState,
     ) -> list[tuple[str, tuple[int, int]]]:
-        """解析当前层级的 apply/exclude，校验后计算有效继承顺序。"""
+        """计算当前配置层级真正生效的 group 及其优先级。
+
+        本层引用优先于父层继承，路径越深优先级越高，同一列表中越靠前越
+        优先；exclude 同时屏蔽本地和继承引用。实际引用若缺失、包含运行时
+        变量或嵌套引用，会记录告警并将共享状态标记为不可提交。
+        """
         local_names: list[str] = []
         excluded: set[str] = set()
         for child in node.children:
@@ -639,7 +730,11 @@ class CiscoGroupExpander:
         node: _CiscoNode,
         selected_groups: set[str],
     ) -> None:
-        """只移除已展开 group，未选中的引用保持原样。"""
+        """从当前节点的控制语句中移除本次已经物化的 group 名称。
+
+        一条列表语句中未选中的名称会按原格式保留；全部名称均已展开时删除
+        整条语句。apply-group 和 exclude-group 使用相同处理规则。
+        """
         retained: list[_CiscoNode] = []
         for child in node.children:
             rewritten: str | None = child.command
@@ -671,6 +766,11 @@ class CiscoGroupExpander:
         all_applied: set[str],
         mode: str,
     ) -> list[CiscoBlock]:
+        """把已展开工作树重新组装为可提交的 IOS XR 顶层配置块。
+
+        relevant 模式保留未物化的 group 定义，strict 模式仅输出展开后的
+        配置；最后恢复终止命令，并返回新列表而不直接写入文档。
+        """
         rebuilt: list[CiscoBlock] = []
         if mode == "relevant":
             # relevant 模式必须保留未应用 group 的定义，以及它们原有的引用关系。
