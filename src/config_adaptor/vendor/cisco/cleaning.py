@@ -6,7 +6,7 @@ import re
 
 from ...constants import LAB_PASSWORD, LAB_USERNAME
 from ...models import WashingPolicy
-from ...parsers.cisco_iosxr import CiscoBlock, CiscoDocument
+from ...parsers.cisco_iosxr import CiscoDocument, CiscoNode
 from ...parsers.common import CleanupOutcome
 
 
@@ -31,7 +31,7 @@ def clean_management_access(document: CiscoDocument) -> CleanupOutcome:
         r"|^users\s+group\b",
         re.IGNORECASE,
     )
-    for block in document.blocks:
+    for block in document.root.children:
         if not block.active:
             continue
         header = block.header.strip()
@@ -44,9 +44,8 @@ def clean_management_access(document: CiscoDocument) -> CleanupOutcome:
             outcome.record(matched)
             continue
         if re.match(r"^line\b", header, re.IGNORECASE):
-            retained = [line for line in block.lines if not line_auth.match(line.strip())]
-            outcome.record("line-auth-reference", len(block.lines) - len(retained))
-            block.lines = retained
+            block.children, removed = _strip_sections(block.children, line_auth)
+            outcome.record("line-auth-reference", removed)
     return outcome
 
 
@@ -74,7 +73,7 @@ def clean_optional_features(document: CiscoDocument, policy: WashingPolicy) -> C
                 re.compile(r"^(?:key\s+chain|key-?chain)\b", re.IGNORECASE),
             )
         )
-    for block in document.blocks:
+    for block in document.root.children:
         if not block.active:
             continue
         header = block.header.strip()
@@ -105,7 +104,7 @@ def _clean_protocol_authentication(document: CiscoDocument, outcome: CleanupOutc
         r"^(?:authentication(?:-key(?:-chain)?|-algorithm|-type)?|key-?chain)\b",
         re.IGNORECASE,
     )
-    for block in document.blocks:
+    for block in document.root.children:
         if not block.active:
             continue
         pattern = None
@@ -114,47 +113,48 @@ def _clean_protocol_authentication(document: CiscoDocument, outcome: CleanupOutc
         elif block.interface_name:
             pattern = interface_auth
         if pattern:
-            block.lines, removed = _strip_sections(block.lines, pattern)
+            block.children, removed = _strip_sections(block.children, pattern)
             outcome.record("protocol-auth-reference", removed)
 
 
 def _strip_sections(
-    lines: list[str],
+    nodes: list[CiscoNode],
     pattern: re.Pattern[str],
-) -> tuple[list[str], int]:
-    retained: list[str] = []
+) -> tuple[list[CiscoNode], int]:
+    """递归删除命中认证模式的节点及其全部语义后代。
+
+    AST 使父配置模式和子命令形成完整子树；删除认证父节点时同步删除其 children，
+    可避免扁平文本算法遗留无父级的秘密或引用。返回值同时提供保留节点和删除计数。
+    """
+    retained: list[CiscoNode] = []
     removed = 0
-    skipped_indent: int | None = None
-    for line in lines:
-        stripped = line.strip()
-        indent = len(line) - len(line.lstrip())
-        if skipped_indent is not None:
-            if stripped and indent > skipped_indent:
-                removed += 1
-                continue
-            skipped_indent = None
-        if pattern.search(stripped):
-            removed += 1
-            skipped_indent = indent
+    for node in nodes:
+        if not node.is_formatting and pattern.search(node.header):
+            removed += sum(1 for _ in node.walk(include_self=True))
             continue
-        retained.append(line)
+        node.children, child_removed = _strip_sections(node.children, pattern)
+        removed += child_removed
+        retained.append(node)
     return retained, removed
 
 
 def add_lab_account(document: CiscoDocument) -> None:
-    account = CiscoBlock(
+    account = CiscoNode(
         header=f"username {LAB_USERNAME}",
-        lines=[f" secret 0 {LAB_PASSWORD}", " group root-system"],
+        children=[
+            CiscoNode(f"secret 0 {LAB_PASSWORD}"),
+            CiscoNode("group root-system"),
+        ],
     )
     terminal = next(
         (
             index
-            for index, block in enumerate(document.blocks)
+            for index, block in enumerate(document.root.children)
             if block.active and block.header.strip().lower() in {"end", "commit"}
         ),
-        len(document.blocks),
+        len(document.root.children),
     )
-    document.blocks[terminal:terminal] = [
+    document.root.children[terminal:terminal] = [
         account,
-        CiscoBlock(header="!"),
+        CiscoNode(header="!"),
     ]

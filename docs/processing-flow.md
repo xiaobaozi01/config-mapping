@@ -253,7 +253,7 @@ Group 展开失败后：
 
 ### 7.1 配置解析
 
-IOS XR 配置首先按照顶层非缩进行和 `!` 分隔符切成配置块。
+IOS XR 配置首先按顶层非缩进命令分段，再根据块内缩进和 `!` 的深度建立完整节点树。
 
 输入：
 
@@ -267,14 +267,14 @@ interface GigabitEthernet0/0/0/0
 内部结构：
 
 ```text
-CiscoBlock
-├── header: interface GigabitEthernet0/0/0/0
-└── lines
-    ├── description TO-R2
-    └── ipv4 address 10.0.0.1 255.255.255.252
+CiscoDocument.root
+├── CiscoNode: interface GigabitEthernet0/0/0/0
+│   ├── CiscoNode: description TO-R2
+│   └── CiscoNode: ipv4 address 10.0.0.1 255.255.255.252
+└── CiscoNode: !
 ```
 
-每个块包含 `active` 状态。删除配置时通常将其标记为无效，最终渲染时跳过，从而避免频繁修改列表顺序。
+顶层和嵌套配置都使用 `CiscoNode`。每个节点包含 `active` 状态，逻辑删除的节点及子树在最终渲染时被跳过。
 
 ### 7.2 接口名规范化
 

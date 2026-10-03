@@ -634,7 +634,7 @@ inner VLAN = 优先保留可识别的原业务 VLAN
 
 ### 11.1 应用层只依赖业务能力
 
-`handlers.py` 不应该知道 `CiscoBlock` 或 `JunosNode`。它只通过 `VendorConfiguration` 调用：
+`handlers.py` 不应该知道 `CiscoNode` 或 `JunosNode`。它只通过 `VendorConfiguration` 调用：
 
 - `expand_groups()`
 - `interface_specs()` / `business_interface_names()`
@@ -649,7 +649,7 @@ inner VLAN = 优先保留可识别的原业务 VLAN
 
 ### 11.2 Cisco 文档模型
 
-IOS XR 配置以顶层块为主：
+IOS XR 配置由缩进和 `!` 边界构成树：
 
 ```text
 interface GigabitEthernet0/0/0/0
@@ -658,7 +658,7 @@ interface GigabitEthernet0/0/0/0
 !
 ```
 
-主要对象是 `CiscoBlock` 和内部缩进节点。`CiscoDocument` 负责解析、保存块顺序、提供 Facade 方法和最终渲染；接口、Group、清洗、模拟适配的具体算法放在 `vendor/cisco/`。
+主要对象是 `CiscoNode`。`CiscoDocument.root` 是不参与渲染的虚拟根，顶层命令和任意深度的子命令都使用同一节点类型。`CiscoDocument` 负责解析、保存节点顺序、提供 Facade 方法和最终渲染；接口、Group、清洗、模拟适配的具体算法放在 `vendor/cisco/`。
 
 ### 11.3 Junos 文档模型
 

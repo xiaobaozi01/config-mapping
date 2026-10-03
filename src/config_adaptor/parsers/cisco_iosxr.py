@@ -20,18 +20,125 @@ from .common import (
 
 
 @dataclass
-class _CiscoNode:
-    """表示 IOS XR group 展开过程中按缩进构造的临时语法节点。
+class CiscoNode:
+    """表示 IOS XR 配置树中的顶层或嵌套节点。
 
-    节点保存命令、子节点、块类型、来源和继承优先级，只服务于 group 的语义合并；
-    主文档仍使用 ``CiscoBlock``。两种模型分离可避免为了少量层级配置而把整个
-    IOS XR 文档强制转换成树，同时让 group 展开器拥有处理继承冲突所需的信息。
+    ``header`` 保存去除缩进后的命令或 ``!``/空行格式节点，``children``
+    保存由缩进确定的直接子命令。顶层配置和嵌套配置使用同一类型，
+    与 JunosNode 的整棵树模式一致；``origin`` 和 ``rank`` 供 group 继承合并使用。
     """
-    command: str
-    children: list["_CiscoNode"] = field(default_factory=list)
+    header: str
+    children: list["CiscoNode"] = field(default_factory=list)
+    active: bool = True
     is_block: bool = False
     origin: str = "explicit"
     rank: tuple[int, int] = (1_000_000, 0)
+
+    @property
+    def is_formatting(self) -> bool:
+        """返回节点是否仅表示 ``!`` 分隔符或空行。
+
+        格式节点需要保留以便未改写文档可稳定渲染，但不应参与接口识别、group
+        语义合并或清洗规则匹配，因此由统一属性供各模块过滤。
+        """
+        return self.header in {"", "!"}
+
+    def clone(self) -> "CiscoNode":
+        """深拷贝当前节点及其完整子树。
+
+        Group 继承、M-LAG 展开和一对多引用替换都可能从同一源节点生成多个目标；
+        深拷贝可防止修改某个目标时连带改变原树或其他副本。
+        """
+        return copy.deepcopy(self)
+
+    def walk(
+        self,
+        *,
+        include_self: bool = False,
+        include_formatting: bool = False,
+    ) -> Iterable["CiscoNode"]:
+        """按深度优先顺序遍历当前节点的活动子树。
+
+        默认不包含节点自身，使顶层节点可直接取得内部命令；通过
+        ``include_self`` 可覆盖整棵子树。``!`` 和空行默认被跳过，停用节点则
+        连同后代一起忽略，避免业务分析读取不会渲染的配置。
+        """
+        if not self.active:
+            return
+        if include_self and (include_formatting or not self.is_formatting):
+            yield self
+        for child in self.children:
+            yield from child.walk(
+                include_self=True,
+                include_formatting=include_formatting,
+            )
+
+    @property
+    def interface_name(self) -> str | None:
+        """返回接口节点的规范化名称，非接口节点返回 ``None``。
+
+        该属性放在统一节点上，但只有顶层 ``interface`` 节点会被接口模块使用；
+        去掉 ``l2transport`` 模式后缀才能与拓扑中的纯接口名匹配。
+        """
+        match = re.match(r"interface\s+(.+?)\s*$", self.header, re.IGNORECASE)
+        if not match:
+            return None
+        value = re.sub(r"\s+l2transport\s*$", "", match.group(1), flags=re.IGNORECASE)
+        return canonical_cisco_interface(value)
+
+    @property
+    def l2transport(self) -> bool:
+        """判断接口节点头是否显式启用 ``l2transport`` 模式。
+
+        接口克隆、改名或 UNI 映射会重建 header，单独暴露模式标志可避免
+        名称变更时丢失二层属性。
+        """
+        return bool(re.match(r"interface\s+.+\s+l2transport\s*$", self.header, re.IGNORECASE))
+
+
+def _clone_cisco_nodes(
+    nodes: Iterable[CiscoNode],
+    *,
+    include_formatting: bool = False,
+    origin: str | None = None,
+) -> list[CiscoNode]:
+    """深拷贝节点列表，并可过滤格式节点或统一重设来源。
+
+    文档保真渲染需要 ``!`` 和空行，但 group 语义合并只需要命令节点；集中克隆可以
+    在两个场景间安全转换，同时确保对工作树的修改不会污染持久化文档 AST。
+    """
+    result: list[CiscoNode] = []
+    for node in nodes:
+        if node.is_formatting and not include_formatting:
+            continue
+        clone = copy.copy(node)
+        if origin is not None:
+            clone.origin = origin
+        clone.children = _clone_cisco_nodes(
+            node.children,
+            include_formatting=include_formatting,
+            origin=origin,
+        )
+        result.append(clone)
+    return result
+
+
+def _render_cisco_nodes(nodes: Iterable[CiscoNode], depth: int = 1) -> list[str]:
+    """按 AST 深度递归渲染节点，并保留格式节点的位置。
+
+    语义节点使用每层一个空格的 IOS XR 规范缩进；``!`` 同样按所属父层输出，空行则
+    输出为空字符串。由树结构统一生成缩进，避免节点移动后沿用旧文本的错误层级。
+    """
+    lines: list[str] = []
+    for node in nodes:
+        if not node.active:
+            continue
+        if not node.header:
+            lines.append("")
+            continue
+        lines.append(" " * depth + node.header)
+        lines.extend(_render_cisco_nodes(node.children, depth + 1))
+    return lines
 
 
 def _cisco_command_identity(
@@ -98,6 +205,20 @@ _CISCO_VIRTUAL_INTERFACE = re.compile(
     r"^(?:Tunnel(?:-ip|-te)?|Null|PW-Ether|VASI(?:Left|Right)?|NVE|Multilink)\d",
     re.IGNORECASE,
 )
+_CISCO_BLOCK_HEADER = re.compile(
+    r"^(?:interface|router|vrf|l2vpn|mpls|username|line|"
+    r"segment-routing|telemetry)\b",
+    re.IGNORECASE,
+)
+
+
+def _is_cisco_block_header(header: str) -> bool:
+    """判断顶层命令是否天然表示可进入的配置块。
+
+    空接口、空路由进程等节点没有 children，但仍需保留块语义，以便
+    group 展开可以进入该路径并物化继承配置。
+    """
+    return bool(_CISCO_BLOCK_HEADER.match(header.strip()))
 
 
 def _cisco_interface_kind(name: str) -> InterfaceKind:
@@ -123,81 +244,46 @@ def _cisco_interface_kind(name: str) -> InterfaceKind:
     return InterfaceKind.UNKNOWN
 
 
-@dataclass(slots=True)
-class CiscoBlock:
-    """保存一个 IOS XR 顶层配置块及其原始子行。
-
-    ``header`` 是非缩进顶层命令，``lines`` 保留其内部文本，``active`` 控制最终
-    是否渲染。采用轻量块模型可以保持未知命令和原始顺序，又能通过逻辑停用实现
-    可恢复的删除，而不必完整理解 IOS XR 的所有层级语法。
-    """
-    header: str
-    lines: list[str] = field(default_factory=list)
-    active: bool = True
-
-    @property
-    def interface_name(self) -> str | None:
-        """返回接口块的规范化接口名，非接口块返回 ``None``。
-
-        IOS XR 会把 ``l2transport`` 写在接口头部，但它表示接口模式而非名称；先
-        去掉该后缀再规范化，才能让同一二层接口与拓扑和外部引用正确匹配。
-        """
-        match = re.match(r"interface\s+(.+?)\s*$", self.header, re.IGNORECASE)
-        if not match:
-            return None
-        # IOS XR 二层子接口会把 l2transport 写在 interface 头部，
-        # 它是接口模式而不是接口名的一部分。
-        value = re.sub(r"\s+l2transport\s*$", "", match.group(1), flags=re.IGNORECASE)
-        return canonical_cisco_interface(value)
-
-    @property
-    def l2transport(self) -> bool:
-        """判断接口头是否显式启用了 IOS XR ``l2transport`` 模式。
-
-        接口克隆、改名或 UNI 映射会重建 header，因此必须单独保留这个模式标志，
-        否则二层子接口可能在名称变更后意外变成普通三层接口。
-        """
-        return bool(re.match(r"interface\s+.+\s+l2transport\s*$", self.header, re.IGNORECASE))
-
 class CiscoDocument:
-    """提供可修改 IOS XR 块模型及应用层所需的统一厂商门面。
+    """提供可修改 IOS XR 配置树及应用层所需的统一厂商门面。
 
     类本身负责文本解析、渲染、外部规则和引用替换；接口迁移、group、清洗及模拟
-    适配委托给独立厂商模块。这样应用层只依赖统一能力，不接触 ``CiscoBlock``
-    细节，同时避免把不断增长的厂商操作全部堆进语法解析器。
+    适配委托给独立厂商模块。虚拟根节点承载所有顶层命令，使 Cisco 和 Juniper
+    都以“Document + root + 单一节点类型”表达完整文档。
     """
     vendor = "cisco_iosxr"
 
     def __init__(self, text: str):
-        """记录输入换行信息，并把原始 IOS XR 文本解析成有序顶层块。
+        """记录输入换行信息，并把原始 IOS XR 文本解析到虚拟根节点下。
 
-        构造时立即建立可修改表示，使后续处理器共享同一文档状态；保留块顺序是为了
+        构造时立即建立可修改树，使后续处理器共享同一文档状态；保留节点顺序是为了
         在删除或插入配置后仍尽量维持原配置的组织方式和确定性输出。
         """
         self.trailing_newline = text.endswith("\n")
-        self.blocks = self._parse(text)
+        self.root = CiscoNode("<root>", is_block=True)
+        self.root.children = self._parse(text)
 
     @staticmethod
-    def _parse(text: str) -> list[CiscoBlock]:
-        """按顶层非缩进行、group 边界和 ``!`` 分隔符切分 IOS XR 配置。
+    def _is_group_node(node: CiscoNode) -> bool:
+        """判断当前顶层节点是否为 IOS XR group 定义。
 
-        解析器有意只建立转换所需的块级结构，未知内部命令继续作为原文保存；同时
-        特判 group 的 ``end-group`` 和块内缩进 ``!``，避免把合法层级内容错误切成
-        新顶层块。循环按以下优先级处理每一行：
-
-        当前块是 group？
-        ├─ 是：遇到 end-group 就结束，否则所有行都加入 group
-        └─ 否：
-           ├─ 无缩进普通命令 → 创建新的顶层块
-           ├─ 遇到 ! → 缩进则属于当前块，无缩进则结束当前块
-           └─ 其他行 → 加入当前块；没有当前块则原样独立保留
-
-        这种轻量状态机比不完整的全语法解析更能安全保留未识别配置，也让 group
-        与普通块中相同文本的不同含义得到明确处理。
+        解析器由 ``current`` 同时表示当前顶层块和 group 模式，避免再维护
+        一个与它指向同一对象的 ``group_node`` 状态。
         """
-        blocks: list[CiscoBlock] = []
-        current: CiscoBlock | None = None
-        group_block: CiscoBlock | None = None
+        return bool(re.match(r"group\s+\S+", node.header, re.IGNORECASE))
+
+    @staticmethod
+    def _parse(text: str) -> list[CiscoNode]:
+        """把 IOS XR 文本解析成有序顶层块及持久化缩进 AST。
+
+        普通配置由无缩进命令开始、无缩进 ``!`` 结束；group 是例外，其中看起来像
+        顶层命令的内容仍属于 group，只有 ``end-group`` 才结束定义。块内命令使用
+        缩进栈构造父子关系：更深缩进成为当前节点的 child，相同或更浅缩进先退栈；
+        缩进 ``!`` 按自身深度关闭配置模式并作为格式节点保留。
+        """
+        nodes: list[CiscoNode] = []
+        current: CiscoNode | None = None
+        stack: list[tuple[int, CiscoNode]] = []
 
         for raw_line in text.splitlines():
             line = raw_line.rstrip()
@@ -206,51 +292,87 @@ class CiscoDocument:
 
             # group 的内部命令可能看起来像普通顶层 header，因此进入 group 后
             # 必须优先消费所有行，只允许 end-group 结束这个状态。
-            if group_block is not None:
+            if current is not None and CiscoDocument._is_group_node(current):
                 if stripped.lower() == "end-group":
-                    group_block = None
                     current = None
-                    blocks.append(CiscoBlock(header="end-group"))
+                    stack = []
+                    nodes.append(CiscoNode(header="end-group"))
                 else:
-                    group_block.lines.append(line)
+                    CiscoDocument._append_child(current, stack, line)
                 continue
 
             # 普通状态下，无缩进命令开启一个新的顶层块。感叹号单独处理，
             # 因为它是否缩进决定了是顶层分隔符还是块内子模式结束符。
             if stripped and not is_indented and stripped != "!":
-                current = CiscoBlock(header=line)
-                blocks.append(current)
-                if re.match(r"group\s+\S+", line, re.IGNORECASE):
-                    group_block = current
+                current = CiscoNode(
+                    header=line,
+                    is_block=_is_cisco_block_header(line),
+                )
+                nodes.append(current)
+                stack = []
                 continue
 
-            if stripped == "!":
-                if is_indented and current is not None:
-                    current.lines.append(line)
-                else:
-                    current = None
-                    blocks.append(CiscoBlock(header="!"))
+            if stripped == "!" and not is_indented:
+                current = None
+                stack = []
+                nodes.append(CiscoNode(header="!"))
                 continue
 
             if current is not None:
-                current.lines.append(line)
+                CiscoDocument._append_child(current, stack, line)
             else:
-                blocks.append(CiscoBlock(header=line))
-        return blocks
+                nodes.append(CiscoNode(header=line))
+        return nodes
 
-    def _interface_blocks(self) -> list[CiscoBlock]:
-        """返回仍有效且已识别接口名的 IOS XR 配置块。
+    @staticmethod
+    def _append_child(
+        parent_node: CiscoNode,
+        stack: list[tuple[int, CiscoNode]],
+        line: str,
+        *,
+        origin: str = "explicit",
+    ) -> None:
+        """按行缩进把一个块内命令追加到正确父节点。
+
+        普通命令缩进更深时成为栈顶节点的 child，相同或更浅时先退出已结束层级；
+        ``!`` 使用同样的退栈规则但自身不入栈，因此既能关闭对应配置模式，又不会
+        接管后续命令。空行作为根级格式节点保留，但不改变当前语义层级。
+        """
+        stripped = line.strip()
+        if not stripped:
+            parent_node.children.append(CiscoNode("", origin=origin))
+            return
+
+        expanded = line.expandtabs(8)
+        indent = len(expanded) - len(expanded.lstrip())
+        while stack and indent <= stack[-1][0]:
+            stack.pop()
+
+        parent = stack[-1][1] if stack else None
+        node = CiscoNode(stripped, origin=origin)
+        if parent is None:
+            parent_node.children.append(node)
+            parent_node.is_block = True
+        else:
+            parent.children.append(node)
+            parent.is_block = True
+
+        if stripped != "!":
+            stack.append((indent, node))
+
+    def _interface_nodes(self) -> list[CiscoNode]:
+        """返回仍有效且已识别接口名的 IOS XR 顶层节点。
 
         具体筛选委托接口模块，保证兼容旧内部入口的同时，让所有调用方复用同一套
         活动状态和接口识别规则，避免操作已逻辑删除的块。
         """
-        return self._interfaces().interface_blocks(self)
+        return self._interfaces().interface_nodes(self)
 
     @staticmethod
     def _interfaces():
         """延迟返回 Cisco 接口操作模块。
 
-        接口模块需要引用 ``CiscoDocument`` 和 ``CiscoBlock``；在方法调用时再导入
+        接口模块需要引用 ``CiscoDocument`` 和 ``CiscoNode``；在方法调用时再导入
         可打破模块初始化阶段的循环依赖，同时保持文档类对外提供稳定门面。
         """
         from ..vendor.cisco import interfaces
@@ -307,35 +429,35 @@ class CiscoDocument:
         """
         return self._interfaces().business_interface_names(self)
 
-    def _find_interface_block(self, name: str) -> CiscoBlock | None:
+    def _find_interface_node(self, name: str) -> CiscoNode | None:
         """按规范化名称查找第一个有效 IOS XR 接口块。
 
         这是保留给旧内部调用的块级入口；统一委托接口模块可确保查找忽略已停用块，
         避免后续修改落到不会被渲染的旧定义上。
         """
-        return self._interfaces().find_interface_block(self, name)
+        return self._interfaces().find_interface_node(self, name)
 
     @staticmethod
-    def _parse_cisco_nodes(lines: Iterable[str], origin: str = "explicit") -> list[_CiscoNode]:
-        """把块内文本解析成 group 展开使用的临时 Cisco 节点树。
+    def _parse_cisco_nodes(lines: Iterable[str], origin: str = "explicit") -> list[CiscoNode]:
+        """使用文档同款缩进规则把独立文本行解析成语义节点树。
 
-        方法保留旧调用路径，但把真正的缩进解析交给 ``CiscoGroupExpander``，使 group
-        的解析与合并规则集中维护，避免文档门面和展开器各自实现一套层级逻辑。
+        该兼容入口以临时块复用持久 AST 构造器，随后过滤 ``!`` 和空行；Group 展开
+        等语义算法因此与主文档共享唯一解析规则，而不会重新实现一套临时解析器。
         """
-        from ..vendor.cisco.groups import CiscoGroupExpander
-
-        return CiscoGroupExpander.parse_nodes(lines, origin)
+        root = CiscoNode("<root>", is_block=True)
+        stack: list[tuple[int, CiscoNode]] = []
+        for raw in lines:
+            CiscoDocument._append_child(root, stack, raw.rstrip(), origin=origin)
+        return _clone_cisco_nodes(root.children, origin=origin)
 
     @staticmethod
-    def _render_cisco_nodes(nodes: list[_CiscoNode], depth: int = 1) -> list[str]:
-        """按指定缩进深度渲染 group 临时节点树。
+    def _render_cisco_nodes(nodes: list[CiscoNode], depth: int = 1) -> list[str]:
+        """按指定起始深度渲染 Cisco 节点树。
 
-        该兼容入口与解析入口成对存在，并委托同一个展开器输出，保证继承配置写回时
-        使用与 group 解析一致的块/叶子结构和缩进规则。
+        兼容入口直接调用文档 AST 的统一渲染器，使 Group 合并结果、接口树和普通配置
+        块使用完全相同的缩进及格式节点规则。
         """
-        from ..vendor.cisco.groups import CiscoGroupExpander
-
-        return CiscoGroupExpander.render_nodes(nodes, depth)
+        return _render_cisco_nodes(nodes, depth)
 
     def expand_groups(
         self,
@@ -376,8 +498,8 @@ class CiscoDocument:
         """
         self._interfaces().clone_interface_tree(self, source, target, strip_bundle)
 
-    def _merge_duplicate_interface(self, preferred: CiscoBlock) -> None:
-        """把同名接口块的非重复配置行合并到首选块。
+    def _merge_duplicate_interface(self, preferred: CiscoNode) -> None:
+        """把同名接口块的非重复配置子树合并到首选块。
 
         接口改名或克隆可能撞上已有目标定义；合并而非覆盖可以保留双方有效配置，
         同时停用多余块，确保最终 IOS XR 输出只有一个活动接口定义。
@@ -486,15 +608,15 @@ class CiscoDocument:
         action: str,
         value: str | None,
     ) -> int:
-        """在 IOS XR 顶层配置块上应用外部规则。
+        """在 IOS XR 顶层配置节点上应用外部规则。
 
-        方法按正则匹配活动块 header，并执行删除、替换或脱敏，返回命中块数。规则
-        模块只依赖该厂商门面而不读取 ``blocks`` 内部表示，因此外部自定义清洗无需
+        方法按正则匹配活动顶层节点 header，并执行删除、替换或脱敏，返回命中节点数。
+        规则模块只依赖该厂商门面而不读取 ``root`` 内部表示，因此外部自定义清洗无需
         与解析器数据结构耦合，也不会误改未命中的块内文本。
         """
         pattern = re.compile(match, re.IGNORECASE)
         hits = 0
-        for block in self.blocks:
+        for block in self.root.children:
             if not block.active or not pattern.search(block.header.strip()):
                 continue
             hits += 1
@@ -509,9 +631,9 @@ class CiscoDocument:
     def replace_references(self, replacements: dict[str, list[str]]) -> None:
         """更新 IOS XR 配置中的旧接口引用，并展开一对多 M-LAG 目标。
 
-        方法先规范化并去重替换表，再基于原文一次性生成文本变体；接口 header 由迁移
-        阶段负责，这里只更新其内部行，而其他顶层块可按目标数克隆。一次性展开可避免
-        新目标名再次命中旧源规则，保证协议、L2VPN 和策略引用与最终接口树一致。
+        方法先规范化并去重替换表，再基于原 AST 一次性生成命令变体；接口
+        header 由迁移阶段负责，这里递归更新其内部节点，其他顶层块则按目标数克隆。
+        节点及子树整体复制可避免层级丢失，也防止新目标名再次命中旧源规则。
         """
         if not replacements:
             return
@@ -548,32 +670,45 @@ class CiscoDocument:
                 cursor = match.end()
             return list(dict.fromkeys(current + value[cursor:] for current in variants))
 
-        rebuilt: list[CiscoBlock] = []
-        for block in self.blocks:
+        def expand_nodes(nodes: list[CiscoNode]) -> list[CiscoNode]:
+            """递归展开节点命令中的接口引用并保留子树结构。
+
+            每个命令变体获得独立深拷贝，随后递归处理其 children；因此一对多 M-LAG
+            引用可以在任意深度展开，而不会把子命令留在被替换节点之外。
+            """
+            expanded: list[CiscoNode] = []
+            for node in nodes:
+                if node.is_formatting:
+                    expanded.append(node.clone())
+                    continue
+                for header in expand(node.header):
+                    clone = node.clone()
+                    clone.header = header
+                    clone.children = expand_nodes(clone.children)
+                    expanded.append(clone)
+            return expanded
+
+        rebuilt: list[CiscoNode] = []
+        for block in self.root.children:
             if not block.active or block.interface_name:
                 if block.active:
-                    block.lines = [line for raw in block.lines for line in expand(raw)]
+                    block.children = expand_nodes(block.children)
                 rebuilt.append(block)
                 continue
             header_variants = expand(block.header)
             for header in header_variants:
                 clone = copy.deepcopy(block)
                 clone.header = header
-                clone.lines = [line for raw in clone.lines for line in expand(raw)]
+                clone.children = expand_nodes(clone.children)
                 rebuilt.append(clone)
-        self.blocks = rebuilt
+        self.root.children = rebuilt
 
     def render(self) -> str:
-        """按文档顺序渲染所有活动 IOS XR 配置块。
+        """按虚拟根下的文档顺序渲染所有活动 IOS XR 节点。
 
-        逻辑停用的块被跳过，未知块及其内部原文继续保留；稳定顺序和统一末尾换行
-        便于设备加载、生成可读差异，也使相同输入得到确定性输出。
+        逻辑停用的块被跳过，未知命令和格式节点按现有树保留；语义节点的缩进由
+        AST 深度统一生成。稳定顺序和统一末尾换行便于设备加载和生成确定性差异。
         """
-        lines: list[str] = []
-        for block in self.blocks:
-            if not block.active:
-                continue
-            lines.append(block.header)
-            lines.extend(block.lines)
+        lines = _render_cisco_nodes(self.root.children, depth=0)
         text = "\n".join(lines).rstrip() + "\n"
         return text

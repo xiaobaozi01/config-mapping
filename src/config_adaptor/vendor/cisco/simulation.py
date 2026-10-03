@@ -5,7 +5,7 @@ from __future__ import annotations
 import re
 
 from ...models import SimulationAdaptationPolicy
-from ...parsers.cisco_iosxr import CiscoDocument
+from ...parsers.cisco_iosxr import CiscoDocument, CiscoNode
 from ...parsers.common import SimulationAdaptationOutcome, interface_parent, interface_unit
 
 
@@ -29,28 +29,29 @@ def adapt_to_simulation(
     shutdown = re.compile(r"^shutdown$", re.IGNORECASE)
     no_shutdown = re.compile(r"^no\s+shutdown$", re.IGNORECASE)
 
-    for block in document._interface_blocks():
+    for block in document._interface_nodes():
         name = block.interface_name
         if not name or interface_parent(name) not in targets:
             continue
         if policy.remove_physical_interface_knobs:
-            retained = [line for line in block.lines if not physical_knob.match(line.strip())]
-            outcome.record("removed", "physical-interface-knob", len(block.lines) - len(retained))
-            block.lines = retained
+            block.children, removed = _remove_matching_nodes(
+                block.children,
+                physical_knob,
+            )
+            outcome.record("removed", "physical-interface-knob", removed)
         if policy.ensure_data_interfaces_enabled:
-            retained = [line for line in block.lines if not shutdown.fullmatch(line.strip())]
-            outcome.record("removed", "interface-shutdown", len(block.lines) - len(retained))
-            block.lines = retained
+            block.children, removed = _remove_matching_nodes(block.children, shutdown)
+            outcome.record("removed", "interface-shutdown", removed)
             if interface_unit(name) is None and not any(
-                no_shutdown.fullmatch(line.strip()) for line in block.lines
+                no_shutdown.fullmatch(node.header) for node in block.walk()
             ):
                 insertion = (
                     1
-                    if block.lines
-                    and block.lines[0].strip().lower().startswith("description ")
+                    if block.children
+                    and block.children[0].header.lower().startswith("description ")
                     else 0
                 )
-                block.lines.insert(insertion, " no shutdown")
+                block.children.insert(insertion, CiscoNode("no shutdown"))
                 outcome.record("added", "interface-no-shutdown")
 
     if policy.mode != "stable":
@@ -73,13 +74,13 @@ def adapt_to_simulation(
         outcome.record("replaced", category)
         return f'{match.group("indent")}{minimum}{match.group("suffix")}'
 
-    for block in document.blocks:
+    for block in document.root.children:
         if not block.active:
             continue
-        block.lines = [
-            clamp(
+        for node in block.walk():
+            node.header = clamp(
                 clamp(
-                    line,
+                    node.header,
                     interval,
                     policy.bfd_minimum_interval_ms,
                     "bfd-minimum-interval",
@@ -88,6 +89,25 @@ def adapt_to_simulation(
                 policy.bfd_minimum_multiplier,
                 "bfd-multiplier",
             )
-            for line in block.lines
-        ]
     return outcome
+
+
+def _remove_matching_nodes(
+    nodes: list[CiscoNode],
+    pattern: re.Pattern[str],
+) -> tuple[list[CiscoNode], int]:
+    """递归删除命中模拟不兼容模式的节点及其子树。
+
+    物理参数可能位于接口的嵌套配置模式中；按 AST 节点删除能同时清理相关子命令，
+    并返回语义节点数量供适配报告统计。
+    """
+    retained: list[CiscoNode] = []
+    removed = 0
+    for node in nodes:
+        if not node.is_formatting and pattern.match(node.header):
+            removed += sum(1 for _ in node.walk(include_self=True))
+            continue
+        node.children, child_removed = _remove_matching_nodes(node.children, pattern)
+        removed += child_removed
+        retained.append(node)
+    return retained, removed

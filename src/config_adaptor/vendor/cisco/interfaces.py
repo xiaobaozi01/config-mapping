@@ -4,18 +4,17 @@ from __future__ import annotations
 
 import copy
 import re
-from typing import Any
 
 from ...parsers.cisco_iosxr import (
-    CiscoBlock,
     CiscoDocument,
+    CiscoNode,
     _cisco_interface_kind,
     canonical_cisco_interface,
 )
 from ...parsers.common import InterfaceKind, InterfaceSpec, interface_parent, interface_unit
 
 
-def interface_blocks(document: CiscoDocument) -> list[CiscoBlock]:
+def interface_nodes(document: CiscoDocument) -> list[CiscoNode]:
     """返回文档中仍有效且已识别出接口名的 IOS XR 配置块。
 
     后续接口分析和修改统一从这里取数，以免把已逻辑删除的块或普通顶层配置
@@ -23,7 +22,7 @@ def interface_blocks(document: CiscoDocument) -> list[CiscoBlock]:
     """
     return [
         block
-        for block in document.blocks
+        for block in document.root.children
         if block.active and block.interface_name
     ]
 
@@ -36,16 +35,16 @@ def interface_specs(document: CiscoDocument) -> list[InterfaceSpec]:
     迁移时把错误的 VLAN 当作需要保留的内层标签。
     """
     result: list[InterfaceSpec] = []
-    for block in interface_blocks(document):
+    for block in interface_nodes(document):
         name = block.interface_name
         assert name is not None
         vlan = None
         inner_vlan = None
-        for line in block.lines:
+        for node in block.walk():
             match = re.match(
-                r"\s*encapsulation\s+dot1q\s+(\d+)"
+                r"encapsulation\s+dot1q\s+(\d+)"
                 r"(?:\s+second-dot1q\s+(\d+))?",
-                line,
+                node.header,
                 re.IGNORECASE,
             )
             if match:
@@ -72,17 +71,52 @@ def interface_specs(document: CiscoDocument) -> list[InterfaceSpec]:
     return result
 
 
-def _descendants(node: Any) -> list[Any]:
+def _descendants(node: CiscoNode) -> list[CiscoNode]:
     """按深度优先顺序返回语法节点的全部后代，不包含节点自身。
 
     bridge-domain 下的接口命令可能位于多层子模式中，递归展开后才能完整收集
     attachment circuit 和 routed interface。
     """
-    result: list[Any] = []
+    result: list[CiscoNode] = []
     for child in node.children:
         result.append(child)
         result.extend(_descendants(child))
     return result
+
+
+def _strip_matching_nodes(
+    nodes: list[CiscoNode],
+    pattern: re.Pattern[str],
+) -> list[CiscoNode]:
+    """递归删除命中模式的命令节点及其完整子树。
+
+    聚合或 VLAN 终结命令可能拥有下级参数；以节点为单位删除可避免旧的扁平行过滤
+    留下失去父命令的孤儿配置，同时原有 ``!`` 和空行格式节点继续保留。
+    """
+    retained: list[CiscoNode] = []
+    for node in nodes:
+        if not node.is_formatting and pattern.match(node.header):
+            continue
+        node.children = _strip_matching_nodes(node.children, pattern)
+        retained.append(node)
+    return retained
+
+
+def _node_identity(node: CiscoNode) -> tuple[object, ...]:
+    """返回节点及其语义子树的可哈希结构标识。
+
+    接口块碰撞合并时需要以完整子树而非单行文本判重；忽略格式节点可避免仅因 ``!``
+    位置不同而重复保留同一条业务配置。
+    """
+    return (
+        node.header,
+        node.is_block,
+        tuple(
+            _node_identity(child)
+            for child in node.children
+            if not child.is_formatting
+        ),
+    )
 
 
 def _bridge_domain_bindings(
@@ -94,26 +128,28 @@ def _bridge_domain_bindings(
     推导提供显式配置关系，而不是依赖接口编号等不可靠的约定。
     """
     result: list[tuple[set[str], set[str]]] = []
-    for block in document.blocks:
+    for block in document.root.children:
         if not block.active or not re.match(
             r"^l2vpn\b",
             block.header.strip(),
             re.IGNORECASE,
         ):
             continue
-        for node in document._parse_cisco_nodes(block.lines):
+        for node in block.children:
+            if node.is_formatting:
+                continue
             stack = [node]
             while stack:
                 current = stack.pop()
                 stack.extend(current.children)
-                if not re.match(r"^bridge-domain\b", current.command, re.IGNORECASE):
+                if not re.match(r"^bridge-domain\b", current.header, re.IGNORECASE):
                     continue
                 attachments: set[str] = set()
                 gateways: set[str] = set()
                 for child in _descendants(current):
                     gateway_match = re.match(
                         r"^routed\s+interface\s+(.+)$",
-                        child.command,
+                        child.header,
                         re.IGNORECASE,
                     )
                     if gateway_match:
@@ -121,7 +157,7 @@ def _bridge_domain_bindings(
                         continue
                     interface_match = re.match(
                         r"^interface\s+(.+)$",
-                        child.command,
+                        child.header,
                         re.IGNORECASE,
                     )
                     if interface_match:
@@ -180,13 +216,13 @@ def bundle_members(document: CiscoDocument) -> dict[str, str]:
     展平聚合配置时找到并清理真实成员口。
     """
     result: dict[str, str] = {}
-    for block in interface_blocks(document):
+    for block in interface_nodes(document):
         name = block.interface_name
         assert name is not None
         if _cisco_interface_kind(name) != InterfaceKind.PHYSICAL or interface_unit(name) is not None:
             continue
-        for line in block.lines:
-            match = re.match(r"\s*bundle\s+id\s+(\d+)\b", line, re.IGNORECASE)
+        for node in block.walk():
+            match = re.match(r"bundle\s+id\s+(\d+)\b", node.header, re.IGNORECASE)
             if match:
                 result[name] = f"Bundle-Ether{match.group(1)}"
                 break
@@ -233,20 +269,23 @@ def business_interface_names(document: CiscoDocument) -> set[str]:
         r"bridge-domain\b|l2vpn\b|ethernet-services\b)",
         re.IGNORECASE,
     )
-    for block in interface_blocks(document):
+    for block in interface_nodes(document):
         name = block.interface_name
         if (
             name
             and kinds.get(name) in mappable_kinds
-            and (block.l2transport or any(direct.match(line.strip()) for line in block.lines))
+            and (
+                block.l2transport
+                or any(direct.match(node.header) for node in block.walk())
+            )
         ):
             active.add(name)
 
     external = "\n".join(
         text
-        for block in document.blocks
+        for block in document.root.children
         if block.active and not block.interface_name
-        for text in [block.header, *block.lines]
+        for text in [block.header, *(node.header for node in block.walk())]
     )
     for name in known:
         if kinds.get(name) in mappable_kinds and re.search(
@@ -268,7 +307,7 @@ def business_interface_names(document: CiscoDocument) -> set[str]:
     return active
 
 
-def find_interface_block(document: CiscoDocument, name: str) -> CiscoBlock | None:
+def find_interface_node(document: CiscoDocument, name: str) -> CiscoNode | None:
     """按规范化名称查找第一个仍有效的 IOS XR 接口配置块。
 
     统一规范化调用方输入可兼容接口别名；忽略非活动块则确保后续修改不会落到
@@ -278,7 +317,7 @@ def find_interface_block(document: CiscoDocument, name: str) -> CiscoBlock | Non
     return next(
         (
             block
-            for block in interface_blocks(document)
+            for block in interface_nodes(document)
             if block.interface_name == canonical
         ),
         None,
@@ -296,7 +335,7 @@ def remove_interface(
     ``include_children`` 用于父口迁移结束后一次清理整棵接口树。
     """
     canonical = canonical_cisco_interface(name)
-    for block in interface_blocks(document):
+    for block in interface_nodes(document):
         current = block.interface_name
         if current == canonical or (
             include_children and current and current.startswith(canonical + ".")
@@ -317,7 +356,7 @@ def rename_interface_tree(
     """
     source = canonical_cisco_interface(source)
     target = canonical_cisco_interface(target)
-    for block in list(interface_blocks(document)):
+    for block in list(interface_nodes(document)):
         current = block.interface_name
         if current != source and not (current and current.startswith(source + ".")):
             continue
@@ -327,15 +366,10 @@ def rename_interface_tree(
             " l2transport" if block.l2transport else ""
         )
         if strip_bundle:
-            block.lines = [
-                line
-                for line in block.lines
-                if not re.match(
-                    r"\s*(?:bundle\b|lacp\b|aggregated-)",
-                    line,
-                    re.IGNORECASE,
-                )
-            ]
+            block.children = _strip_matching_nodes(
+                block.children,
+                re.compile(r"^(?:bundle\b|lacp\b|aggregated-)", re.IGNORECASE),
+            )
         _merge_duplicate_interface(document, block)
 
 
@@ -355,18 +389,21 @@ def clone_interface_tree(
     target = canonical_cisco_interface(target)
     originals = [
         block
-        for block in interface_blocks(document)
+        for block in interface_nodes(document)
         if block.interface_name == source
         or (block.interface_name and block.interface_name.startswith(source + "."))
     ]
     if not originals:
-        document.blocks.append(
-            CiscoBlock(header=f"interface {target}", lines=[" no shutdown"])
+        document.root.children.append(
+            CiscoNode(
+                header=f"interface {target}",
+                children=[CiscoNode("no shutdown")],
+            )
         )
-        document.blocks.append(CiscoBlock(header="!"))
+        document.root.children.append(CiscoNode(header="!"))
         return
-    insert_at = max(document.blocks.index(block) for block in originals) + 1
-    clones: list[CiscoBlock] = []
+    insert_at = max(document.root.children.index(block) for block in originals) + 1
+    clones: list[CiscoNode] = []
     for original in originals:
         clone = copy.deepcopy(original)
         current = original.interface_name or source
@@ -375,17 +412,12 @@ def clone_interface_tree(
             " l2transport" if original.l2transport else ""
         )
         if strip_bundle:
-            clone.lines = [
-                line
-                for line in clone.lines
-                if not re.match(
-                    r"\s*(?:bundle\b|lacp\b|aggregated-)",
-                    line,
-                    re.IGNORECASE,
-                )
-            ]
-        clones.extend([clone, CiscoBlock(header="!")])
-    document.blocks[insert_at:insert_at] = clones
+            clone.children = _strip_matching_nodes(
+                clone.children,
+                re.compile(r"^(?:bundle\b|lacp\b|aggregated-)", re.IGNORECASE),
+            )
+        clones.extend([clone, CiscoNode(header="!")])
+    document.root.children[insert_at:insert_at] = clones
     for clone in clones:
         if clone.interface_name:
             _merge_duplicate_interface(document, clone)
@@ -393,27 +425,32 @@ def clone_interface_tree(
 
 def _merge_duplicate_interface(
     document: CiscoDocument,
-    preferred: CiscoBlock,
+    preferred: CiscoNode,
 ) -> None:
-    """把同名接口块的非重复配置行合并到首选块，并停用其余块。
+    """把同名接口块的非重复配置子树合并到首选块，并停用其余块。
 
     接口改名或克隆可能与已有目标接口碰撞；集中合并既保留双方配置，也保证最终
-    输出只有一个活动定义。配置行按原文档中各块的出现顺序收集。
+    输出只有一个活动定义。子树按原文档中各块的出现顺序收集。
     """
     name = preferred.interface_name
     duplicates = [
-        block for block in interface_blocks(document) if block.interface_name == name
+        block for block in interface_nodes(document) if block.interface_name == name
     ]
     if len(duplicates) < 2:
         return
-    merged: list[str] = []
+    merged: list[CiscoNode] = []
+    seen: set[tuple[object, ...]] = set()
     for block in duplicates:
-        for line in block.lines:
-            if line not in merged:
-                merged.append(line)
+        for node in block.children:
+            if node.is_formatting:
+                continue
+            identity = _node_identity(node)
+            if identity not in seen:
+                merged.append(node.clone())
+                seen.add(identity)
         if block is not preferred:
             block.active = False
-    preferred.lines = merged
+    preferred.children = merged
 
 
 def map_uni(
@@ -432,31 +469,26 @@ def map_uni(
     """
     source = canonical_cisco_interface(source)
     target = f"{canonical_cisco_interface(target_parent)}.{vlan}"
-    block = find_interface_block(document, source)
+    block = find_interface_node(document, source)
     if not block:
         return target
     block.header = f"interface {target}" + (
         " l2transport" if block.l2transport else ""
     )
-    filtered = [
-        line
-        for line in block.lines
-        if not re.match(
-            r"\s*(?:encapsulation\b|rewrite\b|bundle\b|lacp\b)",
-            line,
-            re.IGNORECASE,
-        )
-    ]
+    filtered = _strip_matching_nodes(
+        block.children,
+        re.compile(r"^(?:encapsulation\b|rewrite\b|bundle\b|lacp\b)", re.IGNORECASE),
+    )
     insertion = (
         1
-        if filtered and re.match(r"\s*description\b", filtered[0], re.IGNORECASE)
+        if filtered and re.match(r"description\b", filtered[0].header, re.IGNORECASE)
         else 0
     )
     filtered.insert(
         insertion,
-        f" encapsulation dot1q {vlan} second-dot1q {inner_vlan}",
+        CiscoNode(f"encapsulation dot1q {vlan} second-dot1q {inner_vlan}"),
     )
-    block.lines = filtered
+    block.children = filtered
     _merge_duplicate_interface(document, block)
     return target
 
@@ -468,9 +500,12 @@ def ensure_parent_interface(document: CiscoDocument, name: str) -> None:
     接口保持原样，避免覆盖用户配置。
     """
     canonical = canonical_cisco_interface(name)
-    if find_interface_block(document, canonical):
+    if find_interface_node(document, canonical):
         return
-    document.blocks.append(
-        CiscoBlock(header=f"interface {canonical}", lines=[" no shutdown"])
+    document.root.children.append(
+        CiscoNode(
+            header=f"interface {canonical}",
+            children=[CiscoNode("no shutdown")],
+        )
     )
-    document.blocks.append(CiscoBlock(header="!"))
+    document.root.children.append(CiscoNode(header="!"))
