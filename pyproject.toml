@@ -18,6 +18,12 @@ config-adaptor = "config_adaptor.cli:main"
 [tool.setuptools.packages.find]
 where = ["src"]
 
+[tool.setuptools.package-data]
+config_adaptor = [
+    "vendor/cisco/rules/xrv9000/*.yaml",
+    "vendor/juniper/rules/vmx/*.yaml",
+]
+
 [tool.pytest.ini_options]
 pythonpath = ["src"]
 testpaths = ["tests"]

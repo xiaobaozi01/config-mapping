@@ -140,6 +140,21 @@ def write_outputs(context: ConversionContext, output_dir: Path) -> None:
         for event in context.events
         if event.get("kind") == "simulation-adaptation"
     )
+    group_identity_ambiguity_count = sum(
+        event.get("kind") == "group-identity-ambiguous"
+        for event in context.events
+    )
+    group_identity_rule_hits = sum(
+        int(event.get("matched", 0))
+        for event in context.events
+        if event.get("kind") == "group-identity-coverage"
+    )
+    group_identity_fallbacks = sum(
+        int(event.get("fallback", 0))
+        for event in context.events
+        if event.get("kind") == "group-identity-coverage"
+    )
+    group_identity_total = group_identity_rule_hits + group_identity_fallbacks
     report = {
         "status": "failed" if context.has_errors else "success",
         "errors": list(dict.fromkeys(combined_errors)),
@@ -152,6 +167,14 @@ def write_outputs(context: ConversionContext, output_dir: Path) -> None:
             "skipped_links": sum(1 for link in context.topology.links if not link.active),
             "mapping_count": len(mapping_payload),
             "group_conflict_count": len(group_conflicts),
+            "group_identity_ambiguity_count": group_identity_ambiguity_count,
+            "group_identity_rule_hits": group_identity_rule_hits,
+            "group_identity_fallbacks": group_identity_fallbacks,
+            "group_identity_coverage": (
+                round(group_identity_rule_hits / group_identity_total, 4)
+                if group_identity_total
+                else None
+            ),
             "simulation_adaptation_count": simulation_adaptation_count,
         },
     }

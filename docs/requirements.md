@@ -166,6 +166,9 @@ TopologyPreflightHandler -> GroupExpansionHandler -> InterfaceClassificationHand
    - Junos多个 `address`、接口列表等可重复配置应同时保留；
    - `mtu`、`description`、`vlan-id` 等单值配置按继承优先级选出唯一值。
 7. 每个冲突记录层级、配置键、胜出/被覆盖的来源和值，并输出到 `report.json.group_conflicts`。
+8. 配置键由 XRv9000/vMX 专属的路径感知规则包生成；规则未命中时不得静默覆盖任何语句。
+9. `group_handling.unknown_identity` 支持 `preserve`、`warn` 和 `fail`；`fail` 遇到同路径同命令族的未知潜在冲突时必须整体回滚。
+10. 报告必须输出 group identity 规则命中数、降级数、覆盖率和未知歧义数，供镜像语料持续补齐规则。
 
 优先级语义依据厂商文档：Cisco IOS XR 配置组采用本地配置优先、内层组优先及最长正则匹配；Junos采用本地配置优先、嵌套组优先，且同一列表中第一个 group 优先。
 

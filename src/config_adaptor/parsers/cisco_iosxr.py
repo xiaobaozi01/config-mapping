@@ -29,66 +29,19 @@ class _CiscoNode:
     rank: tuple[int, int] = (1_000_000, 0)
 
 
-# 同一路径下这些命令只能有一个有效值，用于判断 group 配置冲突。
-_CISCO_SINGLE_VALUE_KEYS = {
-    "description",
-    "mtu",
-    "bandwidth",
-    "shutdown",
-    "vrf",
-    "encapsulation",
-    "load-interval",
-    "link-status",
-    "router-id",
-    "metric",
-    "cost",
-    "priority",
-    "hello-interval",
-    "dead-interval",
-    "passive",
-}
-
-
 def _cisco_command_identity(
     command: str,
     has_children: bool = False,
     path: list[str] | None = None,
 ) -> str:
-    """生成命令的语义键，区分单值命令和允许重复的命令。"""
-    normalized = _normalized_command(command)
-    tokens = normalized.split()
-    if not tokens:
-        return ""
-    if has_children:
-        return f"block:{normalized}"
-    if tokens[0] == "no" and len(tokens) > 1:
-        positive = _cisco_command_identity(" ".join(tokens[1:]), path=path)
-        if positive.startswith("single:"):
-            return positive
-    if tokens[0] in _CISCO_SINGLE_VALUE_KEYS:
-        return f"single:{tokens[0]}"
-    if tokens[:2] == ["ipv4", "address"]:
-        return "single:ipv4 address" if "secondary" not in tokens else f"multi:{normalized}"
-    if tokens[:2] == ["ipv6", "address"]:
-        return f"multi:{normalized}"
-    if len(tokens) >= 3 and tokens[:2] in (["ipv4", "access-group"], ["ipv6", "access-group"]):
-        direction = tokens[-1] if tokens[-1] in {"ingress", "egress", "in", "out"} else "default"
-        return f"single:{tokens[0]} access-group {direction}"
-    if tokens[0] == "service-policy":
-        direction = tokens[1] if len(tokens) > 1 and tokens[1] in {"input", "output"} else "default"
-        return f"single:service-policy {direction}"
-    if tokens[0] == "logging" and len(tokens) > 1:
-        if tokens[1] == "host":
-            return f"multi:{normalized}"
-        return f"single:logging {tokens[1]}"
-    if tokens[0] == "network":
-        in_bgp = any(_normalized_command(component).startswith("router bgp") for component in (path or []))
-        return f"multi:{normalized}" if in_bgp else "single:network"
-    if tokens[:2] in (["bundle", "id"], ["lacp", "period"], ["apply-group", ""]):
-        return f"single:{' '.join(tokens[:2])}"
-    if tokens[0] == "neighbor" and len(tokens) >= 3:
-        return f"single:neighbor {tokens[1]} {tokens[2]}"
-    return f"multi:{normalized}"
+    """兼容旧内部调用；新 group 实现直接使用结构化 decision。"""
+    from ..vendor.cisco.identity import resolve_cisco_identity
+
+    return resolve_cisco_identity(
+        command,
+        path=path or [],
+        node_kind="block" if has_children else "leaf",
+    ).key
 
 
 # 拓扑中经常使用接口缩写，统一展开后才能与配置块可靠匹配。

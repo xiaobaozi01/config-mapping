@@ -1,0 +1,49 @@
+rules:
+  - id: vmx.interface.hold-time
+    node: leaf
+    path: [interfaces, "{interface}"]
+    statement: [hold-time, "{direction:up|down}", "{milliseconds:uint}"]
+    identity: [hold-time, "{direction}"]
+    merge: directional
+  - id: vmx.interface.inet-address
+    node: leaf
+    path: [interfaces, "{interface}", "unit {unit}", "family inet"]
+    statement: [address, "{prefix}", "{options...}"]
+    identity: [address, "{prefix}"]
+    merge: keyed-set
+  - id: vmx.interface.inet6-address
+    node: leaf
+    path: [interfaces, "{interface}", "unit {unit}", "family inet6"]
+    statement: [address, "{prefix}", "{options...}"]
+    identity: [address, "{prefix}"]
+    merge: keyed-set
+  - id: vmx.interface.interface-mode
+    node: leaf
+    path: [interfaces, "{interface}", "unit {unit}", "family ethernet-switching"]
+    statement: [interface-mode, "{mode}"]
+    identity: [interface-mode]
+    merge: replace
+  - id: vmx.interface.port-mode
+    node: leaf
+    path: [interfaces, "{interface}", "unit {unit}", "family ethernet-switching"]
+    statement: [port-mode, "{mode}"]
+    identity: [port-mode]
+    merge: replace
+  - id: vmx.interface.bundle
+    node: leaf
+    path: [interfaces, "{interface}", "**"]
+    statement: [802.3ad, "{bundle}"]
+    identity: [802.3ad]
+    merge: replace
+  - id: vmx.interface.filter-input
+    node: leaf
+    path: [interfaces, "{interface}", "**", filter]
+    statement: [input, "{name}"]
+    identity: [filter, input]
+    merge: directional
+  - id: vmx.interface.filter-output
+    node: leaf
+    path: [interfaces, "{interface}", "**", filter]
+    statement: [output, "{name}"]
+    identity: [filter, output]
+    merge: directional

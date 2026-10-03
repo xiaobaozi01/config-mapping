@@ -33,14 +33,22 @@ def load_washing_policy(path: Path | None) -> WashingPolicy:
     group_handling = payload.get("group_handling", {})
     if not isinstance(group_handling, dict):
         raise ValueError("group_handling 必须是键值映射")
-    unknown_group_keys = sorted(set(group_handling) - {"mode"})
+    unknown_group_keys = sorted(set(group_handling) - {"mode", "unknown_identity"})
     if unknown_group_keys:
         raise ValueError(f"未知 group 处理配置: {', '.join(unknown_group_keys)}")
     group_mode = group_handling.get("mode", "relevant")
     if group_mode not in {"relevant", "strict", "preserve"}:
         raise ValueError("group_handling.mode 必须是 relevant、strict 或 preserve")
+    unknown_identity = group_handling.get("unknown_identity", "warn")
+    if unknown_identity not in {"preserve", "warn", "fail"}:
+        raise ValueError(
+            "group_handling.unknown_identity 必须是 preserve、warn 或 fail"
+        )
 
-    values: dict[str, bool | str] = {"group_handling": group_mode}
+    values: dict[str, bool | str] = {
+        "group_handling": group_mode,
+        "group_unknown_identity": unknown_identity,
+    }
     for key in _OPTIONAL_KEYS:
         value = optional.get(key, False)
         if not isinstance(value, bool):

@@ -110,6 +110,24 @@ class GroupExpansionHandler:
                     device=device_name,
                     **conflict,
                 )
+            for ambiguity in outcome.ambiguities:
+                context.add_event(
+                    "group-identity-ambiguous",
+                    f"设备 {device_name} 存在规则未覆盖的潜在 group 语义冲突",
+                    device=device_name,
+                    **ambiguity,
+                )
+            identity_total = outcome.identity_rule_hits + outcome.identity_fallbacks
+            if identity_total:
+                context.add_event(
+                    "group-identity-coverage",
+                    f"设备 {device_name} 的 group 语义规则命中统计",
+                    device=device_name,
+                    matched=outcome.identity_rule_hits,
+                    fallback=outcome.identity_fallbacks,
+                    total=identity_total,
+                    coverage=round(outcome.identity_rule_hits / identity_total, 4),
+                )
             if not outcome.success:
                 message = f"设备 {device_name} 的配置 group 无法安全完整展开"
                 device.errors.append(message)

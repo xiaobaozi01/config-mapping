@@ -1,0 +1,121 @@
+rules:
+  - id: vmx.scalar.description
+    node: leaf
+    path: ["**"]
+    statement: [description, "{value...}"]
+    identity: [description]
+    merge: replace
+  - id: vmx.scalar.mtu
+    node: leaf
+    path: ["**"]
+    statement: [mtu, "{value}"]
+    identity: [mtu]
+    merge: replace
+  - id: vmx.scalar.vlan-id
+    node: leaf
+    path: ["**"]
+    statement: [vlan-id, "{value...}"]
+    identity: [vlan-id]
+    merge: replace
+  - id: vmx.scalar.native-vlan-id
+    node: leaf
+    path: ["**"]
+    statement: [native-vlan-id, "{value}"]
+    identity: [native-vlan-id]
+    merge: replace
+  - id: vmx.scalar.encapsulation
+    node: leaf
+    path: ["**"]
+    statement: [encapsulation, "{value...}"]
+    identity: [encapsulation]
+    merge: replace
+  - id: vmx.scalar.interface-type
+    node: leaf
+    path: ["**"]
+    statement: [interface-type, "{value}"]
+    identity: [interface-type]
+    merge: replace
+  - id: vmx.scalar.interface-mode
+    node: leaf
+    path: ["**"]
+    statement: [interface-mode, "{value}"]
+    identity: [interface-mode]
+    merge: replace
+  - id: vmx.scalar.speed
+    node: leaf
+    path: ["**"]
+    statement: [speed, "{value...}"]
+    identity: [speed]
+    merge: replace
+  - id: vmx.scalar.link-mode
+    node: leaf
+    path: ["**"]
+    statement: [link-mode, "{value}"]
+    identity: [link-mode]
+    merge: replace
+  - id: vmx.scalar.host-name
+    node: leaf
+    path: ["**"]
+    statement: [host-name, "{value}"]
+    identity: [host-name]
+    merge: replace
+  - id: vmx.scalar.domain-name
+    node: leaf
+    path: ["**"]
+    statement: [domain-name, "{value}"]
+    identity: [domain-name]
+    merge: replace
+  - id: vmx.scalar.router-id
+    node: leaf
+    path: ["**"]
+    statement: [router-id, "{value}"]
+    identity: [router-id]
+    merge: replace
+  - id: vmx.scalar.autonomous-system
+    node: leaf
+    path: ["**"]
+    statement: [autonomous-system, "{value...}"]
+    identity: [autonomous-system]
+    merge: replace
+  - id: vmx.scalar.metric
+    node: leaf
+    path: ["**"]
+    statement: [metric, "{value...}"]
+    identity: [metric]
+    merge: replace
+  - id: vmx.scalar.preference
+    node: leaf
+    path: ["**"]
+    statement: [preference, "{value...}"]
+    identity: [preference]
+    merge: replace
+  - id: vmx.scalar.local-address
+    node: leaf
+    path: ["**"]
+    statement: [local-address, "{value...}"]
+    identity: [local-address]
+    merge: replace
+  - id: vmx.scalar.source-address
+    node: leaf
+    path: ["**"]
+    statement: [source-address, "{value...}"]
+    identity: [source-address]
+    merge: replace
+  - id: vmx.scalar.class
+    node: leaf
+    path: ["**"]
+    statement: [class, "{value...}"]
+    identity: [class]
+    merge: replace
+  - id: vmx.scalar.authentication-key
+    node: leaf
+    path: ["**"]
+    statement: [authentication-key, "{value...}"]
+    identity: [authentication-key]
+    merge: replace
+  - id: vmx.scalar.minimum-links
+    node: leaf
+    path: ["**"]
+    statement: [minimum-links, "{value}"]
+    identity: [minimum-links]
+    merge: replace

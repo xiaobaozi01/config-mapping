@@ -1,0 +1,25 @@
+rules:
+  - id: vmx.policy.filter-input
+    node: leaf
+    path: ["**", filter]
+    statement: [input, "{name}"]
+    identity: [filter, input]
+    merge: directional
+  - id: vmx.policy.filter-output
+    node: leaf
+    path: ["**", filter]
+    statement: [output, "{name}"]
+    identity: [filter, output]
+    merge: directional
+  - id: vmx.policy.import
+    node: leaf
+    path: ["**"]
+    statement: [import, "{values...}"]
+    identity: [import]
+    merge: ordered-list
+  - id: vmx.policy.export
+    node: leaf
+    path: ["**"]
+    statement: [export, "{values...}"]
+    identity: [export]
+    merge: ordered-list

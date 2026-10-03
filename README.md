@@ -1,6 +1,6 @@
 # GNS3 配置自适应
 
-将 IOS XR 和 Junos 大括号配置转换为适用于 GNS3 XRv9000/vMX 的配置。第一次接触项目请从 [新人导读](docs/onboarding-guide.md) 开始；需求基线见 [docs/requirements.md](docs/requirements.md)，完整转换过程见 [docs/processing-flow.md](docs/processing-flow.md)。
+将 IOS XR 和 Junos 大括号配置转换为适用于 GNS3 XRv9000/vMX 的配置。第一次接触项目请从 [新人导读](docs/onboarding-guide.md) 开始；需求基线见 [docs/requirements.md](docs/requirements.md)，完整转换过程见 [docs/processing-flow.md](docs/processing-flow.md)，新增 group 语义规则见 [语义 identity 规则编写指南](docs/semantic-rule-authoring.md)。
 
 拓扑预检后会展开常见的 IOS XR `group/apply-group` 和 Junos `groups/apply-groups` 配置，使继承的接口及认证配置进入后续转换。已应用 group 无法静态求值时转换失败，不输出可能不完整的设备配置。
 
@@ -12,6 +12,8 @@ group 展开是事务式的，并遵循显式配置、嵌套层级和 group 列�
 - `parsers/cisco_iosxr.py`：保留 IOS XR 语法模型、解析/渲染和兼容门面。
 - `parsers/juniper_junos.py`：保留 Junos 大括号语法模型、解析/渲染和兼容门面。
 - `vendor/*/groups.py`：分别封装事务式 Group 展开、继承优先级和冲突检测。
+- `vendor/identity/`：加载、校验并匹配路径感知的配置语义规则。
+- `vendor/cisco/rules/xrv9000/`、`vendor/juniper/rules/vmx/`：随代码发布的镜像专属 identity 规则包。
 - `vendor/*/interfaces.py`：分别封装接口识别、业务闭包分析及 NNI/UNI 接口树修改。
 - `vendor/*/cleaning.py`：分别封装 Cisco/Junos 的管理面与可选能力清洗。
 - `vendor/*/simulation.py`：分别封装目标镜像参数适配。
@@ -58,6 +60,8 @@ config-adaptor convert \
 管理账号、AAA/TACACS/RADIUS、SSH/Telnet 网络管理服务、SSH 信任、SNMP 以及聚合扁平化后的 LACP/门限属性始终清理。协议认证、PKI、硬件、NAT 和流量统计由独立的可选能力清洗阶段处理；`--washing-policy` 中的对应开关只有显式改为 `true` 才生效。
 
 group 默认采用 `relevant` 模式：只静态展开会影响接口、聚合、协议接口引用、管理认证以及已开启可选清洗范围的 group；日志、遥测等无关 group 连同其应用语句原样保留，也不会因其无法静态求值而阻断转换。`strict` 保持全量展开和全量校验，`preserve` 则完全跳过 group 展开。模式在策略文件的 `group_handling.mode` 中配置。
+
+group 叶子语句使用 XRv9000/vMX 路径感知规则判定语义冲突。未匹配规则且同路径同命令族出现不同值时，`group_handling.unknown_identity` 可设为 `preserve`、`warn`（默认）或 `fail`。报告中的 `group-identity-coverage` 事件和 summary 字段给出规则命中数、降级数及实际覆盖率。
 
 Cisco 与 Juniper 的跨厂商 NNI 会按链路两端各自的厂商语法和镜像 Profile 独立分配接口，不要求两端目标接口同名。转换器不审计链路两端的 IP、VLAN、MTU 或封装是否一致，这些业务一致性由输入配置保证。
 

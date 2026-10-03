@@ -1,0 +1,55 @@
+rules:
+  - id: vmx.bgp.peer-as
+    node: leaf
+    path: [protocols, bgp, "**"]
+    statement: [peer-as, "{asn:uint}"]
+    identity: [peer-as]
+    merge: replace
+  - id: vmx.bgp.local-as
+    node: leaf
+    path: [protocols, bgp, "**"]
+    statement: [local-as, "{asn:uint}", "{options...}"]
+    identity: [local-as]
+    merge: replace
+  - id: vmx.bgp.type
+    node: leaf
+    path: [protocols, bgp, "**"]
+    statement: [type, "{value}"]
+    identity: [type]
+    merge: replace
+  - id: vmx.bgp.import
+    node: leaf
+    path: [protocols, bgp, "**"]
+    statement: [import, "{policies...}"]
+    identity: [import]
+    merge: ordered-list
+  - id: vmx.bgp.export
+    node: leaf
+    path: [protocols, bgp, "**"]
+    statement: [export, "{policies...}"]
+    identity: [export]
+    merge: ordered-list
+  - id: vmx.protocol.hello-interval
+    node: leaf
+    path: [protocols, "**"]
+    statement: [hello-interval, "{value}"]
+    identity: [hello-interval]
+    merge: replace
+  - id: vmx.protocol.dead-interval
+    node: leaf
+    path: [protocols, "**"]
+    statement: [dead-interval, "{value}"]
+    identity: [dead-interval]
+    merge: replace
+  - id: vmx.protocol.priority
+    node: leaf
+    path: [protocols, "**"]
+    statement: [priority, "{value}"]
+    identity: [priority]
+    merge: replace
+  - id: vmx.protocol.passive
+    node: leaf
+    path: [protocols, "**"]
+    statement: [passive]
+    identity: [passive]
+    merge: presence

@@ -1,0 +1,11 @@
+schema_version: 1
+target:
+  vendor: cisco_iosxr
+  image: xrv9000
+  # 待用 show version 的实际发布号固定。
+  version: null
+rule_files:
+  - interfaces.yaml
+  - routing.yaml
+  - policy.yaml
+  - system.yaml

@@ -36,6 +36,9 @@ class GroupExpansionOutcome:
     events: list[str] = field(default_factory=list)
     warnings: list[str] = field(default_factory=list)
     conflicts: list[dict[str, str]] = field(default_factory=list)
+    ambiguities: list[dict[str, str]] = field(default_factory=list)
+    identity_rule_hits: int = 0
+    identity_fallbacks: int = 0
     success: bool = True
 
 

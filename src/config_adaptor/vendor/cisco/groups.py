@@ -12,10 +12,11 @@ from ...models import WashingPolicy
 from ...parsers.cisco_iosxr import (
     CiscoBlock,
     _CiscoNode,
-    _cisco_command_identity,
     canonical_cisco_interface,
 )
 from ...parsers.common import GroupExpansionOutcome, normalized_command as _normalized_command
+from ..identity import find_opaque_ambiguity
+from .identity import resolve_cisco_identity
 
 
 @dataclass(slots=True)
@@ -27,6 +28,7 @@ class _CiscoExpansionState:
     nested_groups: set[str]
     selected_groups: set[str]
     outcome: GroupExpansionOutcome
+    policy: WashingPolicy
     applied_groups: set[str] = field(default_factory=set)
     unresolved: bool = False
 
@@ -210,6 +212,7 @@ class CiscoGroupExpander:
         vendor: str,
         path: list[str],
         identity: str,
+        rule_id: str | None,
         winner: _CiscoNode,
         loser_command: str,
         loser_origin: str,
@@ -217,17 +220,18 @@ class CiscoGroupExpander:
         """记录真实值冲突；内容完全相同的重复配置不算冲突。"""
         if _normalized_command(winner.command) == _normalized_command(loser_command):
             return
-        outcome.conflicts.append(
-            {
-                "vendor": vendor,
-                "path": " / ".join(path) or "<root>",
-                "key": identity,
-                "winner_source": winner.origin,
-                "winner_value": winner.command,
-                "loser_source": loser_origin,
-                "loser_value": loser_command,
-            }
-        )
+        conflict = {
+            "vendor": vendor,
+            "path": " / ".join(path) or "<root>",
+            "key": identity,
+            "winner_source": winner.origin,
+            "winner_value": winner.command,
+            "loser_source": loser_origin,
+            "loser_value": loser_command,
+        }
+        if rule_id is not None:
+            conflict["rule_id"] = rule_id
+        outcome.conflicts.append(conflict)
 
     def _merge_cisco_group_children(
         self,
@@ -237,6 +241,7 @@ class CiscoGroupExpander:
         rank: tuple[int, int],
         path: list[str],
         outcome: GroupExpansionOutcome,
+        policy: WashingPolicy,
     ) -> None:
         """按显式配置、层级和列表顺序把 group 子节点合入目标节点。"""
         for source in source_children:
@@ -266,16 +271,53 @@ class CiscoGroupExpander:
                 )
                 continue
 
-            identity = _cisco_command_identity(source.command, path=path)
+            decision = resolve_cisco_identity(source.command, path=path)
+            if decision.matched:
+                outcome.identity_rule_hits += 1
+            else:
+                outcome.identity_fallbacks += 1
+            identity = decision.key
+            resolved_children = [
+                (item, resolve_cisco_identity(item.command, path=path))
+                for item in target.children
+                if not item.is_block
+            ]
             existing = next(
                 (
                     item
-                    for item in target.children
-                    if not item.is_block and _cisco_command_identity(item.command, path=path) == identity
+                    for item, item_decision in resolved_children
+                    if item_decision.key == identity
                 ),
                 None,
             )
             if existing is None:
+                if not decision.matched and policy.group_unknown_identity != "preserve":
+                    family = decision.normalized.split(maxsplit=1)[0] if decision.normalized else ""
+                    ambiguous = find_opaque_ambiguity(decision, resolved_children)
+                    if ambiguous is not None:
+                        detail = {
+                            "vendor": self.vendor,
+                            "path": " / ".join(path) or "<root>",
+                            "family": family,
+                            "existing_source": ambiguous.origin,
+                            "existing_value": ambiguous.command,
+                            "candidate_source": f"group:{group_name}",
+                            "candidate_value": source.command,
+                        }
+                        if detail not in outcome.ambiguities:
+                            outcome.ambiguities.append(detail)
+                            action = (
+                                "已中止本次 group 展开"
+                                if policy.group_unknown_identity == "fail"
+                                else "已保留两个值"
+                            )
+                            outcome.warnings.append(
+                                f"IOS XR 路径 {detail['path']} 下的未知命令族 {family} "
+                                f"可能存在继承冲突，{action}"
+                            )
+                        if policy.group_unknown_identity == "fail":
+                            outcome.success = False
+                            return
                 target.children.append(
                     _CiscoNode(
                         command=source.command,
@@ -292,6 +334,7 @@ class CiscoGroupExpander:
                     self.vendor,
                     path,
                     identity,
+                    decision.rule_id,
                     _CiscoNode(source.command, origin=source_origin, rank=rank),
                     existing.command,
                     existing.origin,
@@ -305,6 +348,7 @@ class CiscoGroupExpander:
                     self.vendor,
                     path,
                     identity,
+                    decision.rule_id,
                     existing,
                     source.command,
                     source_origin,
@@ -343,9 +387,10 @@ class CiscoGroupExpander:
             nested_groups=nested_groups,
             selected_groups=selected_groups,
             outcome=outcome,
+            policy=policy,
         )
         self._expand_node(root, [], [], state)
-        if state.unresolved:
+        if state.unresolved or not outcome.success:
             outcome.events.append(
                 "IOS XR group 展开未完整解析，已整体回滚并保留原配置"
             )
@@ -517,6 +562,7 @@ class CiscoGroupExpander:
                 rank,
                 path,
                 state.outcome,
+                state.policy,
             )
 
         self._rewrite_group_controls(node, state.selected_groups)

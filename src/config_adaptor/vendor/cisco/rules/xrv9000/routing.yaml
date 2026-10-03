@@ -1,0 +1,73 @@
+rules:
+  - id: xrv9000.bgp.network
+    node: leaf
+    path: ["router bgp {asn}", "**"]
+    statement: [network, "{prefix}", "{options...}"]
+    identity: [network, "{prefix}"]
+    merge: keyed-set
+  - id: xrv9000.bgp.route-policy
+    node: leaf
+    path: ["router bgp {asn}", "**"]
+    statement: [route-policy, "{policy}", "{direction:in|out}"]
+    identity: [route-policy, "{direction}"]
+    merge: directional
+  - id: xrv9000.bgp.flat-neighbor-route-policy
+    node: leaf
+    path: ["router bgp {asn}", "**"]
+    statement: [neighbor, "{peer}", route-policy, "{policy}", "{direction:in|out}"]
+    identity: [neighbor, "{peer}", route-policy, "{direction}"]
+    merge: directional
+  - id: xrv9000.bgp.flat-neighbor-property
+    node: leaf
+    path: ["router bgp {asn}", "**"]
+    statement: [neighbor, "{peer}", "{property}", "{value...}"]
+    identity: [neighbor, "{peer}", "{property}"]
+    merge: keyed-set
+  - id: xrv9000.bgp.timers
+    node: leaf
+    path: ["router bgp {asn}", "**"]
+    statement: [timers, bgp, "{values...}"]
+    identity: [timers, bgp]
+    merge: replace
+  - id: xrv9000.routing.redistribute
+    node: leaf
+    path: ["router {protocol...}", "**"]
+    statement: [redistribute, "{source}", "{options...}"]
+    identity: [redistribute, "{source}"]
+    merge: keyed-set
+  - id: xrv9000.routing.default-information
+    node: leaf
+    path: ["router {protocol...}", "**"]
+    statement: [default-information, originate, "{options...}"]
+    identity: [default-information, originate]
+    merge: replace
+  - id: xrv9000.routing.maximum-paths
+    node: leaf
+    path: ["router {protocol...}", "**"]
+    statement: [maximum-paths, "{values...}"]
+    identity: [maximum-paths]
+    merge: replace
+  - id: xrv9000.routing.maximum-paths-family
+    node: leaf
+    path: ["router {protocol...}", "**"]
+    statement: [maximum-paths, "{family:ebgp|ibgp|eibgp}", "{value}"]
+    identity: [maximum-paths, "{family}"]
+    merge: replace
+  - id: xrv9000.routing.bfd-minimum-interval
+    node: leaf
+    path: ["router {protocol...}", "**"]
+    statement: [bfd, minimum-interval, "{value}"]
+    identity: [bfd, minimum-interval]
+    merge: replace
+  - id: xrv9000.routing.bfd-multiplier
+    node: leaf
+    path: ["router {protocol...}", "**"]
+    statement: [bfd, multiplier, "{value}"]
+    identity: [bfd, multiplier]
+    merge: replace
+  - id: xrv9000.routing.generic-network
+    node: leaf
+    path: ["**"]
+    statement: [network, "{prefix}", "{options...}"]
+    identity: [network, "{prefix}"]
+    merge: keyed-set

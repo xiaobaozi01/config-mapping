@@ -1,0 +1,73 @@
+rules:
+  - id: xrv9000.interface.ipv4-address-clear
+    node: leaf
+    path: ["interface {interface}"]
+    statement: [ipv4, address]
+    identity: [ipv4, address, primary]
+    merge: replace
+  - id: xrv9000.interface.ipv4-secondary-prefix
+    node: leaf
+    path: ["interface {interface}"]
+    statement: [ipv4, address, "{address}", secondary]
+    identity: [ipv4, address, secondary, "{address}"]
+    merge: keyed-set
+  - id: xrv9000.interface.ipv4-secondary
+    node: leaf
+    path: ["interface {interface}"]
+    statement: [ipv4, address, "{address}", "{mask}", secondary]
+    identity: [ipv4, address, secondary, "{address}"]
+    merge: keyed-set
+  - id: xrv9000.interface.ipv4-primary
+    node: leaf
+    path: ["interface {interface}"]
+    statement: [ipv4, address, "{address}", "{options...}"]
+    identity: [ipv4, address, primary]
+    merge: replace
+  - id: xrv9000.interface.ipv6-address
+    node: leaf
+    path: ["interface {interface}"]
+    statement: [ipv6, address, "{address}", "{options...}"]
+    identity: [ipv6, address, "{address}"]
+    merge: keyed-set
+  - id: xrv9000.interface.ipv4-access-group
+    node: leaf
+    path: ["interface {interface}"]
+    statement: [ipv4, access-group, "{name}", "{direction:ingress|egress|in|out}"]
+    identity: [ipv4, access-group, "{direction}"]
+    merge: directional
+  - id: xrv9000.interface.ipv6-access-group
+    node: leaf
+    path: ["interface {interface}"]
+    statement: [ipv6, access-group, "{name}", "{direction:ingress|egress|in|out}"]
+    identity: [ipv6, access-group, "{direction}"]
+    merge: directional
+  - id: xrv9000.interface.service-policy
+    node: leaf
+    path: ["interface {interface}"]
+    statement: [service-policy, "{direction:input|output}", "{name...}"]
+    identity: [service-policy, "{direction}"]
+    merge: directional
+  - id: xrv9000.interface.bundle-id
+    node: leaf
+    path: ["interface {interface}"]
+    statement: [bundle, id, "{bundle}", "{options...}"]
+    identity: [bundle, id]
+    merge: replace
+  - id: xrv9000.interface.lacp-period
+    node: leaf
+    path: ["interface {interface}"]
+    statement: [lacp, period, "{value}"]
+    identity: [lacp, period]
+    merge: replace
+  - id: xrv9000.interface.rewrite-ingress
+    node: leaf
+    path: ["interface {interface}"]
+    statement: [rewrite, ingress, "{value...}"]
+    identity: [rewrite, ingress]
+    merge: replace
+  - id: xrv9000.interface.rewrite-egress
+    node: leaf
+    path: ["interface {interface}"]
+    statement: [rewrite, egress, "{value...}"]
+    identity: [rewrite, egress]
+    merge: replace

@@ -19,39 +19,11 @@ from .common import (
 )
 
 
-# 同一路径下只能出现一个有效值的语句，用于 group 冲突判断。
-_JUNOS_SINGLE_VALUE_KEYS = {
-    "description",
-    "mtu",
-    "vlan-id",
-    "native-vlan-id",
-    "encapsulation",
-    "interface-type",
-    "speed",
-    "link-mode",
-    "host-name",
-    "domain-name",
-    "router-id",
-    "autonomous-system",
-    "metric",
-    "preference",
-    "local-address",
-    "source-address",
-    "class",
-    "authentication-key",
-    "minimum-links",
-}
+def _junos_statement_identity(command: str, path: list[str] | None = None) -> str:
+    """兼容旧内部调用；新 group 实现直接使用结构化 decision。"""
+    from ..vendor.juniper.identity import resolve_junos_identity
 
-
-def _junos_statement_identity(command: str) -> str:
-    """生成 Junos 语句的语义键，保留 address 等可重复语句。"""
-    normalized = _normalized_command(command)
-    tokens = normalized.split()
-    if not tokens:
-        return ""
-    if tokens[0] in _JUNOS_SINGLE_VALUE_KEYS:
-        return f"single:{tokens[0]}"
-    return f"multi:{normalized}"
+    return resolve_junos_identity(command, path=path or []).key
 
 
 def canonical_junos_interface(value: str) -> str:

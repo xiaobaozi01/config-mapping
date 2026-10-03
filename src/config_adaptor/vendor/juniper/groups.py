@@ -17,9 +17,10 @@ from ...parsers.common import (
 from ...parsers.juniper_junos import (
     JunosDocument,
     JunosNode,
-    _junos_statement_identity,
     canonical_junos_interface,
 )
+from ..identity import find_opaque_ambiguity
+from .identity import resolve_junos_identity
 
 
 GroupApplication = tuple[str, tuple[int, ...], tuple[str, ...]]
@@ -33,6 +34,7 @@ class _JunosExpansionState:
     groups: dict[str, JunosNode]
     dependencies: dict[str, list[str]]
     outcome: GroupExpansionOutcome
+    policy: WashingPolicy
     selected_groups: set[str] = field(default_factory=set)
     applied_groups: set[str] = field(default_factory=set)
 
@@ -195,23 +197,25 @@ class JunosGroupExpander:
         outcome: GroupExpansionOutcome,
         path: list[str],
         identity: str,
+        rule_id: str | None,
         winner: JunosNode,
         loser: JunosNode,
     ) -> None:
         """记录值不同的 group 冲突，完全相同的重复语句不记录。"""
         if _normalized_command(winner.header) == _normalized_command(loser.header):
             return
-        outcome.conflicts.append(
-            {
-                "vendor": "juniper_junos",
-                "path": " / ".join(path) or "<root>",
-                "key": identity,
-                "winner_source": winner.origin,
-                "winner_value": winner.header,
-                "loser_source": loser.origin,
-                "loser_value": loser.header,
-            }
-        )
+        conflict = {
+            "vendor": "juniper_junos",
+            "path": " / ".join(path) or "<root>",
+            "key": identity,
+            "winner_source": winner.origin,
+            "winner_value": winner.header,
+            "loser_source": loser.origin,
+            "loser_value": loser.header,
+        }
+        if rule_id is not None:
+            conflict["rule_id"] = rule_id
+        outcome.conflicts.append(conflict)
 
     def _merge_junos_group_children(
         self,
@@ -221,6 +225,7 @@ class JunosGroupExpander:
         rank: tuple[int, ...],
         path: list[str],
         outcome: GroupExpansionOutcome,
+        policy: WashingPolicy,
     ) -> None:
         """按显式、嵌套层级和列表顺序合并 group 子节点。"""
         assert target.children is not None
@@ -251,14 +256,25 @@ class JunosGroupExpander:
                 )
                 continue
 
-            identity = _junos_statement_identity(self._base_header(source.header))
+            decision = resolve_junos_identity(self._base_header(source.header), path=path)
+            if decision.matched:
+                outcome.identity_rule_hits += 1
+            else:
+                outcome.identity_fallbacks += 1
+            identity = decision.key
+            resolved_children = [
+                (
+                    item,
+                    resolve_junos_identity(self._base_header(item.header), path=path),
+                )
+                for item in target.children
+                if item.active and not item.is_block
+            ]
             existing = next(
                 (
                     item
-                    for item in target.children
-                    if item.active
-                    and not item.is_block
-                    and _junos_statement_identity(self._base_header(item.header)) == identity
+                    for item, item_decision in resolved_children
+                    if item_decision.key == identity
                 ),
                 None,
             )
@@ -268,16 +284,57 @@ class JunosGroupExpander:
                 rank=rank,
             )
             if existing is None:
+                if not decision.matched and policy.group_unknown_identity != "preserve":
+                    family = decision.normalized.split(maxsplit=1)[0] if decision.normalized else ""
+                    ambiguous = find_opaque_ambiguity(decision, resolved_children)
+                    if ambiguous is not None:
+                        detail = {
+                            "vendor": "juniper_junos",
+                            "path": " / ".join(path) or "<root>",
+                            "family": family,
+                            "existing_source": ambiguous.origin,
+                            "existing_value": ambiguous.header,
+                            "candidate_source": f"group:{group_name}",
+                            "candidate_value": source.header,
+                        }
+                        if detail not in outcome.ambiguities:
+                            outcome.ambiguities.append(detail)
+                            action = (
+                                "已中止本次 group 展开"
+                                if policy.group_unknown_identity == "fail"
+                                else "已保留两个值"
+                            )
+                            outcome.warnings.append(
+                                f"Junos 路径 {detail['path']} 下的未知语句族 {family} "
+                                f"可能存在继承冲突，{action}"
+                            )
+                        if policy.group_unknown_identity == "fail":
+                            outcome.success = False
+                            return
                 target.children.append(candidate)
                 continue
             # 显式配置始终优先；group 之间按层级和引用顺序 rank 决定胜出者。
             if existing.origin != "explicit" and rank > existing.rank:
-                self._record_junos_conflict(outcome, path, identity, candidate, existing)
+                self._record_junos_conflict(
+                    outcome,
+                    path,
+                    identity,
+                    decision.rule_id,
+                    candidate,
+                    existing,
+                )
                 existing.header = candidate.header
                 existing.origin = candidate.origin
                 existing.rank = candidate.rank
             else:
-                self._record_junos_conflict(outcome, path, identity, existing, candidate)
+                self._record_junos_conflict(
+                    outcome,
+                    path,
+                    identity,
+                    decision.rule_id,
+                    existing,
+                    candidate,
+                )
 
     def expand_groups(
         self,
@@ -306,6 +363,7 @@ class JunosGroupExpander:
                 for name, group in groups.items()
             },
             outcome=outcome,
+            policy=policy,
         )
         selected_roots = self._select_root_groups(
             working,
@@ -325,6 +383,12 @@ class JunosGroupExpander:
             return outcome
 
         self._walk_expansion_tree(working, [], [], set(), state)
+        if not outcome.success:
+            outcome.events.append(
+                "Junos group 存在未覆盖的潜在语义冲突，已整体回滚并保留原配置"
+            )
+            outcome.conflicts.clear()
+            return outcome
         if not state.applied_groups:
             return outcome
 
@@ -646,6 +710,7 @@ class JunosGroupExpander:
                 rank,
                 path,
                 state.outcome,
+                state.policy,
             )
 
         self._rewrite_group_controls(node, state.selected_groups)

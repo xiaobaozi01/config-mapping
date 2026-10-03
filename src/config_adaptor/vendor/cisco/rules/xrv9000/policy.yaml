@@ -1,0 +1,19 @@
+rules:
+  - id: xrv9000.policy.service-policy
+    node: leaf
+    path: ["**"]
+    statement: [service-policy, "{direction:input|output}", "{name...}"]
+    identity: [service-policy, "{direction}"]
+    merge: directional
+  - id: xrv9000.policy.ipv4-access-group
+    node: leaf
+    path: ["**"]
+    statement: [ipv4, access-group, "{name}", "{direction:ingress|egress|in|out}"]
+    identity: [ipv4, access-group, "{direction}"]
+    merge: directional
+  - id: xrv9000.policy.ipv6-access-group
+    node: leaf
+    path: ["**"]
+    statement: [ipv6, access-group, "{name}", "{direction:ingress|egress|in|out}"]
+    identity: [ipv6, access-group, "{direction}"]
+    merge: directional

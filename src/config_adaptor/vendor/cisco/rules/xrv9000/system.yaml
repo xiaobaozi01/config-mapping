@@ -1,0 +1,103 @@
+rules:
+  - id: xrv9000.scalar.description
+    node: leaf
+    path: ["**"]
+    statement: [description, "{value...}"]
+    identity: [description]
+    merge: replace
+  - id: xrv9000.scalar.mtu
+    node: leaf
+    path: ["**"]
+    statement: [mtu, "{value...}"]
+    identity: [mtu]
+    merge: replace
+  - id: xrv9000.scalar.bandwidth
+    node: leaf
+    path: ["**"]
+    statement: [bandwidth, "{value...}"]
+    identity: [bandwidth]
+    merge: replace
+  - id: xrv9000.scalar.shutdown
+    node: leaf
+    path: ["**"]
+    statement: [shutdown]
+    identity: [shutdown]
+    merge: presence
+  - id: xrv9000.scalar.vrf
+    node: leaf
+    path: ["**"]
+    statement: [vrf, "{value...}"]
+    identity: [vrf]
+    merge: replace
+  - id: xrv9000.scalar.encapsulation
+    node: leaf
+    path: ["**"]
+    statement: [encapsulation, "{value...}"]
+    identity: [encapsulation]
+    merge: replace
+  - id: xrv9000.scalar.load-interval
+    node: leaf
+    path: ["**"]
+    statement: [load-interval, "{value...}"]
+    identity: [load-interval]
+    merge: replace
+  - id: xrv9000.scalar.link-status
+    node: leaf
+    path: ["**"]
+    statement: [link-status, "{value...}"]
+    identity: [link-status]
+    merge: replace
+  - id: xrv9000.scalar.router-id
+    node: leaf
+    path: ["**"]
+    statement: [router-id, "{value...}"]
+    identity: [router-id]
+    merge: replace
+  - id: xrv9000.scalar.metric
+    node: leaf
+    path: ["**"]
+    statement: [metric, "{value...}"]
+    identity: [metric]
+    merge: replace
+  - id: xrv9000.scalar.cost
+    node: leaf
+    path: ["**"]
+    statement: [cost, "{value...}"]
+    identity: [cost]
+    merge: replace
+  - id: xrv9000.scalar.priority
+    node: leaf
+    path: ["**"]
+    statement: [priority, "{value...}"]
+    identity: [priority]
+    merge: replace
+  - id: xrv9000.scalar.hello-interval
+    node: leaf
+    path: ["**"]
+    statement: [hello-interval, "{value...}"]
+    identity: [hello-interval]
+    merge: replace
+  - id: xrv9000.scalar.dead-interval
+    node: leaf
+    path: ["**"]
+    statement: [dead-interval, "{value...}"]
+    identity: [dead-interval]
+    merge: replace
+  - id: xrv9000.scalar.passive
+    node: leaf
+    path: ["**"]
+    statement: [passive]
+    identity: [passive]
+    merge: presence
+  - id: xrv9000.logging.host
+    node: leaf
+    path: ["**"]
+    statement: [logging, host, "{host}", "{options...}"]
+    identity: [logging, host, "{host}"]
+    merge: keyed-set
+  - id: xrv9000.logging.property
+    node: leaf
+    path: ["**"]
+    statement: [logging, "{property}", "{value...}"]
+    identity: [logging, "{property}"]
+    merge: keyed-set
