@@ -63,7 +63,7 @@ class TopologyPreflightHandler:
     def _record_skipped_endpoints(
         context: ConversionContext,
         link: Link,
-        reason: str,
+        reason: str | None,
     ) -> None:
         """为跳过链路中仍可识别的端点登记 NNI 保留映射。
 
