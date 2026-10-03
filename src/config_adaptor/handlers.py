@@ -13,33 +13,23 @@ from .models import ConversionContext, DeviceContext, InterfaceMapping, Link, Ve
 
 
 class TopologyPreflightHandler:
-    """在任何配置改写前校验链路端点，并确定后续阶段可消费的链路。"""
+    """在配置改写前划定本次转换能够安全处理的拓扑链路范围。
+
+    该处理器检查每条链路的两端设备是否存在于拓扑设备表，以及是否已加载为
+    当前版本支持的设备；缺失设备的链路记为错误，不支持厂商的链路则记为警告
+    并跳过。预检必须位于流水线最前面，否则无效链路可能消耗 NNI 目标端口、
+    触发不存在设备的访问，甚至让后续 UNI 阶段错误迁移原本属于该链路的接口。
+    """
 
     def process(self, context: ConversionContext) -> None:
-        """把无效或暂不支持的链路标记为 inactive，并记录诊断。"""
-        def record_skipped_endpoints(link: Link, reason: str) -> None:
-            """保留已跳过端点的 NNI 角色，防止 UNI 阶段误分类。"""
-            for device_name, raw_interface in link.endpoints():
-                device = context.devices.get(device_name)
-                if not device:
-                    continue
-                source = interface_parent(device.document.resolve_interface(raw_interface))
-                logical = device.document.bundle_members().get(source)
-                for reserved in dict.fromkeys((source, logical)):
-                    if not reserved:
-                        continue
-                    device.mappings.append(
-                        InterfaceMapping(
-                            device=device_name,
-                            source_interface=reserved,
-                            role="NNI",
-                            action="skip",
-                            target_interface=None,
-                            link_rows=[link.row],
-                            reason=reason,
-                        )
-                    )
+        """校验全部链路端点，停用不可处理的链路并记录诊断及汇总事件。
 
+        端点设备未出现在设备表时说明输入拓扑不完整，因此写入错误，让流水线在
+        本阶段后停止；设备存在但厂商暂不支持时只写警告和 ``skip-link`` 事件，
+        允许其余链路继续转换。两类链路都会设置 ``active=False``，因为下游阶段
+        只应消费已通过预检的链路，同时会为可识别端点补记跳过映射，保留其 NNI
+        身份。最后记录活动/跳过数量，供报告解释哪些拓扑数据实际参与了转换。
+        """
         topology_devices = {device.name for device in context.topology.devices}
         for link in context.topology.links:
             missing = [name for name, _ in link.endpoints() if name not in topology_devices]
@@ -47,13 +37,13 @@ class TopologyPreflightHandler:
                 link.active = False
                 link.skip_reason = f"端点设备未出现在设备列表: {', '.join(missing)}"
                 context.errors.append(f"链接表第 {link.row} 行：{link.skip_reason}")
-                record_skipped_endpoints(link, link.skip_reason)
+                self._record_skipped_endpoints(context, link, link.skip_reason)
                 continue
             if all(device_name in context.devices for device_name, _ in link.endpoints()):
                 continue
             link.active = False
             link.skip_reason = "端点包含不在首版范围内的设备（可能为华为或未知厂商）"
-            record_skipped_endpoints(link, link.skip_reason)
+            self._record_skipped_endpoints(context, link, link.skip_reason)
             context.warnings.append(f"链接表第 {link.row} 行已跳过：{link.skip_reason}")
             context.add_event(
                 "skip-link",
@@ -69,12 +59,57 @@ class TopologyPreflightHandler:
             skipped_links=sum(1 for link in context.topology.links if not link.active),
         )
 
+    @staticmethod
+    def _record_skipped_endpoints(
+        context: ConversionContext,
+        link: Link,
+        reason: str,
+    ) -> None:
+        """为跳过链路中仍可识别的端点登记 NNI 保留映射。
+
+        方法同时记录规范化物理父口及其可能所属的 Bundle/ae 逻辑口，但不生成
+        目标接口。这样 UNI 候选筛选仍会排除这些源口，避免因为链路被停用就把
+        原 NNI 业务误判成 UNI 并迁移；不存在或不支持的设备端点则安全忽略。
+        """
+        for device_name, raw_interface in link.endpoints():
+            device = context.devices.get(device_name)
+            if not device:
+                continue
+            source = interface_parent(device.document.resolve_interface(raw_interface))
+            logical = device.document.bundle_members().get(source)
+            for reserved in dict.fromkeys((source, logical)):
+                if not reserved:
+                    continue
+                device.mappings.append(
+                    InterfaceMapping(
+                        device=device_name,
+                        source_interface=reserved,
+                        role="NNI",
+                        action="skip",
+                        target_interface=None,
+                        link_rows=[link.row],
+                        reason=reason,
+                    )
+                )
+
 
 class GroupExpansionHandler:
-    """在接口分类前展开厂商 group，确保继承配置也参与后续转换。"""
+    """按清洗策略把厂商 group 的继承配置物化到后续可分析的配置树中。
+
+    处理器把活动拓扑接口作为通配 group 的候选对象，逐设备执行厂商专用展开，
+    并汇总警告、冲突、语义规则覆盖率和失败状态。该阶段必须早于接口分类与迁移，
+    因为接口地址、聚合关系或业务绑定可能只存在于 group 中；若不先展开，后续会
+    基于不完整配置误判接口角色。策略要求保留 group 时则完全跳过物化。
+    """
 
     def process(self, context: ConversionContext) -> None:
-        """逐设备展开 group，并把冲突与失败写入共享上下文。"""
+        """收集活动拓扑接口并逐设备展开 group，将结果写入共享上下文。
+
+        ``preserve`` 模式只记录事件并保留原配置；其他模式把拓扑中的父接口加入
+        展开候选，随后记录厂商展开器返回的普通事件、冲突、歧义和规则命中率。
+        展开失败会同时写入设备及全局错误，使流水线停止，因为继续使用部分展开的
+        配置进行接口迁移可能丢失继承命令或覆盖显式配置。
+        """
         mode = context.washing_policy.group_handling
         if mode == "preserve":
             context.add_event("group-expansion", "已按策略保留所有厂商 group，不执行静态展开")
@@ -135,10 +170,21 @@ class GroupExpansionHandler:
 
 
 class InterfaceClassificationHandler:
-    """审计厂商接口分类，未知类型保留配置但不参与端口映射。"""
+    """审计厂商接口分类结果，并对未知接口采用保守的保留策略。
+
+    处理器从每台设备的接口规格中找出无法归类的父接口，为其生成设备警告和结构化
+    事件，但不修改配置。未知类型可能是尚未覆盖的新硬件或虚拟接口；在没有可靠
+    语义时排除映射比按物理口猜测更安全，可避免删除控制接口或错误搬迁业务。
+    """
 
     def process(self, context: ConversionContext) -> None:
-        """为每个未知父接口生成一次可审计告警。"""
+        """逐设备汇总未知父接口，并为每个接口记录一次告警和保留事件。
+
+        先按父接口去重并排序，可避免多个 unit 重复告警，也让相同输入产生稳定的
+        报告顺序。事件明确写入 ``classification=unknown`` 和 ``action=preserve``，
+        使用户能够区分“有意保留”与“处理器遗漏”，而后续映射阶段会自然忽略这些
+        不属于物理口、聚合口或网关口的接口。
+        """
         for device_name in sorted(context.devices):
             device = context.devices[device_name]
             unknown_parents = sorted(
@@ -166,7 +212,13 @@ class InterfaceClassificationHandler:
 
 @dataclass(slots=True)
 class _NniAnalysis:
-    """NNI 端点解析结果，集中传递后续规划所需的只读索引。"""
+    """保存 NNI 配置改写前得到的端点与聚合关系快照。
+
+    ``member_maps`` 记录各设备的物理成员到聚合口映射，``resolved`` 保存按链路行
+    和设备定位的规范化父接口，``bundles`` 保存对应逻辑聚合口。把这些只读索引
+    集中传给规划阶段，可保证所有校验基于同一份原始配置，避免边修改接口树边重新
+    查询而得到前后不一致的结果。
+    """
 
     member_maps: dict[str, dict[str, str]]
     resolved: dict[tuple[int, str], str]
@@ -421,7 +473,9 @@ class NNIHandler:
         """把待迁移逻辑接口克隆到临时占位接口并生成映射记录。
 
         M-LAG 场景会从同一源接口克隆多份。返回 ``(占位名, 目标名)``
-        列表，供调用方在删除所有源接口后完成最终重命名。
+        列表，供调用方在删除所有源接口后完成最终重命名。先使用不会与真实接口
+        重名的占位名，是为了同时支持一对多克隆以及“某个目标恰好也是另一源口”
+        的情况，避免迁移顺序导致配置被提前覆盖或后续副本失去复制来源。
         """
         staged_targets: list[tuple[str, str]] = []
         for stage_index, plan in enumerate(plans):
@@ -530,7 +584,13 @@ class UNIHandler:
     """
 
     def process(self, context: ConversionContext) -> None:
-        """按设备名稳定执行 UNI 候选筛选、VLAN 分配和配置迁移。"""
+        """按设备名依次执行 UNI 业务筛选、VLAN 分配和配置迁移。
+
+        每台设备独立处理，使候选接口、聚合成员和镜像 Profile 始终使用同一设备
+        上下文；按设备名排序则保证映射、告警和事件的输出顺序可重复，便于比较转换
+        结果及排查问题。具体设备处理保持在独立方法中，以便 VLAN 耗尽等错误能够在
+        修改该设备业务树之前终止。
+        """
         for device_name in sorted(context.devices):
             self._process_device(context, device_name)
 
@@ -741,7 +801,9 @@ class UNIHandler:
         """把一台设备的有效 UNI 业务迁移到 Profile 指定的汇聚父口。
 
         先将源接口树改为占位名并移除聚合成员，再生成 QinQ 子接口、清理
-        占位树，最后确保目标物理父接口存在。
+        占位树，最后确保目标物理父接口存在。使用占位名可隔离源口与最终目标口，
+        避免多个 unit 逐个迁移时发生名称碰撞或过早删除同一父口下尚未处理的业务；
+        最后统一清理也让厂商实现可以安全复制所需配置。
         """
         source_parents = list(dict.fromkeys(spec.parent for spec in sources))
         # 先改到不会与目标 UNI 冲突的占位名，再逐个拆成 QinQ 子接口。
@@ -848,20 +910,41 @@ class UNIHandler:
 
 
 class ReferenceRewriteHandler:
-    """在接口迁移完成后统一更新协议、策略和业务中的接口引用。"""
+    """在接口树迁移完成后修正配置其他位置保存的接口引用。
+
+    NNI/UNI 阶段只负责接口定义及映射记录，路由协议、策略、L2VPN 等配置仍可能
+    引用旧名称。该处理器使用最终映射统一改写这些非接口定义，既避免在目标接口
+    尚未确定时过早替换，也支持 M-LAG 将一个旧逻辑口展开到多个新接口。
+    """
 
     def process(self, context: ConversionContext) -> None:
-        """使用结构化一对多映射改写每台设备的非接口定义引用。"""
+        """逐设备生成最终替换表，并委托厂商实现改写非接口配置引用。
+
+        ``replacement_map`` 会过滤删除和跳过记录，同时保留同一源接口的一对多目标；
+        厂商文档对象再按自身语法安全替换。按设备分别执行可防止跨设备同名接口互相
+        污染，并确保改写依据的是前序 NNI/UNI 阶段已经完整生成的映射结果。
+        """
         for device_name in sorted(context.devices):
             device = context.devices[device_name]
             device.document.replace_references(device.replacement_map)
 
 
 class OptionalFeatureWashingHandler:
-    """按显式策略清理会改变业务能力的可选配置类别。"""
+    """按用户显式开启的策略清理非必需但可能影响模拟运行的配置能力。
+
+    可选类别包括协议认证、PKI、硬件绑定、NAT 和流量统计；这些配置可能依赖真实
+    设备能力或外部系统，但删除也可能改变业务语义，因此不能像管理账号清洗一样
+    默认执行。独立处理器让风险较高的清理保持显式可控，并为每台设备留下分类统计。
+    """
 
     def process(self, context: ConversionContext) -> None:
-        """把协议认证、PKI、硬件、NAT 和流量统计与认证替换分离。"""
+        """执行已启用的可选清洗项，并记录开关及按类别删除数量。
+
+        方法把完整策略交给厂商实现，由其按 IOS XR 或 Junos 语法删除对应节点；
+        即使没有匹配内容也记录 ``optional-washing`` 事件，便于报告证明哪些高影响
+        开关被实际请求过。它与强制认证替换分离，是为了避免用户仅想重建实验账号时
+        意外删除 NAT、PKI 或硬件相关业务配置。
+        """
         policy = context.washing_policy
         enabled = [
             name
@@ -888,10 +971,20 @@ class OptionalFeatureWashingHandler:
 
 
 class AuthWashingHandler:
-    """清除原认证和授权体系，再添加统一实验账号。"""
+    """移除生产管理面认证信息，并为输出配置建立统一实验账号。
+
+    原配置可能包含本地用户、AAA、TACACS/RADIUS、SNMP 或远程访问凭据，直接带入
+    实验环境既有泄密风险，也可能因外部认证服务器不可达而无法登录。该处理器先由
+    厂商实现清除旧管理访问配置，再添加已知实验账号，保证输出设备可安全接管。
+    """
 
     def process(self, context: ConversionContext) -> None:
-        """调用厂商实现清理旧认证，并记录分项删除数量。"""
+        """逐设备清理旧管理认证、添加实验账号并记录删除统计。
+
+        清理和添加账号放在同一阶段，可避免生成既保留生产凭据又新增实验凭据的配置，
+        也避免只删除认证后留下无法登录的设备。结构化事件保存总数和分类数量，用于
+        审计清洗范围，但不记录任何秘密内容。
+        """
         for device_name in sorted(context.devices):
             device = context.devices[device_name]
             cleanup = device.document.clean_management_access()
@@ -906,10 +999,21 @@ class AuthWashingHandler:
 
 
 class SimulationAdaptationHandler:
-    """根据目标镜像 Profile 执行保守、可审计的模拟参数适配。"""
+    """根据目标镜像 Profile 调整最终数据口及平台相关的模拟运行参数。
+
+    真机配置中的接口启停、BFD 定时器或物理硬件选项可能不适合 GNS3 镜像。该阶段
+    只把已经完成 NNI/UNI 映射的目标父接口交给厂商适配器，并使用 Profile 中的
+    明确策略做保守修改，避免对管理口或未参与迁移的业务进行全局、无差别改写。
+    """
 
     def process(self, context: ConversionContext) -> None:
-        """只调整已经迁移的数据口和显式存在的激进稳定性参数。"""
+        """汇总最终数据接口，执行厂商模拟适配并记录逐类变更结果。
+
+        数据口集合只来自成功映射的 NNI/UNI 目标，排除删除、裸口清理和跳过记录，
+        因而不会误触未纳入拓扑的接口。适配安排在引用改写和配置清洗之后，是为了让
+        厂商实现看到最终接口结构；事件同时记录镜像、版本、策略模式和增删改统计，
+        方便确认模拟兼容性调整的依据与影响范围。
+        """
         for device_name in sorted(context.devices):
             device = context.devices[device_name]
             policy = device.profile.simulation_adaptation
@@ -937,7 +1041,12 @@ class SimulationAdaptationHandler:
 
 
 def build_default_pipeline() -> ConversionPipeline:
-    """按强制顺序组装默认转换流水线。"""
+    """按依赖顺序组装一次完整配置转换所需的默认处理器流水线。
+
+    顺序体现数据依赖：先预检并展开继承配置，再分类和迁移 NNI/UNI，随后改写外部
+    引用，最后执行可选清洗、认证替换和模拟适配。流水线会在首次错误后停止，因此
+    集中定义顺序可以防止调用方漏掉阶段，或在前置校验失败后继续产生部分输出。
+    """
     return ConversionPipeline(
         [
             TopologyPreflightHandler(),
@@ -954,5 +1063,9 @@ def build_default_pipeline() -> ConversionPipeline:
 
 
 def build_default_chain() -> ConversionPipeline:
-    """兼容旧入口；新代码使用 ``build_default_pipeline``。"""
+    """通过旧的 chain 构建入口返回当前默认转换流水线。
+
+    该函数不维护另一套阶段列表，而是直接委托 ``build_default_pipeline``，从而兼容
+    既有调用方的同时保证新旧入口拥有完全相同的处理顺序，避免两套流程逐渐分叉。
+    """
     return build_default_pipeline()
