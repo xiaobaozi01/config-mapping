@@ -608,7 +608,10 @@ interfaces
 
 配置大括号不平衡时直接报错。
 
-`inactive:` 和 `protect:` 前缀在语义比较时被去除，但原始节点仍然保留。
+`inactive:` 和 `protect:` 前缀在名称、路径及 identity 比较时被去除。两者的
+生效状态不同：`inactive:` 节点不参与 Group 展开、接口与 VLAN 识别或配置改写，
+并在输出中继续保持停用；`protect:` 节点仍作为有效配置参与转换，但最终输出会
+去掉保护前缀，避免生产设备的编辑保护妨碍 GNS3 中的配置加载和后续调整。
 
 ### 8.2 Junos Groups 展开
 
@@ -623,9 +626,11 @@ interfaces
 ```text
 groups {
     GROUP-A { ... }
-    GROUP-B { ... }
+    "GROUP B" { ... }
 }
 ```
+
+Group 名称包含空格时使用双引号；内部索引使用去引号后的完整名称。
 
 #### Group 应用
 
@@ -633,7 +638,8 @@ groups {
 
 ```text
 apply-groups GROUP-A;
-apply-groups [ GROUP-A GROUP-B ];
+apply-groups "GROUP B";
+apply-groups [ GROUP-A "GROUP B" ];
 apply-groups-except GROUP-A;
 ```
 

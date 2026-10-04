@@ -35,6 +35,9 @@ def adapt_to_simulation(
             continue
         retained: list[JunosNode] = []
         for child in interface.children:
+            if not child.effective:
+                retained.append(child)
+                continue
             base = document._base_header(child.header).rstrip(";")
             first = base.split(maxsplit=1)[0] if base else ""
             if policy.ensure_data_interfaces_enabled and first == "disable":
@@ -62,7 +65,7 @@ def adapt_to_simulation(
     )
 
     def walk(node: JunosNode, inside_bfd: bool = False) -> None:
-        if not node.active:
+        if not node.effective:
             return
         base = document._base_header(node.header)
         current_bfd = inside_bfd or base.rstrip(";") == "bfd-liveness-detection"

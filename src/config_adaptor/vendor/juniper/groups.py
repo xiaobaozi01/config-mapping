@@ -5,6 +5,7 @@ from __future__ import annotations
 import copy
 import fnmatch
 import re
+import shlex
 from dataclasses import dataclass, field
 from typing import Iterable
 
@@ -99,8 +100,38 @@ class JunosGroupExpander:
         match = re.match(rf"{re.escape(keyword)}\s+(.+)$", base)
         if not match:
             return []
-        value = match.group(1).strip().strip("[]").strip()
-        return [token.strip("'\"") for token in value.split() if token]
+        value = match.group(1).strip()
+        if value.startswith("[") and value.endswith("]"):
+            value = value[1:-1].strip()
+        lexer = shlex.shlex(value, posix=True)
+        lexer.whitespace_split = True
+        lexer.commenters = ""
+        try:
+            return list(lexer)
+        except ValueError:
+            # 引号未闭合时保守地视为不可解析，避免把半个名称当成有效 Group。
+            return []
+
+    @classmethod
+    def _group_definition_name(cls, header: str) -> str:
+        """返回 Group 定义的规范名称，去除名称两侧的引号。"""
+        base = cls._base_header(header).strip()
+        lexer = shlex.shlex(base, posix=True)
+        lexer.whitespace_split = True
+        lexer.commenters = ""
+        try:
+            tokens = list(lexer)
+        except ValueError:
+            return base
+        return tokens[0] if len(tokens) == 1 else base
+
+    @staticmethod
+    def _format_group_name(name: str) -> str:
+        """按 Junos 语法输出 Group 名称，含空白时添加双引号。"""
+        if re.fullmatch(r"[^\s\[\]\"']+", name):
+            return name
+        escaped = name.replace("\\", "\\\\").replace('"', '\\"')
+        return f'"{escaped}"'
 
     @classmethod
     def _rewrite_group_control(cls, statement: str, keyword: str, remaining: list[str]) -> str | None:
@@ -117,7 +148,7 @@ class JunosGroupExpander:
             return None
         prefix = statement[: statement.find(base)] if base in statement else ""
         original_value = match.group(2).strip()
-        value = " ".join(remaining)
+        value = " ".join(cls._format_group_name(name) for name in remaining)
         if original_value.startswith("[") and original_value.endswith("]"):
             value = f"[ {value} ]"
         return f"{prefix}{match.group(1)} {value};"
@@ -182,15 +213,16 @@ class JunosGroupExpander:
     def _group_tree_relevant(self, group: JunosNode, policy: WashingPolicy) -> bool:
         """递归判断一个 group 定义是否包含相关的有效配置路径。
 
-        inactive 节点被跳过；任一节点或后代命中 ``_group_path_relevant`` 即
-        返回 ``True``。该结果只用于 relevant 模式筛选，不修改 group。
+        inactive 节点被跳过；任一有效叶子所在路径命中
+        ``_group_path_relevant`` 即返回 ``True``。该结果只用于 relevant 模式
+        筛选，不修改 group。
         """
         def walk(items: list[JunosNode], path: list[str]) -> bool:
             for item in items:
-                if not item.active:
+                if not item.effective:
                     continue
                 current = [*path, self._base_header(item.header)]
-                if self._group_path_relevant(current, policy):
+                if item.children is None and self._group_path_relevant(current, policy):
                     return True
                 if item.children is not None and walk(item.children, current):
                     return True
@@ -220,7 +252,9 @@ class JunosGroupExpander:
             matches = [
                 item
                 for item in candidates
-                if item.active and item.is_block and self._header_matches(item.header, component)
+                if item.effective
+                and item.is_block
+                and self._header_matches(item.header, component)
             ]
             if not matches:
                 return []
@@ -276,7 +310,7 @@ class JunosGroupExpander:
         """
         assert target.children is not None
         for source in source_children:
-            if not source.active or not source.header:
+            if not source.effective or not source.header:
                 continue
             if self._group_names(source.header, "apply-groups") or self._group_names(
                 source.header, "apply-groups-except"
@@ -287,7 +321,9 @@ class JunosGroupExpander:
                 matches = [
                     item
                     for item in target.children
-                    if item.active and item.is_block and self._header_matches(source.header, item.header)
+                    if item.effective
+                    and item.is_block
+                    and self._header_matches(source.header, item.header)
                 ]
                 if matches or "<" in source.header:
                     # 通配选择器只用于匹配已有具体节点，不能把 ``<ge-*>`` 生成为真实配置块。
@@ -314,7 +350,7 @@ class JunosGroupExpander:
                     resolve_junos_identity(self._base_header(item.header), path=path),
                 )
                 for item in target.children
-                if item.active and not item.is_block
+                if item.effective and not item.is_block
             ]
             existing = next(
                 (
@@ -468,7 +504,7 @@ class JunosGroupExpander:
             (
                 node
                 for node in working.children
-                if node.active
+                if node.effective
                 and node.is_block
                 and self._base_header(node.header) == "groups"
             ),
@@ -477,9 +513,9 @@ class JunosGroupExpander:
         if groups_container is None or groups_container.children is None:
             return None
         groups = {
-            self._base_header(node.header): node
+            self._group_definition_name(node.header): node
             for node in groups_container.children
-            if node.active and node.is_block
+            if node.effective and node.is_block
         }
 
         # 拓扑中出现但配置未声明的接口也需参与通配 group 匹配。
@@ -487,7 +523,7 @@ class JunosGroupExpander:
             (
                 node
                 for node in working.children
-                if node.active
+                if node.effective
                 and node.is_block
                 and self._base_header(node.header) == "interfaces"
             ),
@@ -500,7 +536,7 @@ class JunosGroupExpander:
         existing_names = {
             canonical_junos_interface(self._base_header(node.header).split()[0])
             for node in interfaces.children
-            if node.active and node.is_block
+            if node.effective and node.is_block
         }
         for raw_name in known_interfaces:
             name = canonical_junos_interface(interface_parent(raw_name))
@@ -525,7 +561,7 @@ class JunosGroupExpander:
                         result.append(name)
                 return
             for child in node.children:
-                if child.active:
+                if child.effective:
                     collect(child)
 
         collect(group)
@@ -568,7 +604,7 @@ class JunosGroupExpander:
             if node.children is None or node is state.groups_container:
                 return
             for child in node.children:
-                if not child.active:
+                if not child.effective:
                     continue
                 names = (
                     self._group_names(child.header, "apply-groups")
@@ -695,7 +731,7 @@ class JunosGroupExpander:
                 for child in self._group_payload_for_path(
                     state.groups[group_name], path
                 ):
-                    if child.active and not child.is_block:
+                    if child.effective and not child.is_block:
                         nested_excluded.update(
                             name
                             for name in self._group_names(
@@ -718,7 +754,7 @@ class JunosGroupExpander:
                 for child in self._group_payload_for_path(
                     state.groups[group_name], path
                 ):
-                    if child.active and not child.is_block:
+                    if child.effective and not child.is_block:
                         nested_names.extend(
                             name
                             for name in self._group_names(
@@ -804,7 +840,7 @@ class JunosGroupExpander:
         while index < len(node.children):
             child = node.children[index]
             if (
-                child.active
+                child.effective
                 and child.is_block
                 and child is not state.groups_container
             ):
@@ -832,7 +868,7 @@ class JunosGroupExpander:
         local_names: list[str] = []
         local_excluded = set(inherited_excluded)
         for child in node.children:
-            if not child.active or child.is_block:
+            if not child.effective or child.is_block:
                 continue
             local_names.extend(
                 name
@@ -863,7 +899,7 @@ class JunosGroupExpander:
         retained: list[JunosNode] = []
         for child in node.children:
             rewritten: str | None = child.header
-            if not child.is_block:
+            if child.effective and not child.is_block:
                 for keyword in ("apply-groups", "apply-groups-except"):
                     names = self._group_names(child.header, keyword)
                     if not names:
@@ -910,8 +946,12 @@ class JunosGroupExpander:
                     preserved.add(dependency)
                     pending.append(dependency)
         for group in groups_container.children:
-            name = self._base_header(group.header)
-            if name in state.selected_groups and name not in preserved:
+            name = self._group_definition_name(group.header)
+            if (
+                group.effective
+                and name in state.selected_groups
+                and name not in preserved
+            ):
                 group.active = False
         groups_container.active = any(
             group.active for group in groups_container.children

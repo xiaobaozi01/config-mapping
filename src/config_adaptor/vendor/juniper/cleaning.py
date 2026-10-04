@@ -25,7 +25,7 @@ def _disable_matching(
     if node.children is None:
         return
     for child in node.children:
-        if not child.active:
+        if not child.effective:
             continue
         if _first_token(document, child) in keywords:
             child.active = False
@@ -56,6 +56,8 @@ def clean_management_access(document: JunosDocument) -> CleanupOutcome:
         "accounting",
     }
     for child in system.children:
+        if not child.effective:
+            continue
         first = _first_token(document, child)
         if first in blocked:
             child.active = False
@@ -65,7 +67,7 @@ def clean_management_access(document: JunosDocument) -> CleanupOutcome:
         (
             child
             for child in system.children
-            if child.active
+            if child.effective
             and child.is_block
             and document._base_header(child.header) == "services"
         ),
@@ -82,10 +84,10 @@ def clean_management_access(document: JunosDocument) -> CleanupOutcome:
         )
         for child in services.children or []:
             if (
-                child.active
+                child.effective
                 and _first_token(document, child) == "netconf"
                 and child.children is not None
-                and not any(grandchild.active for grandchild in child.children)
+                and not any(grandchild.effective for grandchild in child.children)
             ):
                 child.active = False
                 outcome.record("remote-access")

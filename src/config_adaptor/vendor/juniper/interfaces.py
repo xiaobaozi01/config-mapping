@@ -72,7 +72,7 @@ def bundle_members(document: JunosDocument) -> dict[str, str]:
         parent = document._interface_name(node)
         if _junos_interface_kind(parent) != InterfaceKind.PHYSICAL:
             continue
-        rendered = document._render_node(node, 0)
+        rendered = document._render_effective_node(node, 0)
         match = re.search(r"\b802\.3ad\s+(ae\d+)\s*;", rendered)
         if match:
             result[parent] = match.group(1)
@@ -122,20 +122,20 @@ def business_interface_names(document: JunosDocument) -> set[str]:
         parent = document._interface_name(node)
         units = document._unit_nodes(node)
         if not units:
-            rendered = document._render_node(node, 0)
+            rendered = document._render_effective_node(node, 0)
             if _junos_interface_kind(parent) in mappable_kinds and business_pattern.search(rendered):
                 active.add(parent)
             continue
         for unit in units:
-            rendered = document._render_node(unit, 0)
+            rendered = document._render_effective_node(unit, 0)
             name = f"{parent}.{document._unit_number(unit)}"
             if kinds.get(name) in mappable_kinds and business_pattern.search(rendered):
                 active.add(name)
 
     external = "\n".join(
-        document._render_node(node, 0)
+        document._render_effective_node(node, 0)
         for node in (document.root.children or [])
-        if node.active
+        if node.effective
         and document._base_header(node.header) not in {"interfaces", "groups"}
     )
     for name in known:
@@ -174,7 +174,7 @@ def business_interface_names(document: JunosDocument) -> set[str]:
         )
         if unit is None:
             continue
-        rendered = document._render_node(unit, 0)
+        rendered = document._render_effective_node(unit, 0)
         is_l2 = bool(
             re.search(
                 r"\b(?:family\s+(?:ccc|bridge|ethernet-switching)|"
@@ -251,9 +251,9 @@ def _activate_domain_gateways(
     base = document._base_header(node.header).rstrip(";")
     if base in {"bridge-domains", "vlans"}:
         for domain in node.children:
-            if not domain.active or domain.children is None:
+            if not domain.effective or domain.children is None:
                 continue
-            rendered = document._render_node(domain, 0)
+            rendered = document._render_effective_node(domain, 0)
             interfaces = {
                 canonical_junos_interface(value)
                 for value in re.findall(
@@ -281,7 +281,7 @@ def _activate_domain_gateways(
             ):
                 active.update(gateway for gateway in gateways if gateway in known)
     for child in node.children:
-        if child.active:
+        if child.effective:
             _activate_domain_gateways(
                 document,
                 child,
@@ -342,7 +342,8 @@ def rename_interface_tree(
             child
             for child in node.children
             if not (
-                child.is_block
+                child.effective
+                and child.is_block
                 and document._base_header(child.header)
                 in {"aggregated-ether-options", "gigether-options", "ether-options"}
             )
@@ -375,7 +376,8 @@ def clone_interface_tree(
                 child
                 for child in clone.children
                 if not (
-                    child.is_block
+                    child.effective
+                    and child.is_block
                     and document._base_header(child.header)
                     in {"aggregated-ether-options", "gigether-options", "ether-options"}
                 )
@@ -427,6 +429,9 @@ def _strip_vlan_termination(document: JunosDocument, nodes: list[JunosNode]) -> 
     )
     retained: list[JunosNode] = []
     for node in nodes:
+        if not node.effective:
+            retained.append(node.clone())
+            continue
         base = document._base_header(node.header).rstrip(";")
         if blocked.match(base) or re.match(r"^vlan\s+members\b", base):
             continue
@@ -460,22 +465,28 @@ def _ensure_target_parent(document: JunosDocument, target_parent: str) -> JunosN
         for original in node.children
         for child in (
             [original]
-            if original.is_block
-            and document._base_header(original.header).startswith("unit ")
+            if not original.effective
+            or (
+                original.is_block
+                and document._base_header(original.header).startswith("unit ")
+            )
             else _strip_vlan_termination(document, [original])
         )
     ]
     node.children = [
         child
         for child in node.children
-        if not re.match(
+        if not child.effective
+        or not re.match(
             r"^encapsulation\s+(?:ethernet-bridge|vlan-bridge)\b",
             document._base_header(child.header),
         )
     ]
     required = ["flexible-vlan-tagging;", "encapsulation flexible-ethernet-services;"]
     existing_headers = {
-        document._base_header(child.header) for child in node.children
+        document._base_header(child.header)
+        for child in node.children
+        if child.effective
     }
     for statement in reversed(required):
         if statement not in existing_headers:

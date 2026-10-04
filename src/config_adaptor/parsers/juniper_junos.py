@@ -77,8 +77,9 @@ def _junos_interface_kind(name: str) -> InterfaceKind:
 class JunosNode:
     """表示 Junos 大括号配置树中的块节点或叶子语句。
 
-    ``children=None`` 表示叶子，列表表示块；``active`` 支持逻辑删除，``origin``
-    和 ``rank`` 为 group 继承保留来源及优先级。统一节点模型可递归修改任意层级，
+    ``children=None`` 表示叶子，列表表示块；``active`` 仅表示转换过程中的逻辑
+    删除，Junos 文本里的 ``inactive:`` 由 ``effective`` 单独识别。``origin`` 和
+    ``rank`` 为 group 继承保留来源及优先级。统一节点模型可递归修改任意层级，
     同时保留解析器暂时不理解的语句文本。
     """
     header: str
@@ -95,6 +96,31 @@ class JunosNode:
         决定是否继续递归以及是否输出大括号。
         """
         return self.children is not None
+
+    @property
+    def configured_inactive(self) -> bool:
+        """返回节点是否带有 Junos ``inactive:`` 状态前缀。
+
+        状态直接从原始 header 读取，因此渲染仍可完整保留前缀；同时支持和
+        ``protect:`` 组合及不同排列顺序，避免把受保护的停用节点误判为有效。
+        """
+        remaining = self.header.strip()
+        inactive = False
+        while True:
+            matched = False
+            for prefix in ("inactive:", "protect:"):
+                if remaining.startswith(prefix):
+                    inactive = inactive or prefix == "inactive:"
+                    remaining = remaining[len(prefix) :].strip()
+                    matched = True
+                    break
+            if not matched:
+                return inactive
+
+    @property
+    def effective(self) -> bool:
+        """返回节点是否应参与当前生效配置的语义处理。"""
+        return self.active and not self.configured_inactive
 
     def clone(self) -> "JunosNode":
         """深拷贝当前节点及其完整子树。
@@ -159,13 +185,35 @@ class JunosDocument:
         """去除 ``inactive:``/``protect:`` 前缀并返回基础语句文本。
 
         这些前缀描述 Junos 节点状态而不是命令身份；语义匹配时忽略它们，才能让接口
-        名、块名和清洗规则稳定识别同一命令，同时原始 header 仍保留供最终渲染。
+        名、块名和清洗规则稳定识别同一命令。原始 header 仍保留在树中，输出阶段再
+        单独决定保留 ``inactive:`` 并移除 ``protect:``。
         """
         result = header.strip()
-        for prefix in ("inactive:", "protect:"):
-            if result.startswith(prefix):
-                result = result[len(prefix) :].strip()
-        return result
+        while True:
+            for prefix in ("inactive:", "protect:"):
+                if result.startswith(prefix):
+                    result = result[len(prefix) :].strip()
+                    break
+            else:
+                return result
+
+    @staticmethod
+    def _output_header(header: str) -> str:
+        """移除输出中无运行意义的 ``protect:``，并保留 ``inactive:``。
+
+        GNS3 配置不需要继承生产设备上的编辑保护；组合前缀会统一重建为
+        ``inactive:`` 加基础语句，确保去保护不会意外激活原本停用的节点。
+        """
+        result = header.strip()
+        inactive = False
+        while True:
+            for prefix in ("inactive:", "protect:"):
+                if result.startswith(prefix):
+                    inactive = inactive or prefix == "inactive:"
+                    result = result[len(prefix) :].strip()
+                    break
+            else:
+                return f"inactive: {result}" if inactive else result
 
     def _top_block(self, name: str, create: bool = False) -> JunosNode | None:
         """查找指定活动顶层块，并在请求时创建缺失块。
@@ -176,7 +224,7 @@ class JunosDocument:
         """
         assert self.root.children is not None
         for node in self.root.children:
-            if node.active and node.is_block and self._base_header(node.header) == name:
+            if node.effective and node.is_block and self._base_header(node.header) == name:
                 return node
         if create:
             node = JunosNode(name, [])
@@ -201,7 +249,7 @@ class JunosDocument:
         block = self._interfaces_block()
         if not block or block.children is None:
             return []
-        return [node for node in block.children if node.active and node.is_block]
+        return [node for node in block.children if node.effective and node.is_block]
 
     def _interface_name(self, node: JunosNode) -> str:
         """从接口节点 header 的首个字段提取规范化接口名。
@@ -222,7 +270,9 @@ class JunosDocument:
         return [
             node
             for node in interface.children
-            if node.is_block and self._base_header(node.header).startswith("unit ")
+            if node.effective
+            and node.is_block
+            and self._base_header(node.header).startswith("unit ")
         ]
 
     def _unit_number(self, node: JunosNode) -> str:
@@ -242,6 +292,8 @@ class JunosDocument:
         if unit.children is None:
             return None
         for child in unit.children:
+            if not child.effective:
+                continue
             statement = self._base_header(child.header)
             match = re.match(r"vlan-id\s+(\d+)\s*;", statement)
             if match:
@@ -260,6 +312,8 @@ class JunosDocument:
         if unit.children is None:
             return None
         for child in unit.children:
+            if not child.effective:
+                continue
             match = re.match(
                 r"vlan-tags\s+outer\s+\d+\s+inner\s+(\d+)\s*;",
                 self._base_header(child.header),
@@ -515,13 +569,15 @@ class JunosDocument:
             header，以兼顾结构化定位和具体语句内容匹配。
             """
             nonlocal hits
+            if node is not self.root and not node.effective:
+                return
             if node is self.root:
                 next_path = path
             else:
                 component = self._base_header(node.header).split(maxsplit=1)[0].rstrip(";")
                 next_path = [*path, component] if component else path
                 dotted = ".".join(next_path)
-                if node.active and (pattern.search(dotted) or pattern.search(node.header)):
+                if pattern.search(dotted) or pattern.search(node.header):
                     hits += 1
                     if action == "delete":
                         node.active = False
@@ -582,6 +638,8 @@ class JunosDocument:
             进入 ``interfaces`` 后只继续遍历、不替换 header，因为接口定义已经完成
             专门迁移；在父节点重建列表则允许一个引用节点安全扩展成多个独立副本。
             """
+            if node is not self.root and not node.effective:
+                return
             if node.children is None:
                 return
             current_inside = inside_interfaces or (
@@ -589,6 +647,9 @@ class JunosDocument:
             )
             rebuilt: list[JunosNode] = []
             for child in node.children:
+                if not child.effective:
+                    rebuilt.append(child)
+                    continue
                 variants = [child.header] if current_inside else expand(child.header)
                 for header in variants:
                     clone = child if len(variants) == 1 and header == child.header else child.clone()
@@ -609,10 +670,25 @@ class JunosDocument:
             return ""
         indent = "    " * depth
         if node.children is None:
-            return indent + node.header
-        lines = [indent + node.header + " {"]
+            return indent + self._output_header(node.header)
+        lines = [indent + self._output_header(node.header) + " {"]
         for child in node.children:
             rendered = self._render_node(child, depth + 1)
+            if rendered:
+                lines.append(rendered)
+        lines.append(indent + "}")
+        return "\n".join(lines)
+
+    def _render_effective_node(self, node: JunosNode, depth: int) -> str:
+        """渲染仅包含当前生效节点的语义视图，不改变最终输出。"""
+        if not node.effective:
+            return ""
+        indent = "    " * depth
+        if node.children is None:
+            return indent + self._output_header(node.header)
+        lines = [indent + self._output_header(node.header) + " {"]
+        for child in node.children:
+            rendered = self._render_effective_node(child, depth + 1)
             if rendered:
                 lines.append(rendered)
         lines.append(indent + "}")

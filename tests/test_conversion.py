@@ -679,6 +679,255 @@ class ConversionTest(unittest.TestCase):
         self.assertNotIn("groups {", rendered)
         self.assertNotIn("apply-groups COMMON", rendered)
 
+    def test_junos_inactive_apply_groups_is_preserved_and_ignored(self):
+        source = """groups {
+    COMMON {
+        interfaces {
+            ge-0/0/0 {
+                mtu 9000;
+            }
+        }
+    }
+}
+interfaces {
+    ge-0/0/0 {
+        unit 0;
+    }
+}
+inactive: apply-groups COMMON;
+inactive: apply-groups MISSING;
+"""
+        document = JunosDocument(source)
+        outcome = document.expand_groups([])
+
+        self.assertTrue(outcome.success)
+        self.assertFalse(outcome.events)
+        self.assertFalse(outcome.warnings)
+        self.assertEqual(document.render(), source)
+
+    def test_junos_inactive_nested_controls_do_not_change_expansion(self):
+        source = """groups {
+    COMMON {
+        inactive: apply-groups MISSING;
+        interfaces {
+            ge-0/0/0 {
+                inactive: apply-groups-except COMMON;
+                mtu 9000;
+            }
+        }
+    }
+}
+interfaces {
+    ge-0/0/0 {
+        unit 0;
+    }
+}
+apply-groups COMMON;
+"""
+        document = JunosDocument(source)
+        outcome = document.expand_groups([])
+        rendered = document.render()
+
+        self.assertTrue(outcome.success)
+        self.assertFalse(outcome.warnings)
+        self.assertIn("mtu 9000;", rendered)
+        self.assertNotIn("groups {", rendered)
+        self.assertNotIn("apply-groups", rendered)
+
+    def test_junos_inactive_group_is_preserved_but_not_expanded(self):
+        source = """groups {
+    inactive: DISABLED {
+        interfaces {
+            ge-0/0/0 {
+                description disabled-group;
+            }
+        }
+    }
+    ENABLED {
+        interfaces {
+            ge-0/0/0 {
+                mtu 9000;
+            }
+        }
+    }
+}
+interfaces {
+    ge-0/0/0 {
+        unit 0;
+    }
+}
+apply-groups ENABLED;
+inactive: apply-groups DISABLED;
+"""
+        document = JunosDocument(source)
+        outcome = document.expand_groups([])
+        rendered = document.render()
+
+        self.assertTrue(outcome.success)
+        self.assertEqual(outcome.events, ["已展开 Junos 配置组 ENABLED"])
+        self.assertIn("inactive: DISABLED {", rendered)
+        self.assertIn("inactive: apply-groups DISABLED;", rendered)
+        self.assertIn("mtu 9000;", rendered)
+        self.assertEqual(rendered.count("description disabled-group;"), 1)
+
+    def test_junos_inactive_value_does_not_override_group_value(self):
+        source = """groups {
+    COMMON {
+        interfaces {
+            ge-0/0/0 {
+                mtu 9000;
+            }
+        }
+    }
+}
+interfaces {
+    ge-0/0/0 {
+        inactive: mtu 1500;
+        unit 0;
+    }
+}
+apply-groups COMMON;
+"""
+        document = JunosDocument(source)
+        outcome = document.expand_groups([])
+        rendered = document.render()
+
+        self.assertTrue(outcome.success)
+        self.assertIn("inactive: mtu 1500;", rendered)
+        self.assertIn("mtu 9000;", rendered)
+        self.assertFalse(outcome.conflicts)
+
+    def test_junos_protect_prefix_is_effective_but_removed_from_output(self):
+        source = """groups {
+    protect: COMMON {
+        interfaces {
+            ge-0/0/0 {
+                protect: mtu 9000;
+            }
+        }
+    }
+}
+interfaces {
+    ge-0/0/0 {
+        unit 0;
+    }
+}
+protect: apply-groups COMMON;
+"""
+        document = JunosDocument(source)
+        outcome = document.expand_groups([])
+        rendered = document.render()
+
+        self.assertTrue(outcome.success)
+        self.assertIn("mtu 9000;", rendered)
+        self.assertNotIn("protect:", rendered)
+        self.assertNotIn("groups {", rendered)
+        self.assertNotIn("apply-groups", rendered)
+
+    def test_junos_quoted_group_name_in_list_is_parsed_and_rewritten(self):
+        source = """groups {
+    "BUSINESS EDGE" {
+        interfaces {
+            ge-0/0/0 {
+                mtu 9000;
+            }
+        }
+    }
+    "LOGGING CORE" {
+        system {
+            syslog {
+                file messages {
+                    any notice;
+                }
+            }
+        }
+    }
+}
+interfaces {
+    ge-0/0/0 {
+        unit 0;
+    }
+}
+apply-groups [ "BUSINESS EDGE" "LOGGING CORE" ];
+"""
+        document = JunosDocument(source)
+        outcome = document.expand_groups([])
+        rendered = document.render()
+
+        self.assertTrue(outcome.success)
+        self.assertEqual(outcome.events, ["已展开 Junos 配置组 BUSINESS EDGE"])
+        self.assertIn("mtu 9000;", rendered)
+        self.assertNotIn('"BUSINESS EDGE" {', rendered)
+        self.assertIn('apply-groups [ "LOGGING CORE" ];', rendered)
+
+    def test_junos_quoted_nested_group_and_except_are_resolved(self):
+        source = """groups {
+    "BASE GROUP" {
+        interfaces {
+            <ge-*> {
+                mtu 9000;
+            }
+        }
+    }
+    "EDGE GROUP" {
+        apply-groups "BASE GROUP";
+        interfaces {
+            ge-0/0/0 {
+                apply-groups-except "BASE GROUP";
+            }
+        }
+    }
+}
+interfaces {
+    ge-0/0/0 {
+        unit 0;
+    }
+}
+apply-groups "EDGE GROUP";
+"""
+        document = JunosDocument(source)
+        outcome = document.expand_groups([])
+        rendered = document.render()
+
+        self.assertTrue(outcome.success)
+        self.assertFalse(outcome.warnings)
+        self.assertNotIn("mtu 9000;", rendered)
+        self.assertNotIn("groups {", rendered)
+        self.assertNotIn("apply-groups", rendered)
+
+    def test_junos_inactive_interfaces_and_units_are_not_discovered(self):
+        source = """interfaces {
+    inactive: ge-0/0/0 {
+        unit 100 {
+            vlan-id 100;
+            family inet;
+        }
+    }
+    protect: ge-0/0/1 {
+        protect: inactive: unit 200 {
+            vlan-id 200;
+            family inet;
+        }
+        unit 300 {
+            inactive: protect: vlan-id 300;
+            vlan-id 301;
+            protect: family inet;
+        }
+    }
+}
+"""
+        document = JunosDocument(source)
+        specs = document.interface_specs()
+
+        self.assertEqual([spec.name for spec in specs], ["ge-0/0/1.300"])
+        self.assertEqual(specs[0].vlan, 301)
+        self.assertEqual(document.business_interface_names(), {"ge-0/0/1.300"})
+        rendered = document.render()
+        self.assertIn("ge-0/0/1 {", rendered)
+        self.assertIn("inactive: unit 200 {", rendered)
+        self.assertIn("inactive: vlan-id 300;", rendered)
+        self.assertNotIn("protect:", rendered)
+
     def test_relevant_mode_preserves_unrelated_iosxr_groups(self):
         source = """group BUSINESS
  interface 'GigabitEthernet.*'
