@@ -679,6 +679,46 @@ class ConversionTest(unittest.TestCase):
         self.assertNotIn("groups {", rendered)
         self.assertNotIn("apply-groups COMMON", rendered)
 
+    def test_junos_inline_blocks_are_parsed_and_expanded(self):
+        source = '''groups { "EDGE GROUP" { interfaces { ge-0/0/0 { mtu 9000; } } } }
+interfaces { ge-0/0/0 { unit 0; description "literal { brace; }"; } }
+apply-groups "EDGE GROUP";
+'''
+        self.assertEqual(
+            JunosDocument._expand_inline_blocks("G { mtu 9000; };"),
+            "G {\nmtu 9000;\n};",
+        )
+        document = JunosDocument(source)
+        outcome = document.expand_groups([])
+        rendered = document.render()
+
+        self.assertTrue(outcome.success)
+        self.assertEqual(outcome.events, ["已展开 Junos 配置组 EDGE GROUP"])
+        self.assertIn("mtu 9000;", rendered)
+        self.assertIn('description "literal { brace; }";', rendered)
+        self.assertNotIn("groups {", rendered)
+        self.assertNotIn("apply-groups", rendered)
+
+    def test_junos_inline_parser_ignores_braces_in_comments(self):
+        source = '''system { /* ignored { block; } */ host-name "lab;{vmx}"; # ignored }
+    services { ssh; }
+}
+'''
+        document = JunosDocument(source)
+        rendered = document.render()
+
+        self.assertIn("system {", rendered)
+        self.assertIn("/* ignored { block; } */", rendered)
+        self.assertIn('host-name "lab;{vmx}";', rendered)
+        self.assertIn("services {", rendered)
+        self.assertIn("ssh;", rendered)
+
+    def test_junos_inline_parser_still_rejects_unbalanced_braces(self):
+        with self.assertRaisesRegex(ValueError, "出现多余右大括号"):
+            JunosDocument("system { host-name lab; } }")
+        with self.assertRaisesRegex(ValueError, "大括号不平衡"):
+            JunosDocument("system { host-name lab;")
+
     def test_junos_inactive_apply_groups_is_preserved_and_ignored(self):
         source = """groups {
     COMMON {

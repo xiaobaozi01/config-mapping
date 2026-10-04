@@ -130,7 +130,6 @@ class JunosNode:
         """
         return copy.deepcopy(self)
 
-
 class JunosDocument:
     """提供可修改 Junos 配置树及应用层所需的统一厂商门面。
 
@@ -149,6 +148,99 @@ class JunosDocument:
         self.root = JunosNode("<root>", [])
         self._parse(text)
 
+    @staticmethod
+    def _expand_inline_blocks(text: str) -> str:
+        """把单行块预展开为原逐行解析器可识别的标准多行文本。
+
+        只在引号和注释之外按 ``{``、``}``、``;`` 切行；本方法不建立语法树，
+        后续结构识别、括号校验和节点创建仍全部由原有 ``_parse`` 栈逻辑完成。
+        """
+        expanded: list[str] = []
+        quote: str | None = None
+        escaped = False
+        block_comment = False
+
+        for raw in text.splitlines():
+            fragments: list[str] = []
+            buffer: list[str] = []
+            index = 0
+
+            def flush() -> None:
+                value = "".join(buffer).strip()
+                buffer.clear()
+                if value:
+                    fragments.append(value)
+
+            while index < len(raw):
+                character = raw[index]
+
+                if quote is not None:
+                    buffer.append(character)
+                    if escaped:
+                        escaped = False
+                    elif character == "\\":
+                        escaped = True
+                    elif character == quote:
+                        quote = None
+                    index += 1
+                    continue
+
+                if block_comment:
+                    buffer.append(character)
+                    if character == "*" and index + 1 < len(raw) and raw[index + 1] == "/":
+                        buffer.append("/")
+                        block_comment = False
+                        index += 2
+                    else:
+                        index += 1
+                    continue
+
+                if character in {'"', "'"}:
+                    quote = character
+                    buffer.append(character)
+                    index += 1
+                    continue
+
+                if character == "#":
+                    buffer.append(raw[index:])
+                    break
+
+                if character == "/" and index + 1 < len(raw) and raw[index + 1] == "*":
+                    block_comment = True
+                    buffer.extend(("/", "*"))
+                    index += 2
+                    continue
+
+                if character == "{":
+                    buffer.append("{")
+                    flush()
+                    index += 1
+                    continue
+
+                if character == ";":
+                    buffer.append(";")
+                    flush()
+                    index += 1
+                    continue
+
+                if character == "}":
+                    flush()
+                    closing = "}"
+                    if index + 1 < len(raw) and raw[index + 1] == ";":
+                        closing = "};"
+                        index += 1
+                    fragments.append(closing)
+                    index += 1
+                    continue
+
+                buffer.append(character)
+                index += 1
+
+            flush()
+            expanded.extend(fragments or [""])
+
+        return "\n".join(expanded)
+
     def _parse(self, text: str) -> None:
         """使用栈把 Junos 大括号文本解析成节点树，并校验括号平衡。
 
@@ -157,7 +249,8 @@ class JunosDocument:
         因为在不可靠树上继续迁移可能把配置写入错误层级。
         """
         stack = [self.root]
-        for number, raw in enumerate(text.splitlines(), start=1):
+        expanded = self._expand_inline_blocks(text)
+        for number, raw in enumerate(expanded.splitlines(), start=1):
             stripped = raw.strip()
             if not stripped:
                 stack[-1].children.append(JunosNode(""))
@@ -173,7 +266,7 @@ class JunosDocument:
                 stack.append(node)
                 continue
             if "{" in stripped or "}" in stripped:
-                # 不常见的行内大括号语法原样保留，但不伪装成已解析层级。
+                # 预处理未拆分的未知写法继续按原策略作为叶子保留。
                 stack[-1].children.append(JunosNode(stripped))
                 continue
             stack[-1].children.append(JunosNode(stripped))
