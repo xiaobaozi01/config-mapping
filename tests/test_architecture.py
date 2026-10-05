@@ -7,12 +7,12 @@ import unittest
 from pathlib import Path
 from types import SimpleNamespace
 
-from config_adaptor.adaptation.contracts import VendorConfiguration
 from config_adaptor.adaptation.models import Link
 from config_adaptor.adaptation.nni import plan_nni_components
 from config_adaptor.adaptation.pipeline import ConversionPipeline
 from config_adaptor.adaptation.uni import allocate_uni_vlans
 from config_adaptor.cisco import CiscoDocument
+from config_adaptor.common.contracts import VendorConfiguration
 from config_adaptor.common.interface import InterfaceKind, InterfaceSpec
 from config_adaptor.juniper import JunosDocument
 
@@ -96,6 +96,8 @@ class ConversionPipelineTest(unittest.TestCase):
 
 class VendorConfigurationContractTest(unittest.TestCase):
     def test_both_vendor_documents_implement_the_application_port(self):
+        self.assertIn(VendorConfiguration, CiscoDocument.__mro__)
+        self.assertIn(VendorConfiguration, JunosDocument.__mro__)
         self.assertIsInstance(CiscoDocument("end\n"), VendorConfiguration)
         self.assertIsInstance(JunosDocument(""), VendorConfiguration)
 

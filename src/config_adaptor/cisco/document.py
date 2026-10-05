@@ -7,6 +7,7 @@ import re
 from dataclasses import dataclass, field
 from typing import Iterable
 
+from ..common.contracts import VendorConfiguration
 from ..common.interface import InterfaceKind, InterfaceSpec, interface_parent
 from ..common.outcomes import (
     CleanupOutcome,
@@ -271,7 +272,7 @@ def _cisco_interface_kind(name: str) -> InterfaceKind:
     return InterfaceKind.UNKNOWN
 
 
-class CiscoDocument:
+class CiscoDocument(VendorConfiguration):
     """提供可修改 IOS XR 配置树及应用层所需的统一厂商门面。
 
     类本身负责文本解析、渲染、外部规则和引用替换；接口迁移、group、清洗及模拟

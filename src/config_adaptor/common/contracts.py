@@ -1,4 +1,4 @@
-"""应用层依赖的厂商配置端口。
+"""跨厂商配置文档共同实现的能力协议。
 
 协议只描述转换流程真正需要的能力。Cisco/Junos 的 AST、节点和语法辅助函数
 均属于实现细节，不应泄漏到责任链和外部清洗规则中。
@@ -8,13 +8,13 @@ from __future__ import annotations
 
 from typing import Protocol, runtime_checkable
 
-from ..common.interface import InterfaceKind, InterfaceSpec
-from ..common.outcomes import (
+from .interface import InterfaceKind, InterfaceSpec
+from .outcomes import (
     CleanupOutcome,
     GroupExpansionOutcome,
     SimulationAdaptationOutcome,
 )
-from ..common.policies import SimulationAdaptationPolicy, WashingPolicy
+from .policies import SimulationAdaptationPolicy, WashingPolicy
 
 
 @runtime_checkable

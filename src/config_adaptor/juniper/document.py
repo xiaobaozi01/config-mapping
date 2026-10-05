@@ -7,6 +7,7 @@ import re
 from dataclasses import dataclass
 from typing import Iterable
 
+from ..common.contracts import VendorConfiguration
 from ..common.errors import require_invariant
 from ..common.interface import InterfaceKind, InterfaceSpec, interface_parent
 from ..common.outcomes import (
@@ -129,7 +130,7 @@ class JunosNode:
         """
         return copy.deepcopy(self)
 
-class JunosDocument:
+class JunosDocument(VendorConfiguration):
     """提供可修改 Junos 配置树及应用层所需的统一厂商门面。
 
     类本身负责大括号解析、渲染、外部规则和引用替换；接口迁移、group、清洗及模拟

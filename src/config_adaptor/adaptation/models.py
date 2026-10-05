@@ -10,7 +10,7 @@ from typing import TYPE_CHECKING, Any
 from ..common.policies import SimulationAdaptationPolicy, WashingPolicy
 
 if TYPE_CHECKING:
-    from .contracts import VendorConfiguration
+    from ..common.contracts import VendorConfiguration
 
 
 class Vendor(StrEnum):

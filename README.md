@@ -11,7 +11,7 @@ group 展开是事务式的，并遵循显式配置、嵌套层级和 group 列�
 - `cisco/`：IOS XR AST、解析/渲染、Group、接口、清洗、模拟适配及 XRv9000 规则。
 - `juniper/`：Junos AST、解析/渲染、Group、接口、清洗、模拟适配及 vMX 规则。
 - `common/`：两家厂商共享的接口类型、操作结果、策略、不变量和语义 identity 引擎。
-- `adaptation/contracts.py`：配置自适应流程依赖的稳定厂商能力协议，厂商 AST 不向流程层泄漏。
+- `common/contracts.py`：Cisco 与 Juniper 显式实现的稳定厂商能力协议，厂商 AST 不向流程层泄漏。
 - `adaptation/topology.py`：Excel 拓扑读取、预检和输出。
 - `adaptation/groups.py`：Group 展开的跨设备调度和诊断汇总。
 - `adaptation/interfaces.py`：接口分类及最终引用改写。

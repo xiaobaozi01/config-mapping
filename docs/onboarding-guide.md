@@ -106,7 +106,7 @@ Excel 至少包含两个工作表：
 | 设备列表 | 配置文件（可选） | 未填写时按设备名查找 `.cfg/.conf/.txt` |
 | 链接表 | A端设备、A端接口、Z端设备、Z端接口 | 定义物理 NNI |
 
-程序兼容常见中英文 Sheet 名和列名，实际别名定义在 `constants.py`。
+程序兼容常见中英文 Sheet 名和列名，实际别名定义在 `adaptation/topology.py`。
 
 设备名称是系统中的主键，必须非空且全局唯一。链接表只要某一列有值，就要求四个端点字段全部填写。
 
@@ -189,14 +189,14 @@ flowchart TD
 ```mermaid
 sequenceDiagram
     actor User as 操作者
-    participant CLI as cli.py
-    participant Entry as pipeline.py
-    participant IO as excel_io / profiles / washing
-    participant Parser as parsers
+    participant CLI as adaptation/cli.py
+    participant Entry as adaptation/service.py
+    participant IO as topology / profiles / washing
+    participant Parser as adaptation/factory.py
     participant Flow as ConversionPipeline
-    participant Stage as handlers
+    participant Stage as adaptation 业务模块
     participant Doc as VendorConfiguration
-    participant Rules as rules.py
+    participant Rules as cleaning_rules.py
     participant Output as write_outputs
 
     User->>CLI: config-adaptor convert ...
@@ -231,23 +231,23 @@ sequenceDiagram
 ```mermaid
 flowchart TB
     subgraph Delivery[入口层]
-        CLI[cli.py]
+        CLI[adaptation/cli.py]
     end
 
     subgraph Orchestration[编排层]
-        Entry[pipeline.py]
-        Handlers[handlers.py]
+        Entry[adaptation/service.py]
+        Stages[adaptation 业务模块]
         AppPipe[adaptation/pipeline.py]
     end
 
     subgraph Domain[领域模型与纯规划]
-        Models[models.py]
+        Models[adaptation/models.py]
         NniPlan[adaptation/nni.py]
         Vlan[adaptation/uni.py]
     end
 
     subgraph Port[厂商能力边界]
-        API[adaptation/contracts.py<br/>VendorConfiguration Protocol]
+        API[common/contracts.py<br/>VendorConfiguration Protocol]
     end
 
     subgraph Cisco[Cisco 实现]
@@ -267,22 +267,22 @@ flowchart TB
     end
 
     subgraph IO[基础设施]
-        Excel[excel_io.py]
-        Profiles[profiles.py]
-        Washing[washing.py]
-        Rules[rules.py]
+        Excel[adaptation/topology.py]
+        Profiles[adaptation/profiles.py]
+        Washing[adaptation/washing.py]
+        Rules[adaptation/cleaning_rules.py]
     end
 
     CLI --> Entry
     Entry --> IO
     Entry --> AppPipe
-    AppPipe --> Handlers
-    Handlers --> Models
-    Handlers --> NniPlan
-    Handlers --> Vlan
-    Handlers --> API
-    API -.结构化约束.-> CiscoParser
-    API -.结构化约束.-> JunosParser
+    AppPipe --> Stages
+    Stages --> Models
+    Stages --> NniPlan
+    Stages --> Vlan
+    Stages --> API
+    CiscoParser -->|显式继承| API
+    JunosParser -->|显式继承| API
     CiscoParser --> CiscoGroups
     CiscoParser --> CiscoInterfaces
     CiscoParser --> CiscoCleaning
@@ -293,28 +293,28 @@ flowchart TB
     JunosParser --> JunosSimulation
 ```
 
-虚线表示 Python `Protocol` 的结构化实现关系：`CiscoDocument` 和 `JunosDocument` 不需要继承某个 Java 风格基类，只要实现约定的方法即可。
+`CiscoDocument` 和 `JunosDocument` 显式继承 `VendorConfiguration` Protocol，既保留结构化类型检查，也让 IDE 可以直接导航到具体实现。
 
 ### 5.2 各目录的职责
 
 | 路径 | 职责 | 新人是否应先读 |
 | --- | --- | --- |
-| `cli.py` | 参数解析、退出码 | 是 |
-| `pipeline.py` | 准备上下文、执行流程、写输出 | 是 |
-| `handlers.py` | 九个业务阶段 | 是，核心 |
-| `models.py` | 设备、链路、映射、Profile、上下文 | 是 |
+| `adaptation/cli.py` | 参数解析、退出码 | 是 |
+| `adaptation/service.py` | 准备上下文、执行流程、写输出 | 是 |
+| `adaptation/topology.py`、`groups.py`、`interfaces.py`、`nni.py`、`uni.py`、`washing.py`、`simulation.py` | 九个业务阶段 | 是，核心 |
+| `adaptation/models.py` | 设备、链路、映射、Profile、上下文 | 是 |
 | `adaptation/pipeline.py` | Stage 协议和停止规则 | 是 |
 | `adaptation/nni.py` | 聚合链路分组的纯计算 | NNI 业务时读 |
 | `adaptation/uni.py` | UNI VLAN 唯一分配 | UNI 业务时读 |
-| `adaptation/contracts.py` | 应用层可以依赖的厂商能力 | 是，理解边界 |
+| `common/contracts.py` | 两家厂商显式实现、应用层依赖的能力协议 | 是，理解边界 |
 | `cisco/document.py、juniper/document.py` | AST、解析、渲染及兼容 Facade | 第二阶段读 |
 | `cisco/groups.py、juniper/groups.py` | 厂商 Group 事务式展开 | 专项阅读 |
 | `cisco/interfaces.py、juniper/interfaces.py` | 业务接口分析和配置树修改 | 专项阅读 |
 | `cisco/cleaning.py、juniper/cleaning.py` | 强制及可选清洗 | 专项阅读 |
 | `cisco/simulation.py、juniper/simulation.py` | 镜像运行参数适配 | 专项阅读 |
-| `excel_io.py` | Excel 读写和列别名处理 | 输入问题时读 |
-| `profiles.py` / `washing.py` | YAML 配置加载与校验 | 策略问题时读 |
-| `rules.py` | 外部清洗规则 | 自定义清洗时读 |
+| `adaptation/topology.py` | Excel 读写和列别名处理 | 输入问题时读 |
+| `adaptation/profiles.py` / `adaptation/washing.py` | YAML 配置加载与校验 | 策略问题时读 |
+| `adaptation/cleaning_rules.py` | 外部清洗规则 | 自定义清洗时读 |
 
 ### 5.3 为什么有些东西是类，有些是函数
 
@@ -634,7 +634,7 @@ inner VLAN = 优先保留可识别的原业务 VLAN
 
 ### 11.1 应用层只依赖业务能力
 
-`handlers.py` 不应该知道 `CiscoNode` 或 `JunosNode`。它只通过 `VendorConfiguration` 调用：
+`adaptation` 的业务处理模块不应该知道 `CiscoNode` 或 `JunosNode`。它们只通过 `VendorConfiguration` 调用：
 
 - `expand_groups()`
 - `interface_specs()` / `business_interface_names()`
@@ -850,8 +850,8 @@ flowchart TD
 
 | 现象 | 优先查看 |
 | --- | --- |
-| 找不到 Sheet/列 | `excel_io.py`、`constants.py` |
-| 配置文件找不到或路径被拒绝 | `pipeline._safe_config_path()` |
+| 找不到 Sheet/列 | `adaptation/topology.py` |
+| 配置文件找不到或路径被拒绝 | `adaptation/service._safe_config_path()` |
 | Group 继承结果不对 | `<厂商>/groups.py` 和 `group_conflicts` |
 | 接口被当成未知类型 | 对应解析器的 `interface_kind` |
 | 聚合链路被错误合并 | `adaptation/nni.py` |
@@ -957,7 +957,7 @@ git diff --check
 ### 18.1 高内聚、低耦合在本项目中的具体含义
 
 - 业务阶段关心“做什么”，厂商模块关心“用什么语法做”。
-- AST 类型不泄漏到 `handlers.py`。
+- AST 类型不泄漏到 `adaptation` 的业务处理模块。
 - NNI 分组和 VLAN 分配不依赖 Cisco/Junos 文本结构。
 - 一个 Stage 只处理一个明确的业务阶段。
 - 所有可审计副作用都进入 mapping、event、warning 或 error。
@@ -991,9 +991,9 @@ git diff --check
 如果只有 30 分钟：
 
 1. 本文第 1～4 节，建立业务和总流程。
-2. `models.py`，认识 Context、Link、Mapping 和 Profile。
-3. `pipeline.py` 的 `convert()`。
-4. `handlers.py` 的 `build_default_pipeline()` 和九个 Stage 类名。
+2. `adaptation/models.py`，认识 Context、Link、Mapping 和 Profile。
+3. `adaptation/service.py` 的 `convert()`。
+4. `adaptation/pipeline.py` 的 `build_default_pipeline()` 和九个 Stage 类名。
 5. 选一个 `tests/test_conversion.py` 的端到端用例，从输入断言看到输出。
 
 如果有半天：
@@ -1006,7 +1006,7 @@ git diff --check
 
 如果准备开始开发：
 
-1. 阅读 `adaptation/contracts.py`，明确应用层边界。
+1. 阅读 `common/contracts.py`，明确跨厂商能力边界。
 2. 阅读相关业务 fixture 和已有断言。
 3. 阅读目标厂商的 Group、接口、清洗或模拟适配模块。
 4. 先补失败测试，再做最小实现。
