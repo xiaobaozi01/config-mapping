@@ -15,12 +15,23 @@ _RULE_KEYS = {"id", "node", "path", "statement", "identity", "merge"}
 
 
 def _string_list(value: object, field: str, rule_id: str) -> tuple[str, ...]:
+    """校验字段值是非空字符串列表并返回元组。
+
+    规则文件由人手工维护，字段类型错误要尽早报错；返回不可变元组让规则在加载后
+    只读使用，也避免后续匹配阶段意外修改模板。
+    """
     if not isinstance(value, list) or not all(isinstance(item, str) and item for item in value):
         raise ValueError(f"identity 规则 {rule_id} 的 {field} 必须是非空字符串列表")
     return tuple(value)
 
 
 def _parse_rule(raw: object, source: str) -> SemanticRule:
+    """把一条 YAML 规则字典解析并校验成 ``SemanticRule``。
+
+    除了字段存在性和类型，还要校验 identity 引用的 capture 都已在 path/statement
+    中定义；在加载阶段拒绝无效规则，可让转换期只处理可靠输入，而不是运行到一半
+    才因模板错误失败。
+    """
     if not isinstance(raw, dict):
         raise ValueError(f"{source}: identity 规则必须是键值映射")
     unknown = sorted(set(raw) - _RULE_KEYS)
@@ -68,7 +79,12 @@ def load_rule_pack(
     vendor: str | None = None,
     image: str | None = None,
 ) -> tuple[SemanticRule, ...]:
-    """按 manifest 显式列出的文件加载并校验一个规则包。"""
+    """按 manifest 显式列出的文件加载并校验一个规则包。
+
+    manifest 声明 schema、目标厂商/镜像和规则文件清单；显式清单避免无差别扫描目录
+    引入无关文件，并让目标校验与重复 id 检查在启动时统一完成，保证后续匹配使用的
+    规则集完整且唯一。
+    """
     manifest_path = directory / "manifest.yaml"
     with manifest_path.open("r", encoding="utf-8") as handle:
         manifest = yaml.safe_load(handle) or {}
