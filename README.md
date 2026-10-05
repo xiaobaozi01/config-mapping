@@ -6,24 +6,22 @@
 
 group 展开是事务式的，并遵循显式配置、嵌套层级和 group 列表顺序的厂商优先级。冲突详情写入 `report.json` 的 `group_conflicts` 字段。
 
-## 厂商实现边界
+## 代码边界
 
-- `vendor/api.py`：应用层依赖的稳定厂商配置协议；厂商 AST 不向流程层泄漏。
-- `parsers/cisco_iosxr.py`：保留 IOS XR 语法模型、解析/渲染和兼容门面。
-- `parsers/juniper_junos.py`：保留 Junos 大括号语法模型、解析/渲染和兼容门面。
-- `vendor/*/groups.py`：分别封装事务式 Group 展开、继承优先级和冲突检测。
-- `vendor/identity/`：加载、校验并匹配路径感知的配置语义规则。
-- `vendor/cisco/rules/xrv9000/`、`vendor/juniper/rules/vmx/`：随代码发布的镜像专属 identity 规则包。
-- `vendor/*/interfaces.py`：分别封装接口识别、业务闭包分析及 NNI/UNI 接口树修改。
-- `vendor/*/cleaning.py`：分别封装 Cisco/Junos 的管理面与可选能力清洗。
-- `vendor/*/simulation.py`：分别封装目标镜像参数适配。
-- `parsers/common.py`：只放接口数据结构以及父接口、子接口编号等无厂商语义的工具。
-- `application/nni/planner.py`：纯计算聚合链路分组与 M-LAG 边界，不修改配置或拓扑。
-- `application/uni/vlan_allocator.py`：封装 UNI VLAN 唯一性和冲突分配规则。
-- `application/pipeline.py`：显式组合转换阶段，并在首次错误后停止。
-- `handlers.py`：保留拓扑预检、Group、NNI、UNI、引用更新、清洗和模拟适配阶段，只通过统一厂商接口调度。
+- `cisco/`：IOS XR AST、解析/渲染、Group、接口、清洗、模拟适配及 XRv9000 规则。
+- `juniper/`：Junos AST、解析/渲染、Group、接口、清洗、模拟适配及 vMX 规则。
+- `common/`：两家厂商共享的接口类型、操作结果、策略、不变量和语义 identity 引擎。
+- `adaptation/contracts.py`：配置自适应流程依赖的稳定厂商能力协议，厂商 AST 不向流程层泄漏。
+- `adaptation/topology.py`：Excel 拓扑读取、预检和输出。
+- `adaptation/groups.py`：Group 展开的跨设备调度和诊断汇总。
+- `adaptation/interfaces.py`：接口分类及最终引用改写。
+- `adaptation/nni.py`：NNI 聚合规划、M-LAG 边界、端口分配和配置迁移。
+- `adaptation/uni.py`：UNI 候选识别、VLAN 分配和 QinQ 汇聚。
+- `adaptation/washing.py`、`adaptation/simulation.py`：清洗与模拟适配的业务调度。
+- `adaptation/pipeline.py`：显式组合转换阶段，并在首次错误后停止。
+- `adaptation/service.py`：组织输入加载、完整转换和最终输出。
 
-`documents.py` 仅作为旧导入路径的兼容门面；新增厂商逻辑应放入各自模块。
+生产代码只保留以上四个业务目录，不再维护旧目录或旧导入路径。
 
 ## 测试数据
 

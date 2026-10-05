@@ -361,7 +361,7 @@ interface 'GigabitEthernet0/0/0/.*'
 
 #### 语义冲突
 
-冲突键由 `vendor/cisco/rules/xrv9000/` 下的路径感知规则生成。规则区分单值、带 key 的可重复集合、方向属性和 presence 命令；未命中语句使用完整文本保守保留。
+冲突键由 `cisco/rules/xrv9000/` 下的路径感知规则生成。规则区分单值、带 key 的可重复集合、方向属性和 presence 命令；未命中语句使用完整文本保守保留。
 
 系统不会只比较第一个单词。
 
@@ -680,7 +680,7 @@ Group 定义内可以继续应用其他 Group。系统递归求取依赖闭包�
 
 #### 语义冲突
 
-冲突键由 `vendor/juniper/rules/vmx/` 下的路径感知规则生成，因此 `peer-as`、`interface-mode`、同一前缀的 `address` 等可以按实际槽位进行覆盖，不同地址则继续并存。
+冲突键由 `juniper/rules/vmx/` 下的路径感知规则生成，因此 `peer-as`、`interface-mode`、同一前缀的 `address` 等可以按实际槽位进行覆盖，不同地址则继续并存。
 
 典型单值语句：
 

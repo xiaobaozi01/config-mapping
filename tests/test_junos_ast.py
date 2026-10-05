@@ -5,7 +5,7 @@ from __future__ import annotations
 import unittest
 from pathlib import Path
 
-from config_adaptor.parsers.juniper_junos import JunosDocument
+from config_adaptor.juniper.document import JunosDocument
 
 
 FIXTURES = Path(__file__).parent / "fixtures" / "junos_ast"

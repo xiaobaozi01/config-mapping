@@ -7,13 +7,13 @@ import tempfile
 import unittest
 from pathlib import Path
 
-from config_adaptor.models import WashingPolicy
-from config_adaptor.parsers.cisco_iosxr import CiscoDocument
-from config_adaptor.parsers.juniper_junos import JunosDocument
-from config_adaptor.pipeline import convert
-from config_adaptor.vendor.cisco.identity import resolve_cisco_identity
-from config_adaptor.vendor.juniper.identity import resolve_junos_identity
-from config_adaptor.washing import load_washing_policy
+from config_adaptor.adaptation.service import convert
+from config_adaptor.adaptation.washing import load_washing_policy
+from config_adaptor.cisco.document import CiscoDocument
+from config_adaptor.cisco.identity import resolve_cisco_identity
+from config_adaptor.common.policies import WashingPolicy
+from config_adaptor.juniper.document import JunosDocument
+from config_adaptor.juniper.identity import resolve_junos_identity
 
 
 FIXTURES = Path(__file__).parent / "fixtures"

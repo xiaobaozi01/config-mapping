@@ -2,17 +2,19 @@
 
 from __future__ import annotations
 
+import ast
 import unittest
+from pathlib import Path
 from types import SimpleNamespace
 
-from config_adaptor.application.nni import plan_nni_components
-from config_adaptor.application.pipeline import ConversionPipeline
-from config_adaptor.application.uni import allocate_uni_vlans
-from config_adaptor.models import Link
-from config_adaptor.parsers.cisco_iosxr import CiscoDocument
-from config_adaptor.parsers.common import InterfaceKind, InterfaceSpec
-from config_adaptor.parsers.juniper_junos import JunosDocument
-from config_adaptor.vendor import VendorConfiguration
+from config_adaptor.adaptation.contracts import VendorConfiguration
+from config_adaptor.adaptation.models import Link
+from config_adaptor.adaptation.nni import plan_nni_components
+from config_adaptor.adaptation.pipeline import ConversionPipeline
+from config_adaptor.adaptation.uni import allocate_uni_vlans
+from config_adaptor.cisco import CiscoDocument
+from config_adaptor.common.interface import InterfaceKind, InterfaceSpec
+from config_adaptor.juniper import JunosDocument
 
 
 class NniPlanningTest(unittest.TestCase):
@@ -96,6 +98,35 @@ class VendorConfigurationContractTest(unittest.TestCase):
     def test_both_vendor_documents_implement_the_application_port(self):
         self.assertIsInstance(CiscoDocument("end\n"), VendorConfiguration)
         self.assertIsInstance(JunosDocument(""), VendorConfiguration)
+
+
+class PackageDependencyTest(unittest.TestCase):
+    def test_lower_level_packages_do_not_import_orchestration(self):
+        package_root = Path(__file__).parents[1] / "src" / "config_adaptor"
+        forbidden = {
+            "common": {"adaptation", "cisco", "juniper"},
+            "cisco": {"adaptation", "juniper"},
+            "juniper": {"adaptation", "cisco"},
+        }
+
+        for package, blocked in forbidden.items():
+            for source_path in (package_root / package).rglob("*.py"):
+                tree = ast.parse(source_path.read_text(encoding="utf-8"))
+                imported = {
+                    node.module.split(".", 1)[0]
+                    for node in ast.walk(tree)
+                    if isinstance(node, ast.ImportFrom) and node.module
+                }
+                imported.update(
+                    alias.name.removeprefix("config_adaptor.").split(".", 1)[0]
+                    for node in ast.walk(tree)
+                    if isinstance(node, ast.Import)
+                    for alias in node.names
+                )
+                self.assertFalse(
+                    imported & blocked,
+                    f"{source_path} 违反依赖方向: {sorted(imported & blocked)}",
+                )
 
 
 if __name__ == "__main__":

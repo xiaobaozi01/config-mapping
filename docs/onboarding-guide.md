@@ -237,33 +237,33 @@ flowchart TB
     subgraph Orchestration[编排层]
         Entry[pipeline.py]
         Handlers[handlers.py]
-        AppPipe[application/pipeline.py]
+        AppPipe[adaptation/pipeline.py]
     end
 
     subgraph Domain[领域模型与纯规划]
         Models[models.py]
-        NniPlan[application/nni/planner.py]
-        Vlan[application/uni/vlan_allocator.py]
+        NniPlan[adaptation/nni.py]
+        Vlan[adaptation/uni.py]
     end
 
     subgraph Port[厂商能力边界]
-        API[vendor/api.py<br/>VendorConfiguration Protocol]
+        API[adaptation/contracts.py<br/>VendorConfiguration Protocol]
     end
 
     subgraph Cisco[Cisco 实现]
-        CiscoParser[parsers/cisco_iosxr.py]
-        CiscoGroups[vendor/cisco/groups.py]
-        CiscoInterfaces[vendor/cisco/interfaces.py]
-        CiscoCleaning[vendor/cisco/cleaning.py]
-        CiscoSimulation[vendor/cisco/simulation.py]
+        CiscoParser[cisco/document.py]
+        CiscoGroups[cisco/groups.py]
+        CiscoInterfaces[cisco/interfaces.py]
+        CiscoCleaning[cisco/cleaning.py]
+        CiscoSimulation[cisco/simulation.py]
     end
 
     subgraph Juniper[Juniper 实现]
-        JunosParser[parsers/juniper_junos.py]
-        JunosGroups[vendor/juniper/groups.py]
-        JunosInterfaces[vendor/juniper/interfaces.py]
-        JunosCleaning[vendor/juniper/cleaning.py]
-        JunosSimulation[vendor/juniper/simulation.py]
+        JunosParser[juniper/document.py]
+        JunosGroups[juniper/groups.py]
+        JunosInterfaces[juniper/interfaces.py]
+        JunosCleaning[juniper/cleaning.py]
+        JunosSimulation[juniper/simulation.py]
     end
 
     subgraph IO[基础设施]
@@ -303,15 +303,15 @@ flowchart TB
 | `pipeline.py` | 准备上下文、执行流程、写输出 | 是 |
 | `handlers.py` | 九个业务阶段 | 是，核心 |
 | `models.py` | 设备、链路、映射、Profile、上下文 | 是 |
-| `application/pipeline.py` | Stage 协议和停止规则 | 是 |
-| `application/nni/planner.py` | 聚合链路分组的纯计算 | NNI 业务时读 |
-| `application/uni/vlan_allocator.py` | UNI VLAN 唯一分配 | UNI 业务时读 |
-| `vendor/api.py` | 应用层可以依赖的厂商能力 | 是，理解边界 |
-| `parsers/*.py` | AST、解析、渲染及兼容 Facade | 第二阶段读 |
-| `vendor/*/groups.py` | 厂商 Group 事务式展开 | 专项阅读 |
-| `vendor/*/interfaces.py` | 业务接口分析和配置树修改 | 专项阅读 |
-| `vendor/*/cleaning.py` | 强制及可选清洗 | 专项阅读 |
-| `vendor/*/simulation.py` | 镜像运行参数适配 | 专项阅读 |
+| `adaptation/pipeline.py` | Stage 协议和停止规则 | 是 |
+| `adaptation/nni.py` | 聚合链路分组的纯计算 | NNI 业务时读 |
+| `adaptation/uni.py` | UNI VLAN 唯一分配 | UNI 业务时读 |
+| `adaptation/contracts.py` | 应用层可以依赖的厂商能力 | 是，理解边界 |
+| `cisco/document.py、juniper/document.py` | AST、解析、渲染及兼容 Facade | 第二阶段读 |
+| `cisco/groups.py、juniper/groups.py` | 厂商 Group 事务式展开 | 专项阅读 |
+| `cisco/interfaces.py、juniper/interfaces.py` | 业务接口分析和配置树修改 | 专项阅读 |
+| `cisco/cleaning.py、juniper/cleaning.py` | 强制及可选清洗 | 专项阅读 |
+| `cisco/simulation.py、juniper/simulation.py` | 镜像运行参数适配 | 专项阅读 |
 | `excel_io.py` | Excel 读写和列别名处理 | 输入问题时读 |
 | `profiles.py` / `washing.py` | YAML 配置加载与校验 | 策略问题时读 |
 | `rules.py` | 外部清洗规则 | 自定义清洗时读 |
@@ -326,7 +326,7 @@ flowchart TB
 - `ConversionContext` 等是 dataclass：它们表达一次转换过程中的领域数据。
 - `plan_nni_components()` 是函数：输入链路和聚合关系，输出不可变计划，不持有状态。
 - `allocate_uni_vlans()` 是函数：输入接口集合，稳定地产生 VLAN 分配。
-- `vendor/*/interfaces.py`、`cleaning.py`、`simulation.py` 使用模块函数：这些操作依赖传入的 Document，但自身不需要额外对象生命周期。
+- `cisco/interfaces.py、juniper/interfaces.py`、`cleaning.py`、`simulation.py` 使用模块函数：这些操作依赖传入的 Document，但自身不需要额外对象生命周期。
 
 ## 6. 贯穿流程的核心数据
 
@@ -658,7 +658,7 @@ interface GigabitEthernet0/0/0/0
 !
 ```
 
-主要对象是 `CiscoNode`。`CiscoDocument.root` 是不参与渲染的虚拟根，顶层命令和任意深度的子命令都使用同一节点类型。`CiscoDocument` 负责解析、保存节点顺序、提供 Facade 方法和最终渲染；接口、Group、清洗、模拟适配的具体算法放在 `vendor/cisco/`。
+主要对象是 `CiscoNode`。`CiscoDocument.root` 是不参与渲染的虚拟根，顶层命令和任意深度的子命令都使用同一节点类型。`CiscoDocument` 负责解析、保存节点顺序、提供 Facade 方法和最终渲染；接口、Group、清洗、模拟适配的具体算法放在 `cisco/`。
 
 ### 11.3 Junos 文档模型
 
@@ -676,7 +676,7 @@ interfaces {
 }
 ```
 
-主要对象是 `JunosNode`。`JunosDocument` 管理整棵树并提供相同的 Facade 能力，具体算法位于 `vendor/juniper/`。
+主要对象是 `JunosNode`。`JunosDocument` 管理整棵树并提供相同的 Facade 能力，具体算法位于 `juniper/`。
 
 ### 11.4 新增厂商时应遵循的边界
 
@@ -852,12 +852,12 @@ flowchart TD
 | --- | --- |
 | 找不到 Sheet/列 | `excel_io.py`、`constants.py` |
 | 配置文件找不到或路径被拒绝 | `pipeline._safe_config_path()` |
-| Group 继承结果不对 | `vendor/<厂商>/groups.py` 和 `group_conflicts` |
+| Group 继承结果不对 | `<厂商>/groups.py` 和 `group_conflicts` |
 | 接口被当成未知类型 | 对应解析器的 `interface_kind` |
-| 聚合链路被错误合并 | `application/nni/planner.py` |
+| 聚合链路被错误合并 | `adaptation/nni.py` |
 | M-LAG 少了一个目标 | `NNIHandler` 的 `plans_by_logical` 和 mappings |
 | UNI 被删除 | `business_interface_names()` 与 `remove-bare` mapping |
-| UNI VLAN 与预期不同 | `application/uni/vlan_allocator.py` |
+| UNI VLAN 与预期不同 | `adaptation/uni.py` |
 | 协议仍引用旧接口 | `replacement_map` 和 `replace_references()` |
 | 某配置被意外删除 | mandatory/optional cleaning 事件与外部 rule 事件 |
 | BFD 值发生变化 | Profile 的 `simulation_adaptation` 与对应事件 |
@@ -888,7 +888,7 @@ flowchart TD
 
 ### 16.2 增加一种业务接口识别依据
 
-1. 修改 `vendor/<厂商>/interfaces.py` 的业务闭包分析。
+1. 修改 `<厂商>/interfaces.py` 的业务闭包分析。
 2. 确认它是否会激活 BVI/IRB 网关。
 3. 同时添加“应迁移”和“不应迁移”的测试，避免把所有有 IP 网关都误判为活跃。
 
@@ -1000,13 +1000,13 @@ git diff --check
 
 1. 按上面的 30 分钟路径阅读。
 2. 详细阅读 `NNIHandler`、`UNIHandler`。
-3. 阅读 `application/nni/planner.py` 和 `application/uni/vlan_allocator.py`。
-4. 只选择自己更熟悉的一个厂商，阅读其 parser 和 `vendor/<厂商>/interfaces.py`。
+3. 阅读 `adaptation/nni.py` 和 `adaptation/uni.py`。
+4. 只选择自己更熟悉的一个厂商，阅读其 parser 和 `<厂商>/interfaces.py`。
 5. 本地运行一个 fixture，并对照输出 mapping/report。
 
 如果准备开始开发：
 
-1. 阅读 `vendor/api.py`，明确应用层边界。
+1. 阅读 `adaptation/contracts.py`，明确应用层边界。
 2. 阅读相关业务 fixture 和已有断言。
 3. 阅读目标厂商的 Group、接口、清洗或模拟适配模块。
 4. 先补失败测试，再做最小实现。
@@ -1017,17 +1017,17 @@ git diff --check
 以命令行转换为例，从以下符号依次跳转，能够完整走通主干：
 
 ```text
-config_adaptor.cli.main
-  → config_adaptor.pipeline.convert
-  → config_adaptor.pipeline.prepare_context
-  → config_adaptor.excel_io.load_topology
-  → config_adaptor.parsers.parse_document
-  → config_adaptor.handlers.build_default_pipeline
+config_adaptor.adaptation.cli.main
+  → config_adaptor.adaptation.service.convert
+  → config_adaptor.adaptation.service.prepare_context
+  → config_adaptor.adaptation.topology.load_topology
+  → config_adaptor.adaptation.factory.parse_document
+  → config_adaptor.adaptation.pipeline.build_default_pipeline
   → ConversionPipeline.execute
   → 各 Handler.process
   → VendorConfiguration 的厂商实现
-  → config_adaptor.rules.apply_rules
-  → config_adaptor.pipeline.write_outputs
+  → config_adaptor.adaptation.cleaning_rules.apply_rules
+  → config_adaptor.adaptation.service.write_outputs
 ```
 
 在 IDE 中建议先沿这条主干走一遍，再深入 Group 或 AST。直接从 500 行左右的厂商算法开始读，容易知道“怎么实现”，却不知道“为什么此时调用”。

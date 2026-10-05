@@ -4,8 +4,8 @@
 
 内置规则分别位于：
 
-- XRv9000：`src/config_adaptor/vendor/cisco/rules/xrv9000/`
-- vMX：`src/config_adaptor/vendor/juniper/rules/vmx/`
+- XRv9000：`src/config_adaptor/cisco/rules/xrv9000/`
+- vMX：`src/config_adaptor/juniper/rules/vmx/`
 
 规则按 `interfaces.yaml`、`routing.yaml`、`policy.yaml` 和 `system.yaml` 分类。在已有文件中追加规则时不需要修改 manifest；新增规则文件时，必须同时把文件名加入对应的 `manifest.yaml.rule_files`。
 
@@ -18,7 +18,7 @@ hold-time up 1000;
 hold-time down 640;
 ```
 
-同一方向的不同数值应当相互覆盖，up 和 down 则应同时保留。对应规则放在 `vendor/juniper/rules/vmx/interfaces.yaml`：
+同一方向的不同数值应当相互覆盖，up 和 down 则应同时保留。对应规则放在 `juniper/rules/vmx/interfaces.yaml`：
 
 ```yaml
 - id: vmx.interface.hold-time

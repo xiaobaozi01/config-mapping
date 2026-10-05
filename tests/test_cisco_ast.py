@@ -5,8 +5,8 @@ from __future__ import annotations
 import unittest
 from pathlib import Path
 
-from config_adaptor.models import WashingPolicy
-from config_adaptor.parsers.cisco_iosxr import CiscoDocument, CiscoNode
+from config_adaptor.cisco.document import CiscoDocument, CiscoNode
+from config_adaptor.common.policies import WashingPolicy
 
 
 FIXTURES = Path(__file__).parent / "fixtures" / "cisco_ast"

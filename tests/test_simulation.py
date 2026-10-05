@@ -6,10 +6,11 @@ import tempfile
 import unittest
 from pathlib import Path
 
-from config_adaptor.models import SimulationAdaptationPolicy, Vendor
-from config_adaptor.parsers.cisco_iosxr import CiscoDocument
-from config_adaptor.parsers.juniper_junos import JunosDocument
-from config_adaptor.profiles import load_profiles
+from config_adaptor.adaptation.models import Vendor
+from config_adaptor.adaptation.profiles import load_profiles
+from config_adaptor.cisco.document import CiscoDocument
+from config_adaptor.common.policies import SimulationAdaptationPolicy
+from config_adaptor.juniper.document import JunosDocument
 
 
 FIXTURES = Path(__file__).parent / "fixtures"

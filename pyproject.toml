@@ -13,15 +13,15 @@ dependencies = [
 ]
 
 [project.scripts]
-config-adaptor = "config_adaptor.cli:main"
+config-adaptor = "config_adaptor.adaptation.cli:main"
 
 [tool.setuptools.packages.find]
 where = ["src"]
 
 [tool.setuptools.package-data]
 config_adaptor = [
-    "vendor/cisco/rules/xrv9000/*.yaml",
-    "vendor/juniper/rules/vmx/*.yaml",
+    "cisco/rules/xrv9000/*.yaml",
+    "juniper/rules/vmx/*.yaml",
 ]
 
 [tool.pytest.ini_options]
