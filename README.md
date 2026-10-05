@@ -27,7 +27,7 @@ group 展开是事务式的，并遵循显式配置、嵌套层级和 group 列�
 
 ## 测试数据
 
-测试配置和拓扑均为独立文件，位于 `tests/fixtures/`，不会嵌入 Python 代码：
+单元测试按关注点拆分到独立的 `tests/test_*.py` 文件（端到端转换、Cisco/Junos group 展开、AST、清洗、模拟适配与接口业务分析），设备配置一律以 `.cfg` 文件放在 `tests/fixtures/`，拓扑以双 sheet 的 `topology.xlsx` 表达，不嵌入 Python 代码：
 
 - `iosxr_bundle/`：IOS XR 聚合 NNI、UNI、group 和认证清洗样例。
 - `junos_bundle/`：Junos 聚合 NNI、UNI、groups 和认证清洗样例。
@@ -36,8 +36,13 @@ group 展开是事务式的，并遵循显式配置、嵌套层级和 group 列�
 - `junos_mlag/`：Junos ae 跨对端拆分、裸口清理与 QinQ UNI 样例。
 - `cross_vendor/`：Cisco XRv9000 与 Juniper vMX 互联时，普通 NNI 和 `Bundle-Ether`/`ae` 聚合两端独立适配样例。
 - `junos_unresolved/`：无法解析 group 时事务回滚样例。
-- `group_configs/`：独立的厂商 group 优先级和通配匹配配置。
+- `group_configs/`：独立的厂商 group 优先级、通配、`inactive`/`protect`、引号组名与 `apply-groups-except` 配置。
 - `washing_configs/`：管理面必清项、默认保留项及五类可选清洗开关样例。
+- `simulation_adaptation/`：目标镜像模拟参数适配与幂等性样例。
+- `cisco_ast/`：IOS XR 持久 AST 层级、`!` 边界与编辑样例。
+- `junos_ast/`：Junos 行内块、注释、hostname 与括号边界样例。
+- `semantic_identity/`：规则 identity 覆盖关系与未知语句降级样例。
+- `interfaces/`：接口识别、业务闭包分析与 BVI/VLAN 推断样例。
 
 每个端到端样例目录包含一个双 sheet 的 `topology.xlsx` 和对应的 `configs/*.cfg`。
 

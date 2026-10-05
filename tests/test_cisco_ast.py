@@ -3,9 +3,18 @@
 from __future__ import annotations
 
 import unittest
+from pathlib import Path
 
 from config_adaptor.models import WashingPolicy
 from config_adaptor.parsers.cisco_iosxr import CiscoDocument, CiscoNode
+
+
+FIXTURES = Path(__file__).parent / "fixtures" / "cisco_ast"
+
+
+def cisco_config(name: str) -> str:
+    """读取 IOS XR AST 测试配置。"""
+    return (FIXTURES / name).read_text(encoding="utf-8")
 
 
 class CiscoAstTest(unittest.TestCase):
@@ -13,18 +22,7 @@ class CiscoAstTest(unittest.TestCase):
 
     def test_group_accepts_unindented_children_until_end_group(self):
         """Group 内的无缩进命令不应被误判为新顶层块。"""
-        source = (
-            "group COMMON\n"
-            "interface 'GigabitEthernet.*'\n"
-            " mtu 9000\n"
-            "end-group\n"
-            "!\n"
-            "hostname XR\n"
-            "!\n"
-            "end\n"
-        )
-
-        document = CiscoDocument(source)
+        document = CiscoDocument(cisco_config("group_unindented_children.cfg"))
         group = document.root.children[0]
 
         self.assertEqual(group.header, "group COMMON")
@@ -35,39 +33,19 @@ class CiscoAstTest(unittest.TestCase):
 
     def test_hostname_returns_last_active_top_level_value(self):
         """多条 hostname 时应返回文档顺序中最后一条生效值。"""
-        document = CiscoDocument(
-            "hostname OLD\n"
-            "!\n"
-            "hostname CURRENT\n"
-            "!\n"
-            "end\n"
-        )
+        document = CiscoDocument(cisco_config("hostname_last_active.cfg"))
 
         self.assertEqual(document.hostname(), "CURRENT")
 
     def test_hostname_returns_none_when_absent(self):
         """没有 hostname 命令时应返回 None，而不是报错。"""
-        document = CiscoDocument("interface GigabitEthernet0/0/0/0\n!\nend\n")
+        document = CiscoDocument(cisco_config("hostname_absent.cfg"))
 
         self.assertIsNone(document.hostname())
 
     def test_empty_interface_receives_inherited_group_configuration(self):
         """空接口仍是配置块，应能接收根层 group 的继承配置。"""
-        source = (
-            "group COMMON\n"
-            " interface 'GigabitEthernet.*'\n"
-            "  mtu 9000\n"
-            " !\n"
-            "end-group\n"
-            "!\n"
-            "apply-group COMMON\n"
-            "!\n"
-            "interface GigabitEthernet0/0/0/5\n"
-            "!\n"
-            "end\n"
-        )
-
-        document = CiscoDocument(source)
+        document = CiscoDocument(cisco_config("empty_interface_inherits_group.cfg"))
         interface = next(
             node
             for node in document.root.children
@@ -82,18 +60,7 @@ class CiscoAstTest(unittest.TestCase):
 
     def test_indented_bang_closes_only_its_own_ast_level(self):
         """缩进 ``!`` 应位于被关闭层级的父节点下，并且不接管后续命令。"""
-        source = (
-            "router ospf CORE\n"
-            " area 0\n"
-            "  interface GigabitEthernet0/0/0/0\n"
-            "   bfd fast-detect\n"
-            "   !\n"
-            "  !\n"
-            " !\n"
-            "!\n"
-            "end\n"
-        )
-
+        source = cisco_config("indented_bang_levels.cfg")
         document = CiscoDocument(source)
         block = document.root.children[0]
         area = block.children[0]
@@ -111,18 +78,7 @@ class CiscoAstTest(unittest.TestCase):
 
     def test_nested_cleanup_removes_complete_subtree(self):
         """清理嵌套认证模式时应连同秘钥子树删除，不影响同级业务命令。"""
-        document = CiscoDocument(
-            "router ospf CORE\n"
-            " area 0\n"
-            "  interface GigabitEthernet0/0/0/0\n"
-            "   authentication\n"
-            "    key-chain PROD\n"
-            "   cost 10\n"
-            "  !\n"
-            " !\n"
-            "!\n"
-            "end\n"
-        )
+        document = CiscoDocument(cisco_config("nested_cleanup_subtree.cfg"))
 
         outcome = document.clean_optional_features(
             WashingPolicy(protocol_authentication=True)
@@ -136,18 +92,7 @@ class CiscoAstTest(unittest.TestCase):
 
     def test_reference_replacement_preserves_nested_subtrees(self):
         """深层接口引用一对多展开时，每个副本都应保留原节点的 children。"""
-        document = CiscoDocument(
-            "l2vpn\n"
-            " bridge group CORE\n"
-            "  bridge-domain CUSTOMER\n"
-            "   interface Bundle-Ether10.100\n"
-            "    static-mac-address aaaa.bbbb.cccc\n"
-            "   !\n"
-            "  !\n"
-            " !\n"
-            "!\n"
-            "end\n"
-        )
+        document = CiscoDocument(cisco_config("reference_replacement_nested.cfg"))
 
         document.replace_references(
             {

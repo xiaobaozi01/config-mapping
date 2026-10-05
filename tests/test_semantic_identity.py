@@ -16,6 +16,14 @@ from config_adaptor.vendor.juniper.identity import resolve_junos_identity
 from config_adaptor.washing import load_washing_policy
 
 
+FIXTURES = Path(__file__).parent / "fixtures"
+
+
+def semantic_config(name: str) -> str:
+    """读取语义 identity 规则覆盖测试配置。"""
+    return (FIXTURES / "semantic_identity" / name).read_text(encoding="utf-8")
+
+
 class SemanticIdentityTest(unittest.TestCase):
     """规则 identity 必须同时保证覆盖关系和可重复关系。"""
 
@@ -83,49 +91,14 @@ class SemanticIdentityTest(unittest.TestCase):
         self.assertEqual(inherited_down.rule_id, "vmx.interface.hold-time")
 
     def test_known_rules_drive_group_override(self):
-        cisco = CiscoDocument(
-            """group BGP
- router bgp 65000
-  timers bgp 30 90
- !
-end-group
-!
-apply-group BGP
-!
-router bgp 65000
- timers bgp 60 180
-!
-end
-"""
-        )
+        cisco = CiscoDocument(semantic_config("cisco_group_bgp_override.cfg"))
         cisco_outcome = cisco.expand_groups([])
         self.assertTrue(cisco_outcome.success)
         self.assertIn("timers bgp 60 180", cisco.render())
         self.assertNotIn("timers bgp 30 90", cisco.render())
         self.assertEqual(cisco_outcome.conflicts[0]["rule_id"], "xrv9000.bgp.timers")
 
-        junos = JunosDocument(
-            """groups {
-    BGP {
-        protocols {
-            bgp {
-                group EDGE {
-                    peer-as 65001;
-                }
-            }
-        }
-    }
-}
-apply-groups BGP;
-protocols {
-    bgp {
-        group EDGE {
-            peer-as 65002;
-        }
-    }
-}
-"""
-        )
+        junos = JunosDocument(semantic_config("junos_group_bgp_override.cfg"))
         junos_outcome = junos.expand_groups([])
         self.assertTrue(junos_outcome.success)
         self.assertIn("peer-as 65002;", junos.render())
@@ -133,19 +106,7 @@ protocols {
         self.assertEqual(junos_outcome.conflicts[0]["rule_id"], "vmx.bgp.peer-as")
 
     def test_unknown_identity_warns_or_rolls_back(self):
-        source = """group UNKNOWN
- interface 'GigabitEthernet.*'
-  vendor-knob inherited
- !
-end-group
-!
-apply-group UNKNOWN
-!
-interface GigabitEthernet0/0/0/0
- vendor-knob local
-!
-end
-"""
+        source = semantic_config("cisco_group_unknown_identity.cfg")
         warning_document = CiscoDocument(source)
         warning_outcome = warning_document.expand_groups(
             ["GigabitEthernet0/0/0/0"],
@@ -186,7 +147,7 @@ end
                 load_washing_policy(path)
 
     def test_conversion_report_contains_identity_coverage(self):
-        fixture = Path(__file__).parent / "fixtures" / "iosxr_bundle"
+        fixture = FIXTURES / "iosxr_bundle"
         with tempfile.TemporaryDirectory() as directory:
             output = Path(directory) / "output"
             context = convert(fixture / "topology.xlsx", fixture / "configs", output)
