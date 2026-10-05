@@ -11,6 +11,7 @@ from ...parsers.cisco_iosxr import (
     CiscoNode,
     _cisco_interface_kind,
     canonical_cisco_interface,
+    strip_matching_nodes,
 )
 from ...parsers.common import InterfaceKind, InterfaceSpec, interface_parent, interface_unit
 
@@ -75,37 +76,6 @@ def interface_specs(document: CiscoDocument) -> list[InterfaceSpec]:
     return result
 
 
-def _descendants(node: CiscoNode) -> list[CiscoNode]:
-    """按深度优先顺序返回语法节点的全部后代，不包含节点自身。
-
-    bridge-domain 下的接口命令可能位于多层子模式中，递归展开后才能完整收集
-    attachment circuit 和 routed interface。
-    """
-    result: list[CiscoNode] = []
-    for child in node.children:
-        result.append(child)
-        result.extend(_descendants(child))
-    return result
-
-
-def _strip_matching_nodes(
-    nodes: list[CiscoNode],
-    pattern: re.Pattern[str],
-) -> list[CiscoNode]:
-    """递归删除命中模式的命令节点及其完整子树。
-
-    聚合或 VLAN 终结命令可能拥有下级参数；以节点为单位删除可避免旧的扁平行过滤
-    留下失去父命令的孤儿配置，同时原有 ``!`` 和空行格式节点继续保留。
-    """
-    retained: list[CiscoNode] = []
-    for node in nodes:
-        if not node.is_formatting and pattern.match(node.header):
-            continue
-        node.children = _strip_matching_nodes(node.children, pattern)
-        retained.append(node)
-    return retained
-
-
 def _node_identity(node: CiscoNode) -> tuple[object, ...]:
     """返回节点及其语义子树的可哈希结构标识。
 
@@ -150,7 +120,7 @@ def _bridge_domain_bindings(
                     continue
                 attachments: set[str] = set()
                 gateways: set[str] = set()
-                for child in _descendants(current):
+                for child in current.walk():
                     gateway_match = re.match(
                         r"^routed\s+interface\s+(.+)$",
                         child.header,
@@ -288,7 +258,7 @@ def business_interface_names(document: CiscoDocument) -> set[str]:
         ):
             active.add(name)
 
-    external = "\n".join(
+    external_text = "\n".join(
         text
         for block in document.root.children
         if block.active and not block.interface_name
@@ -297,14 +267,14 @@ def business_interface_names(document: CiscoDocument) -> set[str]:
     for name in known:
         if kinds.get(name) in mappable_kinds and re.search(
             rf"(?<![A-Za-z0-9_.-]){re.escape(name)}(?![A-Za-z0-9_.-])",
-            external,
+            external_text,
         ):
             active.add(name)
     for parent in {spec.parent for spec in specs}:
         parent_specs = [spec for spec in specs if spec.parent == parent]
         if parent_specs and parent_specs[0].kind in mappable_kinds and re.search(
             rf"(?<![A-Za-z0-9_.-]){re.escape(parent)}(?![A-Za-z0-9_.-])",
-            external,
+            external_text,
         ):
             active.update(spec.name for spec in parent_specs)
 
@@ -373,7 +343,7 @@ def rename_interface_tree(
             " l2transport" if block.l2transport else ""
         )
         if strip_bundle:
-            block.children = _strip_matching_nodes(
+            block.children, _ = strip_matching_nodes(
                 block.children,
                 re.compile(r"^(?:bundle\b|lacp\b|aggregated-)", re.IGNORECASE),
             )
@@ -419,7 +389,7 @@ def clone_interface_tree(
             " l2transport" if original.l2transport else ""
         )
         if strip_bundle:
-            clone.children = _strip_matching_nodes(
+            clone.children, _ = strip_matching_nodes(
                 clone.children,
                 re.compile(r"^(?:bundle\b|lacp\b|aggregated-)", re.IGNORECASE),
             )
@@ -482,17 +452,17 @@ def map_uni(
     block.header = f"interface {target}" + (
         " l2transport" if block.l2transport else ""
     )
-    filtered = _strip_matching_nodes(
+    filtered, _ = strip_matching_nodes(
         block.children,
         re.compile(r"^(?:encapsulation\b|rewrite\b|bundle\b|lacp\b)", re.IGNORECASE),
     )
-    insertion = (
+    insert_at = (
         1
         if filtered and re.match(r"description\b", filtered[0].header, re.IGNORECASE)
         else 0
     )
     filtered.insert(
-        insertion,
+        insert_at,
         CiscoNode(f"encapsulation dot1q {vlan} second-dot1q {inner_vlan}"),
     )
     block.children = filtered

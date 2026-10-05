@@ -241,7 +241,7 @@ class NNIHandler:
 
         # 前两个阶段只构造索引和计划。任何错误都必须阻止后面的 AST 改写，
         # 避免生成一半成功、一半失败的设备配置。
-        analysis = self._analyze_endpoints(context, links)
+        analysis = self._resolve_endpoints(context, links)
         if context.has_errors:
             return
 
@@ -259,7 +259,7 @@ class NNIHandler:
             )
 
     @staticmethod
-    def _analyze_endpoints(
+    def _resolve_endpoints(
         context: ConversionContext,
         links: list[Link],
     ) -> _NniAnalysis:
@@ -602,7 +602,7 @@ class UNIHandler:
         # candidates 用于找出应清理的裸口；sources 是真正需要迁移的业务口。
         # 两者必须分开，否则“没有业务”与“不属于 UNI 范围”会被混为一谈。
         candidates, sources, member_map = self._select_sources(device)
-        self._remove_inactive_interfaces(
+        self._remove_bare_interfaces(
             device_name,
             device,
             candidates,
@@ -663,7 +663,7 @@ class UNIHandler:
         return candidates, sources, member_map
 
     @staticmethod
-    def _remove_inactive_interfaces(
+    def _remove_bare_interfaces(
         device_name: str,
         device: DeviceContext,
         candidates: list[InterfaceSpec],

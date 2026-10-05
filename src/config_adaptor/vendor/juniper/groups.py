@@ -1232,7 +1232,7 @@ class JunosGroupExpander:
         # 每轮先应用新排除，再从仍然有效的 group 发现嵌套引用；两个集合
         # 都只会单调增长且受依赖闭包限制，因此无新增内容时即已收敛。
         while True:
-            made_progress = False
+            progressed = False
 
             effective_applications = self._select_effective_applications(
                 candidate_applications,
@@ -1246,7 +1246,7 @@ class JunosGroupExpander:
             )
             if not nested_exclusions.issubset(excluded_group_names):
                 excluded_group_names.update(nested_exclusions)
-                made_progress = True
+                progressed = True
                 # 新排除必须在发现嵌套 apply 前立即生效。
                 effective_applications = self._select_effective_applications(
                     candidate_applications,
@@ -1261,9 +1261,9 @@ class JunosGroupExpander:
             )
             if new_applications:
                 candidate_applications.extend(new_applications)
-                made_progress = True
+                progressed = True
 
-            if not made_progress:
+            if not progressed:
                 return _ResolvedGroupInheritance(
                     candidate_applications=candidate_applications,
                     effective_applications=self._select_effective_applications(

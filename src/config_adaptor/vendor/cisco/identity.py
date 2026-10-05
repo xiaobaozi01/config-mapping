@@ -18,13 +18,13 @@ def _resolver() -> SemanticResolver:
 
 
 def resolve_cisco_identity(
-    command: str,
+    statement: str,
     *,
     path: list[str] | tuple[str, ...] = (),
     node_kind: str = "leaf",
 ) -> SemanticDecision:
     """解析 IOS XR 语句；已知否定命令与对应正向命令共用 identity。"""
-    normalized = normalize(command)
+    normalized = normalize(statement)
     positive = normalized.removeprefix("no ") if normalized.startswith("no ") else normalized
     positive_decision = _resolver().resolve(
         StatementContext(

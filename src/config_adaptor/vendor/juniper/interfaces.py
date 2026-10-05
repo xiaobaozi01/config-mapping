@@ -153,52 +153,7 @@ def business_interface_names(document: JunosDocument) -> set[str]:
         ):
             active.update(spec.name for spec in parent_specs)
 
-    spec_by_name = {spec.name: spec for spec in specs}
-    active_vlans: set[int] = set()
-    active_vlan_names: set[str] = set()
-    for name in list(active):
-        spec = spec_by_name.get(name)
-        if not spec or spec.kind == InterfaceKind.GATEWAY:
-            continue
-        node = find_interface_node(document, spec.parent)
-        if not node:
-            continue
-        units = document._unit_nodes(node)
-        unit = next(
-            (
-                item
-                for item in units
-                if spec.unit is not None
-                and document._unit_number(item) == spec.unit
-            ),
-            node if spec.unit is None else None,
-        )
-        if unit is None:
-            continue
-        rendered = document._render_effective_node(unit, 0)
-        is_l2 = bool(
-            re.search(
-                r"\b(?:family\s+(?:ccc|bridge|ethernet-switching)|"
-                r"encapsulation\s+(?:ethernet-ccc|vlan-ccc)|"
-                r"vlan-id-list|vlan\s+members|input-vlan-map|output-vlan-map)\b",
-                rendered,
-            )
-        )
-        if is_l2 and spec.vlan is not None:
-            active_vlans.add(spec.vlan)
-        for match in re.finditer(r"vlan-id-list\s+\[([^\]]+)\]", rendered):
-            active_vlans.update(_expand_vlan_tokens(match.group(1)))
-        for match in re.finditer(
-            r"vlan\s+members\s+(?:\[([^\]]+)\]|([^;\s]+))\s*;",
-            rendered,
-        ):
-            payload = match.group(1) or match.group(2) or ""
-            active_vlans.update(_expand_vlan_tokens(payload))
-            active_vlan_names.update(
-                token
-                for token in re.findall(r"[A-Za-z_][A-Za-z0-9_.-]*", payload)
-                if not token.isdigit()
-            )
+    active_vlans, active_vlan_names = _collect_active_vlans(document, active, specs)
 
     _activate_domain_gateways(
         document,
@@ -293,6 +248,65 @@ def _activate_domain_gateways(
             )
 
 
+def _collect_active_vlans(
+    document: JunosDocument,
+    active: set[str],
+    specs: list[InterfaceSpec],
+) -> tuple[set[int], set[str]]:
+    """从活跃二层接口收集业务 VLAN ID 与 VLAN 名称。
+
+    活跃接口若带二层终结或 VLAN 映射，则贡献其自身标签；同时解析 ``vlan-id-list``
+    和 ``vlan members`` 中的显式 ID/名称，供后续广播域网关激活匹配。
+    """
+    spec_by_name = {spec.name: spec for spec in specs}
+    active_vlans: set[int] = set()
+    active_vlan_names: set[str] = set()
+    for name in list(active):
+        spec = spec_by_name.get(name)
+        if not spec or spec.kind == InterfaceKind.GATEWAY:
+            continue
+        node = find_interface_node(document, spec.parent)
+        if not node:
+            continue
+        units = document._unit_nodes(node)
+        unit = next(
+            (
+                item
+                for item in units
+                if spec.unit is not None
+                and document._unit_number(item) == spec.unit
+            ),
+            node if spec.unit is None else None,
+        )
+        if unit is None:
+            continue
+        rendered = document._render_effective_node(unit, 0)
+        is_l2 = bool(
+            re.search(
+                r"\b(?:family\s+(?:ccc|bridge|ethernet-switching)|"
+                r"encapsulation\s+(?:ethernet-ccc|vlan-ccc)|"
+                r"vlan-id-list|vlan\s+members|input-vlan-map|output-vlan-map)\b",
+                rendered,
+            )
+        )
+        if is_l2 and spec.vlan is not None:
+            active_vlans.add(spec.vlan)
+        for match in re.finditer(r"vlan-id-list\s+\[([^\]]+)\]", rendered):
+            active_vlans.update(_expand_vlan_tokens(match.group(1)))
+        for match in re.finditer(
+            r"vlan\s+members\s+(?:\[([^\]]+)\]|([^;\s]+))\s*;",
+            rendered,
+        ):
+            payload = match.group(1) or match.group(2) or ""
+            active_vlans.update(_expand_vlan_tokens(payload))
+            active_vlan_names.update(
+                token
+                for token in re.findall(r"[A-Za-z_][A-Za-z0-9_.-]*", payload)
+                if not token.isdigit()
+            )
+    return active_vlans, active_vlan_names
+
+
 def find_interface_node(document: JunosDocument, name: str) -> JunosNode | None:
     """按规范化父接口名查找第一个有效的 Junos 接口节点。
 
@@ -322,6 +336,27 @@ def remove_interface(document: JunosDocument, name: str, include_children: bool 
         node.active = False
 
 
+def _strip_bundle_options(
+    document: JunosDocument,
+    children: list[JunosNode],
+) -> list[JunosNode]:
+    """移除脱离 ae 后不再成立的聚合相关 options 块。
+
+    aggregated/gigether/ether options 只在聚合成员接口上有效；接口迁移到普通目标口
+    后这些残留块会引用不存在的聚合关系，因此在改名或克隆时统一剥离。
+    """
+    return [
+        child
+        for child in children
+        if not (
+            child.effective
+            and child.is_block
+            and document._base_header(child.header)
+            in {"aggregated-ether-options", "gigether-options", "ether-options"}
+        )
+    ]
+
+
 def rename_interface_tree(
     document: JunosDocument,
     source: str,
@@ -339,16 +374,7 @@ def rename_interface_tree(
         return
     node.header = canonical_junos_interface(target)
     if strip_bundle and node.children is not None:
-        node.children = [
-            child
-            for child in node.children
-            if not (
-                child.effective
-                and child.is_block
-                and document._base_header(child.header)
-                in {"aggregated-ether-options", "gigether-options", "ether-options"}
-            )
-        ]
+        node.children = _strip_bundle_options(document, node.children)
     _merge_duplicate_interface(document, node)
 
 
@@ -376,16 +402,7 @@ def clone_interface_tree(
         clone.header = canonical_junos_interface(target)
         clone.active = True
         if strip_bundle and clone.children is not None:
-            clone.children = [
-                child
-                for child in clone.children
-                if not (
-                    child.effective
-                    and child.is_block
-                    and document._base_header(child.header)
-                    in {"aggregated-ether-options", "gigether-options", "ether-options"}
-                )
-            ]
+            clone.children = _strip_bundle_options(document, clone.children)
     interfaces.children.append(clone)
     _merge_duplicate_interface(document, clone)
 
@@ -429,7 +446,7 @@ def _strip_vlan_termination(document: JunosDocument, nodes: list[JunosNode]) -> 
     switching mode 等旧终结语义，否则会与新标签冲突。函数返回清洗后的克隆，
     从而保留源树及其中与 VLAN 终结无关的业务 family、地址或 CCC 配置。
     """
-    blocked = re.compile(
+    termination_pattern = re.compile(
         r"^(?:vlan-id(?:-list)?|vlan-tags|native-vlan-id|"
         r"input-vlan-map|output-vlan-map|interface-mode|"
         r"flexible-vlan-tagging|stacked-vlan-tagging|vlan-tagging)\b"
@@ -440,7 +457,7 @@ def _strip_vlan_termination(document: JunosDocument, nodes: list[JunosNode]) -> 
             retained.append(node.clone())
             continue
         base = document._base_header(node.header).rstrip(";")
-        if blocked.match(base) or re.match(r"^vlan\s+members\b", base):
+        if termination_pattern.match(base) or re.match(r"^vlan\s+members\b", base):
             continue
         if node.is_block and base == "vlan":
             continue
@@ -495,13 +512,13 @@ def _ensure_target_parent(document: JunosDocument, target_parent: str) -> JunosN
             document._base_header(child.header),
         )
     ]
-    required = ["flexible-vlan-tagging;", "encapsulation flexible-ethernet-services;"]
+    required_statements = ["flexible-vlan-tagging;", "encapsulation flexible-ethernet-services;"]
     existing_headers = {
         document._base_header(child.header)
         for child in node.children
         if child.effective
     }
-    for statement in reversed(required):
+    for statement in reversed(required_statements):
         if statement not in existing_headers:
             node.children.insert(0, JunosNode(statement))
     return node

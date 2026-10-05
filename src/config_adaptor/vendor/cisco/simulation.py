@@ -5,7 +5,7 @@ from __future__ import annotations
 import re
 
 from ...models import SimulationAdaptationPolicy
-from ...parsers.cisco_iosxr import CiscoDocument, CiscoNode
+from ...parsers.cisco_iosxr import CiscoDocument, CiscoNode, strip_matching_nodes
 from ...parsers.common import SimulationAdaptationOutcome, interface_parent, interface_unit
 
 
@@ -14,14 +14,36 @@ def adapt_to_simulation(
     policy: SimulationAdaptationPolicy,
     data_interfaces: set[str],
 ) -> SimulationAdaptationOutcome:
+    """按镜像策略适配已迁移数据口及 IOS XR 模拟运行参数，并返回分类统计。
+
+    ``off`` 模式不动文档；接口兼容清理始终执行，而 BFD 稳定性收敛只在
+    ``stable`` 模式下进行，避免 ``compatible`` 等模式误改协议定时器。
+    """
     outcome = SimulationAdaptationOutcome()
     if policy.mode == "off":
         return outcome
 
-    targets = {
+    target_parents = {
         interface_parent(document.resolve_interface(name))
         for name in data_interfaces
     }
+    _adapt_interface_knobs(document, policy, target_parents, outcome)
+    if policy.mode == "stable":
+        _clamp_bfd_timers(document, policy, outcome)
+    return outcome
+
+
+def _adapt_interface_knobs(
+    document: CiscoDocument,
+    policy: SimulationAdaptationPolicy,
+    target_parents: set[str],
+    outcome: SimulationAdaptationOutcome,
+) -> None:
+    """在目标接口上清除模拟镜像不兼容的物理属性并确保接口启用。
+
+    真机上的 speed/fec/carrier-delay 等物理参数在 XRv9000 镜像上可能无效；删除
+    ``shutdown`` 并为物理口补 ``no shutdown``，避免迁移后接口仍处于关闭状态。
+    """
     physical_knob = re.compile(
         r"^(?:speed|duplex|negotiation|fec|transceiver|carrier-delay|dampening)\b",
         re.IGNORECASE,
@@ -31,38 +53,46 @@ def adapt_to_simulation(
 
     for block in document._interface_nodes():
         name = block.interface_name
-        if not name or interface_parent(name) not in targets:
+        if not name or interface_parent(name) not in target_parents:
             continue
         if policy.remove_physical_interface_knobs:
-            block.children, removed = _remove_matching_nodes(
+            block.children, removed = strip_matching_nodes(
                 block.children,
                 physical_knob,
             )
             outcome.record("removed", "physical-interface-knob", removed)
         if policy.ensure_data_interfaces_enabled:
-            block.children, removed = _remove_matching_nodes(block.children, shutdown)
+            block.children, removed = strip_matching_nodes(block.children, shutdown)
             outcome.record("removed", "interface-shutdown", removed)
             if interface_unit(name) is None and not any(
                 no_shutdown.fullmatch(node.header) for node in block.walk()
             ):
-                insertion = (
+                insert_at = (
                     1
                     if block.children
                     and block.children[0].header.lower().startswith("description ")
                     else 0
                 )
-                block.children.insert(insertion, CiscoNode("no shutdown"))
+                block.children.insert(insert_at, CiscoNode("no shutdown"))
                 outcome.record("added", "interface-no-shutdown")
 
-    if policy.mode != "stable":
-        return outcome
 
-    interval = re.compile(
+def _clamp_bfd_timers(
+    document: CiscoDocument,
+    policy: SimulationAdaptationPolicy,
+    outcome: SimulationAdaptationOutcome,
+) -> None:
+    """把低于阈值的 BFD 定时器提升到策略规定的最小值。
+
+    真机配置常使用激进的 BFD 间隔，GNS3 虚拟环境无法稳定维持；遍历所有活动节点，
+    仅上修过小值、不降低已合规值。
+    """
+    bfd_interval_pattern = re.compile(
         r"^(?P<indent>\s*bfd\s+(?:minimum-interval|minimum-receive-interval)\s+)"
         r"(?P<value>\d+)(?P<suffix>\s*)$",
         re.IGNORECASE,
     )
-    multiplier = re.compile(
+    bfd_multiplier_pattern = re.compile(
         r"^(?P<indent>\s*bfd\s+multiplier\s+)(?P<value>\d+)(?P<suffix>\s*)$",
         re.IGNORECASE,
     )
@@ -81,33 +111,11 @@ def adapt_to_simulation(
             node.header = clamp(
                 clamp(
                     node.header,
-                    interval,
+                    bfd_interval_pattern,
                     policy.bfd_minimum_interval_ms,
                     "bfd-minimum-interval",
                 ),
-                multiplier,
+                bfd_multiplier_pattern,
                 policy.bfd_minimum_multiplier,
                 "bfd-multiplier",
             )
-    return outcome
-
-
-def _remove_matching_nodes(
-    nodes: list[CiscoNode],
-    pattern: re.Pattern[str],
-) -> tuple[list[CiscoNode], int]:
-    """递归删除命中模拟不兼容模式的节点及其子树。
-
-    物理参数可能位于接口的嵌套配置模式中；按 AST 节点删除能同时清理相关子命令，
-    并返回语义节点数量供适配报告统计。
-    """
-    retained: list[CiscoNode] = []
-    removed = 0
-    for node in nodes:
-        if not node.is_formatting and pattern.match(node.header):
-            removed += sum(1 for _ in node.walk(include_self=True))
-            continue
-        node.children, child_removed = _remove_matching_nodes(node.children, pattern)
-        removed += child_removed
-        retained.append(node)
-    return retained, removed

@@ -141,6 +141,35 @@ def _render_cisco_nodes(nodes: Iterable[CiscoNode], depth: int = 1) -> list[str]
     return lines
 
 
+def strip_matching_nodes(
+    nodes: list[CiscoNode],
+    pattern: re.Pattern[str],
+    *,
+    match_anywhere: bool = False,
+) -> tuple[list[CiscoNode], int]:
+    """递归删除命中模式的命令节点及其完整子树。
+
+    ``match_anywhere=False`` 时用 ``pattern.match`` 从行首锚定；置为 ``True`` 时改用
+    ``pattern.search``，允许命中行内任意位置。删除父命令时连同其语义后代一并移除，
+    返回保留节点列表与删除的语义节点数量。
+    """
+    retained: list[CiscoNode] = []
+    removed = 0
+    test = pattern.search if match_anywhere else pattern.match
+    for node in nodes:
+        if not node.is_formatting and test(node.header):
+            removed += sum(1 for _ in node.walk(include_self=True))
+            continue
+        node.children, child_removed = strip_matching_nodes(
+            node.children,
+            pattern,
+            match_anywhere=match_anywhere,
+        )
+        removed += child_removed
+        retained.append(node)
+    return retained, removed
+
+
 def _cisco_command_identity(
     command: str,
     has_children: bool = False,
