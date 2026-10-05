@@ -21,11 +21,17 @@ from ...parsers.juniper_junos import (
     JunosNode,
     canonical_junos_interface,
 )
-from ..identity import find_opaque_ambiguity
+from ..identity import SemanticDecision, find_opaque_ambiguity
 from .identity import resolve_junos_identity
 
 
-GroupApplication = tuple[str, tuple[int, ...], tuple[str, ...]]
+@dataclass(frozen=True, slots=True)
+class _GroupApplication:
+    """一条已解析的 group 应用及其优先级和传递引用链。"""
+
+    name: str
+    rank: tuple[int, ...]
+    chain: tuple[str, ...]
 
 
 @dataclass(slots=True)
@@ -39,6 +45,18 @@ class _JunosExpansionState:
     policy: WashingPolicy
     selected_groups: set[str] = field(default_factory=set)
     applied_groups: set[str] = field(default_factory=set)
+
+
+@dataclass(slots=True)
+class _PreparedExpansion:
+    """展开前已规范化的工作树、运行状态和变更标记。"""
+
+    root: JunosNode
+    state: _JunosExpansionState
+    changed: bool
+
+
+_ResolvedStatement = tuple[JunosNode, SemanticDecision]
 
 
 class JunosGroupExpander:
@@ -228,125 +246,236 @@ class JunosGroupExpander:
         outcome: GroupExpansionOutcome,
         policy: WashingPolicy,
     ) -> None:
-        """把一个 group 在当前路径的子节点合并到目标工作树节点。
-
-        apply/except 控制语句交给依赖求值器处理，不复制为业务配置；块节点
-        只在不存在且不是通配选择器时创建。叶子节点通过语义规则定位槽位，
-        显式配置始终胜出，group 之间按 ``rank`` 覆盖，并同步更新冲突、规则
-        命中、fallback 和歧义报告；fail 策略会把 outcome 标为失败。
-        """
+        """按节点类型把 group payload 分发给块或语句合并器。"""
         require_invariant(
             target.children is not None,
             "Junos group 合并目标必须是块节点",
         )
         for source in source_children:
-            if not source.effective or not source.header:
-                continue
-            if self._group_names(source.header, "apply-groups") or self._group_names(
-                source.header, "apply-groups-except"
-            ):
-                # Group 控制语句由依赖求值器处理，不作为普通配置写入目标树。
+            if not self._is_mergeable_group_child(source):
                 continue
             if source.is_block:
-                matches = [
-                    item
-                    for item in target.children
-                    if item.effective
-                    and item.is_block
-                    and self._header_matches(source.header, item.header)
-                ]
-                if matches or "<" in source.header:
-                    # 通配选择器只用于匹配已有具体节点，不能把 ``<ge-*>`` 生成为真实配置块。
-                    continue
-                target.children.append(
-                    JunosNode(
-                        source.header,
-                        [],
-                        origin=f"group:{group_name}",
-                        rank=rank,
-                    )
-                )
+                self._merge_group_block(target, source, group_name, rank)
                 continue
-
-            decision = resolve_junos_identity(self._base_header(source.header), path=path)
-            if decision.matched:
-                outcome.identity_rule_hits += 1
-            else:
-                outcome.identity_fallbacks += 1
-            identity = decision.key
-            resolved_children = [
-                (
-                    item,
-                    resolve_junos_identity(self._base_header(item.header), path=path),
-                )
-                for item in target.children
-                if item.effective and not item.is_block
-            ]
-            existing = next(
-                (
-                    item
-                    for item, item_decision in resolved_children
-                    if item_decision.key == identity
-                ),
-                None,
+            self._merge_group_statement(
+                target,
+                source,
+                group_name,
+                rank,
+                path,
+                outcome,
+                policy,
             )
-            candidate = JunosNode(
+
+    def _is_mergeable_group_child(self, source: JunosNode) -> bool:
+        """做什么：判断 group 子节点是否应作为业务配置参与合并。
+
+        为什么：无效节点不应物化；apply/except 属于继承控制语句，
+        已由依赖求值阶段处理，不能被当作普通配置复制到目标树。
+        """
+        if not source.effective or not source.header:
+            return False
+        return not (
+            self._group_names(source.header, "apply-groups")
+            or self._group_names(source.header, "apply-groups-except")
+        )
+
+    def _merge_group_block(
+        self,
+        target: JunosNode,
+        source: JunosNode,
+        group_name: str,
+        rank: tuple[int, ...],
+    ) -> None:
+        """做什么：在目标不存在同类块时物化一个非通配 group 块。
+
+        为什么：普通块需要先建立结构，才能在后续递归中承接其子配置；
+        通配块只用来选择已有节点，不能以字面形式写入最终配置。
+        """
+        require_invariant(
+            target.children is not None,
+            "Junos group 块合并目标必须是块节点",
+        )
+        has_match = any(
+            item.effective
+            and item.is_block
+            and self._header_matches(source.header, item.header)
+            for item in target.children
+        )
+        # 通配选择器只匹配已有具体节点，不生成 ``<ge-*>`` 块。
+        if has_match or "<" in source.header:
+            return
+        target.children.append(
+            JunosNode(
                 source.header,
+                [],
                 origin=f"group:{group_name}",
                 rank=rank,
             )
-            if existing is None:
-                if not decision.matched and policy.group_unknown_identity != "preserve":
-                    family = decision.normalized.split(maxsplit=1)[0] if decision.normalized else ""
-                    ambiguous = find_opaque_ambiguity(decision, resolved_children)
-                    if ambiguous is not None:
-                        detail = {
-                            "vendor": "juniper_junos",
-                            "path": " / ".join(path) or "<root>",
-                            "family": family,
-                            "existing_source": ambiguous.origin,
-                            "existing_value": ambiguous.header,
-                            "candidate_source": f"group:{group_name}",
-                            "candidate_value": source.header,
-                        }
-                        if detail not in outcome.ambiguities:
-                            outcome.ambiguities.append(detail)
-                            action = (
-                                "已中止本次 group 展开"
-                                if policy.group_unknown_identity == "fail"
-                                else "已保留两个值"
-                            )
-                            outcome.warnings.append(
-                                f"Junos 路径 {detail['path']} 下的未知语句族 {family} "
-                                f"可能存在继承冲突，{action}"
-                            )
-                        if policy.group_unknown_identity == "fail":
-                            outcome.success = False
-                            return
-                target.children.append(candidate)
-                continue
-            # 显式配置始终优先；group 之间按层级和引用顺序 rank 决定胜出者。
-            if existing.origin != "explicit" and rank > existing.rank:
-                self._record_junos_conflict(
-                    outcome,
-                    path,
-                    identity,
-                    decision.rule_id,
-                    candidate,
-                    existing,
-                )
-                existing.header = candidate.header
-                existing.origin = candidate.origin
-                existing.rank = candidate.rank
-            else:
-                self._record_junos_conflict(
-                    outcome,
-                    path,
-                    identity,
-                    decision.rule_id,
-                    existing,
-                    candidate,
-                )
+        )
+
+    def _merge_group_statement(
+        self,
+        target: JunosNode,
+        source: JunosNode,
+        group_name: str,
+        rank: tuple[int, ...],
+        path: list[str],
+        outcome: GroupExpansionOutcome,
+        policy: WashingPolicy,
+    ) -> None:
+        """做什么：按语义 identity 定位槽位，并按继承优先级合并叶子语句。
+
+        为什么：文本不同的 Junos 语句可能表示同一配置槽位，必须先进行
+        语义归一化，再统一处理显式配置、group rank 和未知语义策略。
+        """
+        require_invariant(
+            target.children is not None,
+            "Junos group 语句合并目标必须是块节点",
+        )
+        decision = resolve_junos_identity(self._base_header(source.header), path=path)
+        if decision.matched:
+            outcome.identity_rule_hits += 1
+        else:
+            outcome.identity_fallbacks += 1
+
+        resolved_children = self._resolve_target_statements(target, path)
+        existing = next(
+            (
+                item
+                for item, item_decision in resolved_children
+                if item_decision.key == decision.key
+            ),
+            None,
+        )
+        candidate = JunosNode(
+            source.header,
+            origin=f"group:{group_name}",
+            rank=rank,
+        )
+        if existing is None:
+            if self._handle_unknown_identity_ambiguity(
+                decision,
+                resolved_children,
+                candidate,
+                path,
+                outcome,
+                policy,
+            ):
+                return
+            target.children.append(candidate)
+            return
+        self._apply_statement_precedence(
+            existing,
+            candidate,
+            decision,
+            path,
+            outcome,
+        )
+
+    def _resolve_target_statements(
+        self,
+        target: JunosNode,
+        path: list[str],
+    ) -> list[_ResolvedStatement]:
+        """做什么：解析目标节点中所有有效叶子语句的语义 identity。
+
+        为什么：候选 group 语句需要和同一路径下的现有语句比较；集中解析
+        可以让合并方法只关心 identity 匹配和优先级。
+        """
+        require_invariant(
+            target.children is not None,
+            "Junos identity 解析目标必须是块节点",
+        )
+        return [
+            (
+                item,
+                resolve_junos_identity(self._base_header(item.header), path=path),
+            )
+            for item in target.children
+            if item.effective and not item.is_block
+        ]
+
+    def _handle_unknown_identity_ambiguity(
+        self,
+        decision: SemanticDecision,
+        resolved_children: list[_ResolvedStatement],
+        candidate: JunosNode,
+        path: list[str],
+        outcome: GroupExpansionOutcome,
+        policy: WashingPolicy,
+    ) -> bool:
+        """做什么：识别、记录未知 identity 歧义，并返回是否拒绝候选语句。
+
+        为什么：规则未覆盖的语句无法安全判定是追加还是覆盖，需要按
+        ``preserve``、``warn`` 或 ``fail`` 策略统一审计和决策。
+        """
+        if decision.matched or policy.group_unknown_identity == "preserve":
+            return False
+        ambiguous = find_opaque_ambiguity(decision, resolved_children)
+        if ambiguous is None:
+            return False
+
+        family = decision.normalized.split(maxsplit=1)[0] if decision.normalized else ""
+        detail = {
+            "vendor": "juniper_junos",
+            "path": " / ".join(path) or "<root>",
+            "family": family,
+            "existing_source": ambiguous.origin,
+            "existing_value": ambiguous.header,
+            "candidate_source": candidate.origin,
+            "candidate_value": candidate.header,
+        }
+        if detail not in outcome.ambiguities:
+            outcome.ambiguities.append(detail)
+            action = (
+                "已中止本次 group 展开"
+                if policy.group_unknown_identity == "fail"
+                else "已保留两个值"
+            )
+            outcome.warnings.append(
+                f"Junos 路径 {detail['path']} 下的未知语句族 {family} "
+                f"可能存在继承冲突，{action}"
+            )
+        rejected = policy.group_unknown_identity == "fail"
+        if rejected:
+            outcome.success = False
+        return rejected
+
+    def _apply_statement_precedence(
+        self,
+        existing: JunosNode,
+        candidate: JunosNode,
+        decision: SemanticDecision,
+        path: list[str],
+        outcome: GroupExpansionOutcome,
+    ) -> None:
+        """做什么：按显式配置和 group rank 选择胜出语句并记录冲突。
+
+        为什么：Junos 继承要求显式配置高于 group，group 之间又受层级和
+        引用顺序影响；将胜负判定收口可避免多个合并路径出现不同规则。
+        """
+        if existing.origin != "explicit" and candidate.rank > existing.rank:
+            self._record_junos_conflict(
+                outcome,
+                path,
+                decision.key,
+                decision.rule_id,
+                candidate,
+                existing,
+            )
+            existing.header = candidate.header
+            existing.origin = candidate.origin
+            existing.rank = candidate.rank
+            return
+        self._record_junos_conflict(
+            outcome,
+            path,
+            decision.key,
+            decision.rule_id,
+            existing,
+            candidate,
+        )
 
     def expand_groups(
         self,
@@ -360,105 +489,61 @@ class JunosGroupExpander:
         """
         outcome = GroupExpansionOutcome()
         policy = policy or WashingPolicy()
+        prepared = self._prepare_expansion(outcome, policy)
+        working = prepared.root
+        state = prepared.state
 
         # except 是排除规则而不是继承依赖，但活动配置中的引用仍必须指向已定义
-        # group。这里先校验 group 定义之外的引用，使“只有 except、没有 apply”
-        # 的配置也不会绕过检查。
-        root_groups_containers = self._group_containers(self.root)
-        root_groups = {
-            self._group_definition_name(node.header): node
-            for container in root_groups_containers
-            for node in (container.children or [])
-            if node.effective and node.is_block
-        }
-        if not self._validate_group_exclusions(
-            self._root_group_exclusions(self.root, root_groups_containers),
-            root_groups,
-            outcome,
-        ):
-            outcome.events.append(
-                "Junos group 展开未完整解析，已整体回滚并保留原配置"
+        # group。先校验可覆盖“只有 except、没有 apply”的配置。
+        if not self._validate_root_exclusions(working, state):
+            return self._fail_expansion(
+                outcome,
+                "Junos group 展开未完整解析，已整体回滚并保留原配置",
             )
-            outcome.success = False
-            return outcome
 
-        # 所有展开先在深拷贝的工作树上进行，失败时原文档不会被部分修改。
-        working, groups_container, groups, working_changed = (
-            self._prepare_working_tree()
-        )
-        state = _JunosExpansionState(
-            groups_container=groups_container,
-            groups=groups,
-            dependencies={
-                name: self._group_dependencies(group)
-                for name, group in groups.items()
-            },
-            outcome=outcome,
-            policy=policy,
-        )
-        selected_roots = self._select_root_groups(
-            working,
-            state,
-        )
+        selected_roots = self._select_root_groups(working, state)
         if not selected_roots:
-            if working_changed:
+            if prepared.changed:
                 self.root = working
             return outcome
 
         # 在改写工作树前先校验整个依赖闭包，循环或缺失定义都整体回滚。
         if not self._select_dependency_closure(selected_roots, state):
-            outcome.events.append(
-                "Junos group 展开未完整解析，已整体回滚并保留原配置"
+            return self._fail_expansion(
+                outcome,
+                "Junos group 展开未完整解析，已整体回滚并保留原配置",
             )
-            outcome.success = False
-            return outcome
 
         # 只校验从活动根引用可达的 group。未使用模板中的陈旧 except 不应
         # 阻断转换，同时 except 也不会因此成为新的依赖边。
-        selected_exclusions: list[str] = []
-        for name in sorted(state.selected_groups):
-            for excluded in self._group_exclusions(state.groups[name]):
-                if excluded not in selected_exclusions:
-                    selected_exclusions.append(excluded)
-        if not self._validate_group_exclusions(
-            selected_exclusions,
-            state.groups,
-            outcome,
-        ):
-            outcome.events.append(
-                "Junos group 展开未完整解析，已整体回滚并保留原配置"
+        if not self._validate_selected_exclusions(state):
+            return self._fail_expansion(
+                outcome,
+                "Junos group 展开未完整解析，已整体回滚并保留原配置",
             )
-            outcome.success = False
-            return outcome
 
         self._add_known_interfaces(working, known_interfaces)
         self._walk_expansion_tree(working, [], [], set(), state)
         if not outcome.success:
-            outcome.events.append(
-                "Junos group 存在未覆盖的潜在语义冲突，已整体回滚并保留原配置"
+            return self._fail_expansion(
+                outcome,
+                "Junos group 存在未覆盖的潜在语义冲突，已整体回滚并保留原配置",
+                clear_conflicts=True,
             )
-            outcome.conflicts.clear()
-            return outcome
         if not state.applied_groups:
             return outcome
 
-        # 展开完成后才隐藏已物化的 group 定义，并将工作树原子替换回文档。
-        self._commit_group_visibility(state)
-        self.root = working
-        outcome.events.extend(
-            f"已展开 Junos 配置组 {name}"
-            for name in sorted(state.selected_groups)
-        )
-        return outcome
+        return self._commit_expansion(working, state)
 
-    def _prepare_working_tree(
+    def _prepare_expansion(
         self,
-    ) -> tuple[JunosNode, JunosNode, dict[str, JunosNode], bool]:
-        """深拷贝原配置并建立 group、接口等展开阶段需要的工作索引。
+        outcome: GroupExpansionOutcome,
+        policy: WashingPolicy,
+    ) -> _PreparedExpansion:
+        """做什么：深拷贝原配置，规范化工作树并建立展开状态。
 
-        工作副本会先移除 configured inactive 节点，再把多个 ``groups`` 块规范
-        化为一个容器；返回值最后一项表示工作树是否改变，使没有活动 group 引用
-        时也能提交规范化结果。没有容器时使用不写回的空容器参与统一校验。
+        为什么：所有展开必须在工作副本上进行，才能在校验失败时整体回滚；
+        同时提前清理 inactive 节点、归并容器和建立依赖索引，使后续阶段共享统一视图。
         """
         # 事务边界：本方法以后的所有变更都只发生在 working 上。
         working = copy.deepcopy(self.root)
@@ -470,13 +555,97 @@ class JunosGroupExpander:
         groups_container, groups, normalized_groups = (
             self._normalize_group_containers(working)
         )
-
-        return (
-            working,
-            groups_container,
-            groups,
-            removed_inactive or normalized_groups,
+        state = _JunosExpansionState(
+            groups_container=groups_container,
+            groups=groups,
+            dependencies={
+                name: self._group_dependencies(group)
+                for name, group in groups.items()
+            },
+            outcome=outcome,
+            policy=policy,
         )
+        return _PreparedExpansion(
+            root=working,
+            state=state,
+            changed=removed_inactive or normalized_groups,
+        )
+
+    def _validate_root_exclusions(
+        self,
+        working: JunosNode,
+        state: _JunosExpansionState,
+    ) -> bool:
+        """做什么：校验 group 定义之外的所有活动 except 引用。
+
+        为什么：根配置可能只有 ``apply-groups-except`` 而没有任何 apply，
+        如果等到选择展开根之后才检查，这类悬空引用会被提前返回漏掉。
+        """
+        names = self._root_group_exclusions(
+            working,
+            [state.groups_container],
+        )
+        return self._validate_group_exclusions(
+            names,
+            state.groups,
+            state.outcome,
+        )
+
+    def _validate_selected_exclusions(
+        self,
+        state: _JunosExpansionState,
+    ) -> bool:
+        """做什么：校验从已选 group 依赖闭包中可达的 except 引用。
+
+        为什么：只有实际参与展开的模板才会影响输出；未使用模板中的陈旧
+        except 不应阻断转换，也不应因校验而成为新的依赖边。
+        """
+        exclusions: list[str] = []
+        for name in sorted(state.selected_groups):
+            for excluded in self._group_exclusions(state.groups[name]):
+                if excluded not in exclusions:
+                    exclusions.append(excluded)
+        return self._validate_group_exclusions(
+            exclusions,
+            state.groups,
+            state.outcome,
+        )
+
+    @staticmethod
+    def _fail_expansion(
+        outcome: GroupExpansionOutcome,
+        message: str,
+        *,
+        clear_conflicts: bool = False,
+    ) -> GroupExpansionOutcome:
+        """做什么：统一标记展开失败并记录事务回滚事件。
+
+        为什么：根引用、依赖闭包、except 和语义冲突都可能导致回滚，
+        集中收口可保证失败标记、事件和冲突清理的行为一致。
+        """
+        if clear_conflicts:
+            outcome.conflicts.clear()
+        outcome.events.append(message)
+        outcome.success = False
+        return outcome
+
+    def _commit_expansion(
+        self,
+        working: JunosNode,
+        state: _JunosExpansionState,
+    ) -> GroupExpansionOutcome:
+        """做什么：隐藏已物化的 group，原子提交工作树并生成成功事件。
+
+        为什么：只有全部校验和展开完成后才能替换原文档，否则调用方
+        可能看到部分物化、部分保留 group 的不完整配置。
+        """
+        self._commit_group_visibility(state)
+        self.root = working
+        state.outcome.events.extend(
+            f"已展开 Junos 配置组 {name}"
+            for name in sorted(state.selected_groups)
+        )
+        return state.outcome
 
     def _group_containers(self, root: JunosNode) -> list[JunosNode]:
         """做什么：返回根节点下全部有效的顶层 ``groups`` 容器。
@@ -510,6 +679,23 @@ class JunosGroupExpander:
         if not containers:
             return JunosNode("groups", []), {}, False
 
+        canonical, groups, definitions_changed = self._merge_group_definitions(
+            containers
+        )
+        containers_changed = len(containers) > 1
+        if containers_changed:
+            self._remove_extra_group_containers(root, containers)
+        return canonical, groups, definitions_changed or containers_changed
+
+    def _merge_group_definitions(
+        self,
+        containers: list[JunosNode],
+    ) -> tuple[JunosNode, dict[str, JunosNode], bool]:
+        """做什么：建立 group 索引，并把重复的同名定义合并到首个定义。
+
+        为什么：手写或拼接配置可能分段声明同名 group，后续依赖和 payload
+        查询需要一个唯一定义入口，同时保留各片段的原始出现顺序。
+        """
         canonical = containers[0]
         require_invariant(
             canonical.children is not None,
@@ -517,7 +703,7 @@ class JunosGroupExpander:
         )
         normalized_children: list[JunosNode] = []
         groups: dict[str, JunosNode] = {}
-        changed = len(containers) > 1
+        changed = False
 
         for container in containers:
             for definition in container.children or []:
@@ -538,12 +724,26 @@ class JunosGroupExpander:
                 changed = True
 
         canonical.children = normalized_children
-        if len(containers) > 1:
-            extra_ids = {id(container) for container in containers[1:]}
-            root.children = [
-                node for node in root.children if id(node) not in extra_ids
-            ]
         return canonical, groups, changed
+
+    @staticmethod
+    def _remove_extra_group_containers(
+        root: JunosNode,
+        containers: list[JunosNode],
+    ) -> None:
+        """做什么：从根节点移除已合并到规范容器的其余 groups 块。
+
+        为什么：展开器的遍历需要一个明确的 group 定义边界，保留多个容器
+        会让跳过判定、引用索引和最终隐藏行为变得不一致。
+        """
+        require_invariant(
+            root.children is not None,
+            "Junos group 容器清理的根节点必须可包含子节点",
+        )
+        extra_ids = {id(container) for container in containers[1:]}
+        root.children = [
+            node for node in root.children if id(node) not in extra_ids
+        ]
 
     def _remove_inactive_nodes(self, root: JunosNode) -> bool:
         """做什么：递归删除所有 configured inactive 节点及其完整子树。
@@ -717,15 +917,15 @@ class JunosGroupExpander:
         为什么：引用合法性和继承依赖是两件事。单独校验可以拦截最终会被 Junos
         拒绝的悬空引用，同时保证 except 不会选择 group、触发展开或形成依赖环。
         """
+        valid = True
         for name in names:
             if name in groups:
                 continue
-            # 汇总全部缺失名称，而不是遇到第一个错误就停止，方便一次修完配置。
             outcome.warnings.append(
                 f"Junos apply-groups-except 引用了未定义的组 {name}"
             )
-            return False
-        return True
+            valid = False
+        return valid
 
     def _select_root_groups(
         self,
@@ -803,9 +1003,9 @@ class JunosGroupExpander:
 
     @staticmethod
     def _effective_applications(
-        applications: list[GroupApplication],
+        applications: list[_GroupApplication],
         excluded: set[str],
-    ) -> list[GroupApplication]:
+    ) -> list[_GroupApplication]:
         """从候选引用中计算当前路径实际生效的 group 应用。
 
         引用链中任一名称被 except 排除时整条应用失效；其余候选按 rank 从
@@ -815,28 +1015,109 @@ class JunosGroupExpander:
         eligible = [
             application
             for application in applications
-            if not any(name in excluded for name in application[2])
+            if not any(name in excluded for name in application.chain)
         ]
-        result: list[GroupApplication] = []
+        result: list[_GroupApplication] = []
         seen: set[str] = set()
         for application in sorted(
             eligible,
-            key=lambda item: item[1],
+            key=lambda item: item.rank,
             reverse=True,
         ):
-            if application[0] in seen:
+            if application.name in seen:
                 continue
-            seen.add(application[0])
+            seen.add(application.name)
             result.append(application)
         return result
+
+    def _group_controls_for_path(
+        self,
+        application: _GroupApplication,
+        path: list[str],
+        keyword: str,
+        state: _JunosExpansionState,
+    ) -> list[str]:
+        """做什么：读取一个 group 在指定配置路径直接声明的控制引用。
+
+        为什么：嵌套 apply 和 except 都需要先按路径取出 group payload，再筛选
+        已进入依赖闭包的名称；共用读取逻辑可避免两类控制语句解析分叉。
+        """
+        result: list[str] = []
+        for child in self._group_payload_for_path(
+            state.groups[application.name],
+            path,
+        ):
+            if not child.effective or child.is_block:
+                continue
+            result.extend(
+                name
+                for name in self._group_names(child.header, keyword)
+                if name in state.selected_groups
+            )
+        return result
+
+    def _collect_nested_exclusions(
+        self,
+        path: list[str],
+        applications: list[_GroupApplication],
+        state: _JunosExpansionState,
+    ) -> set[str]:
+        """做什么：收集当前有效 group 在指定路径声明的嵌套排除项。
+
+        为什么：排除规则会改变哪些引用链仍然有效，必须在发现新的嵌套
+        apply 之前独立汇总，以便固定点迭代先重算当前有效集。
+        """
+        exclusions: set[str] = set()
+        for application in applications:
+            exclusions.update(
+                self._group_controls_for_path(
+                    application,
+                    path,
+                    "apply-groups-except",
+                    state,
+                )
+            )
+        return exclusions
+
+    def _discover_nested_applications(
+        self,
+        path: list[str],
+        applications: list[_GroupApplication],
+        known: set[_GroupApplication],
+        state: _JunosExpansionState,
+    ) -> list[_GroupApplication]:
+        """做什么：从当前有效 group 发现尚未求值的嵌套 apply-groups。
+
+        为什么：新引用需要继承父引用的 rank 和 chain，并通过 ``known``
+        防止同一传递路径重复入队；单独建模可使固定点主循环只关心是否收敛。
+        """
+        discovered: list[_GroupApplication] = []
+        for application in applications:
+            nested_names = self._group_controls_for_path(
+                application,
+                path,
+                "apply-groups",
+                state,
+            )
+            for index, name in enumerate(nested_names):
+                nested = _GroupApplication(
+                    name=name,
+                    rank=(*application.rank[:-1], -1, -index, 0),
+                    chain=(*application.chain, name),
+                )
+                if nested in known:
+                    continue
+                known.add(nested)
+                discovered.append(nested)
+        return discovered
 
     def _expand_nested_applications(
         self,
         path: list[str],
-        applications: list[GroupApplication],
+        applications: list[_GroupApplication],
         excluded: set[str],
         state: _JunosExpansionState,
-    ) -> tuple[list[GroupApplication], list[GroupApplication], set[str]]:
+    ) -> tuple[list[_GroupApplication], list[_GroupApplication], set[str]]:
         """求解当前路径上由 group 内部继续引入的 apply/except 关系。
 
         先累积嵌套排除，再沿仍有效的引用链加入新的 group，反复迭代直至
@@ -851,21 +1132,11 @@ class JunosGroupExpander:
         while True:
             changed = False
             current = self._effective_applications(expanded, expanded_excluded)
-            nested_excluded: set[str] = set()
-            # 先收集 except，因为它会改变哪些引用路径有效。
-            for group_name, _rank, _chain in current:
-                for child in self._group_payload_for_path(
-                    state.groups[group_name], path
-                ):
-                    if child.effective and not child.is_block:
-                        nested_excluded.update(
-                            name
-                            for name in self._group_names(
-                                child.header,
-                                "apply-groups-except",
-                            )
-                            if name in state.selected_groups
-                        )
+            nested_excluded = self._collect_nested_exclusions(
+                path,
+                current,
+                state,
+            )
             if not nested_excluded.issubset(expanded_excluded):
                 expanded_excluded.update(nested_excluded)
                 changed = True
@@ -874,33 +1145,18 @@ class JunosGroupExpander:
                     expanded_excluded,
                 )
 
-            # 再沿剩余有效路径展开新的 apply-groups，known 防止同一引用路径重复加入。
-            for group_name, rank, chain in current:
-                nested_names: list[str] = []
-                for child in self._group_payload_for_path(
-                    state.groups[group_name], path
-                ):
-                    if child.effective and not child.is_block:
-                        nested_names.extend(
-                            name
-                            for name in self._group_names(
-                                child.header,
-                                "apply-groups",
-                            )
-                            if name in state.selected_groups
-                        )
-                for index, name in enumerate(nested_names):
-                    application = (
-                        name,
-                        (*rank[:-1], -1, -index, 0),
-                        (*chain, name),
-                    )
-                    if application in known:
-                        continue
-                    known.add(application)
-                    expanded.append(application)
-                    state.applied_groups.add(name)
-                    changed = True
+            discovered = self._discover_nested_applications(
+                path,
+                current,
+                known,
+                state,
+            )
+            if discovered:
+                expanded.extend(discovered)
+                state.applied_groups.update(
+                    application.name for application in discovered
+                )
+                changed = True
 
             if not changed:
                 return (
@@ -909,34 +1165,31 @@ class JunosGroupExpander:
                     expanded_excluded,
                 )
 
-    def _walk_expansion_tree(
+    def _expand_current_node(
         self,
         node: JunosNode,
         path: list[str],
-        inherited: list[GroupApplication],
+        inherited: list[_GroupApplication],
         inherited_excluded: set[str],
         state: _JunosExpansionState,
-    ) -> None:
-        """递归展开工作树当前节点，并向子层传递继承和排除关系。
+    ) -> tuple[list[_GroupApplication], set[str]]:
+        """做什么：展开一个工作树节点，并返回应传递给子节点的继承状态。
 
-        方法合并本地引用与父层引用，求解嵌套应用后按优先级写入 payload，
-        再移除已消费的控制语句。合并可能追加新配置块，因此索引循环会继续
-        处理新物化节点；groups 定义容器本身不会被展开。
+        为什么：节点求值需要合并本地和父层引用、物化 payload 并消费控制语句；
+        将这些操作与树遍历分开，可以让递归方法只负责在父子节点间传递状态。
         """
-        if node.children is None or node is state.groups_container:
-            return
-
         local_names, local_excluded = self._local_group_controls(
             node,
             inherited_excluded,
             state.selected_groups,
         )
         state.applied_groups.update(local_names)
-
-        # 层级越深越具体，优先级越高；同一 apply-groups 列表中越靠前越优先。
-        # 引用链被保留在第三个元素中，供 apply-groups-except 排除整条传递路径。
         local = [
-            (name, (len(path), -index, 0), (name,))
+            _GroupApplication(
+                name=name,
+                rank=(len(path), -index, 0),
+                chain=(name,),
+            )
             for index, name in enumerate(local_names)
         ]
         active, effective, local_excluded = self._expand_nested_applications(
@@ -945,22 +1198,40 @@ class JunosGroupExpander:
             local_excluded,
             state,
         )
-
-        for group_name, rank, _chain in effective:
-            group = state.groups.get(group_name)
+        for application in effective:
+            group = state.groups.get(application.name)
             if group is None:
                 continue
             self._merge_junos_group_children(
                 node,
                 self._group_payload_for_path(group, path),
-                group_name,
-                rank,
+                application.name,
+                application.rank,
                 path,
                 state.outcome,
                 state.policy,
             )
-
         self._rewrite_group_controls(node, state.selected_groups)
+        return active, local_excluded
+
+    def _walk_expansion_tree(
+        self,
+        node: JunosNode,
+        path: list[str],
+        inherited: list[_GroupApplication],
+        inherited_excluded: set[str],
+        state: _JunosExpansionState,
+    ) -> None:
+        """递归遍历工作树，在每个块节点调用单节点展开。"""
+        if node.children is None or node is state.groups_container:
+            return
+        active, local_excluded = self._expand_current_node(
+            node,
+            path,
+            inherited,
+            inherited_excluded,
+            state,
+        )
         # 合并会向 node.children 追加节点，因此用索引循环继续处理新物化的块。
         index = 0
         while index < len(node.children):

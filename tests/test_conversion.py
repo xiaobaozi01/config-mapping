@@ -1387,6 +1387,24 @@ apply-groups EDGE;
         )
         self.assertEqual(document.render(), source)
 
+    def test_junos_reports_every_undefined_group_exclusion(self):
+        """一次报告同一语句中的全部未定义 except，方便集中修复。"""
+        source = """interfaces {
+    ge-0/0/0 {
+        apply-groups-except [ MISSING-A MISSING-B ];
+        unit 0;
+    }
+}
+"""
+        document = JunosDocument(source)
+        outcome = document.expand_groups([])
+
+        self.assertFalse(outcome.success)
+        self.assertEqual(len(outcome.warnings), 2)
+        self.assertTrue(any("MISSING-A" in warning for warning in outcome.warnings))
+        self.assertTrue(any("MISSING-B" in warning for warning in outcome.warnings))
+        self.assertEqual(document.render(), source)
+
     def test_junos_selected_group_validates_apply_groups_except(self):
         """已选中 group 内的 except 引用缺失时整体回滚。"""
         source = """groups {
