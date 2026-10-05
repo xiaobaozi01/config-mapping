@@ -418,17 +418,16 @@ class JunosDocument:
     def expand_groups(
         self,
         known_interfaces: Iterable[str],
-        mode: str = "relevant",
         policy: WashingPolicy | None = None,
     ) -> GroupExpansionOutcome:
-        """按模式和策略展开 Junos groups，并返回事件、冲突及成败信息。
+        """展开全部已应用 Junos groups，并返回事件、冲突及成败信息。
 
         group 继承必须在接口分类前物化，但 apply-groups、通配符及优先级处理不属于
         基础语法树职责；委托专用展开器可隔离复杂语义，并让调用方据结果决定是否继续。
         """
         from ..vendor.juniper.groups import JunosGroupExpander
 
-        return JunosGroupExpander(self).expand_groups(known_interfaces, mode, policy)
+        return JunosGroupExpander(self).expand_groups(known_interfaces, policy)
 
     def interface_specs(self) -> list[InterfaceSpec]:
         """提取父接口或 unit 的关系、类型及 VLAN/QinQ 信息。

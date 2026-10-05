@@ -153,83 +153,6 @@ class JunosGroupExpander:
             value = f"[ {value} ]"
         return f"{prefix}{match.group(1)} {value};"
 
-    @classmethod
-    def _group_path_relevant(cls, path: list[str], policy: WashingPolicy) -> bool:
-        """判断配置路径是否落在本次转换需要物化的范围内。
-
-        接口、协议、路由实例、二层业务和管理访问路径始终相关；安全、硬件、
-        NAT、PKI 和流量统计路径根据清洗策略开关决定。空路径返回 ``False``。
-        """
-        if not path:
-            return False
-        normalized = [_normalized_command(cls._base_header(component)) for component in path]
-        top = normalized[0]
-        if top in {
-            "interfaces",
-            "protocols",
-            "routing-instances",
-            "logical-systems",
-            "bridge-domains",
-            "vlans",
-            "l2vpn",
-            "routing-options",
-        }:
-            return True
-        if top == "snmp":
-            return True
-        if top == "system" and len(normalized) > 1:
-            second = normalized[1]
-            if second.startswith(
-                (
-                    "login",
-                    "root-authentication",
-                    "authentication-order",
-                    "radius-",
-                    "tacplus-",
-                    "accounting",
-                )
-            ):
-                return True
-            if second == "services" and len(normalized) > 2:
-                return normalized[2].startswith(("ssh", "telnet", "netconf"))
-        if top == "security" and len(normalized) > 1:
-            second = normalized[1]
-            if second == "ssh-known-hosts":
-                return True
-            if policy.protocol_authentication and second == "authentication-key-chains":
-                return True
-            if policy.pki and second in {"pki", "certificates"}:
-                return True
-            if policy.nat and second in {"nat", "services"}:
-                return True
-        if policy.hardware and top == "chassis":
-            return True
-        if policy.nat and top in {"services", "service-set"}:
-            return True
-        if policy.flow_statistics and top == "forwarding-options":
-            return True
-        return False
-
-    def _group_tree_relevant(self, group: JunosNode, policy: WashingPolicy) -> bool:
-        """递归判断一个 group 定义是否包含相关的有效配置路径。
-
-        inactive 节点被跳过；任一有效叶子所在路径命中
-        ``_group_path_relevant`` 即返回 ``True``。该结果只用于 relevant 模式
-        筛选，不修改 group。
-        """
-        def walk(items: list[JunosNode], path: list[str]) -> bool:
-            for item in items:
-                if not item.effective:
-                    continue
-                current = [*path, self._base_header(item.header)]
-                if item.children is None and self._group_path_relevant(current, policy):
-                    return True
-                if item.children is not None and walk(item.children, current):
-                    return True
-            return False
-
-        return walk(group.children or [], [])
-
     @staticmethod
     def _junos_selector_specificity(header: str) -> tuple[int, str]:
         """计算 Junos 通配选择器的确定性排序键。
@@ -421,27 +344,54 @@ class JunosGroupExpander:
     def expand_groups(
         self,
         known_interfaces: Iterable[str],
-        mode: str = "relevant",
         policy: WashingPolicy | None = None,
     ) -> GroupExpansionOutcome:
-        """编排 Junos group 的选择、依赖校验、展开和事务式提交。
+        """编排 Junos group 的收集、依赖校验、展开和事务式提交。
 
-        ``relevant`` 只物化影响转换或清洗的 group，``strict`` 物化全部引用，
-        ``preserve`` 保持原文不变。返回值汇总事件、告警、冲突和规则命中数；
-        循环、缺失依赖或不安全语义冲突都会阻止工作树提交。
+        所有活动引用及其完整依赖都会被物化。返回值汇总事件、告警、冲突和
+        规则命中数；循环、缺失依赖或不安全语义冲突都会阻止工作树提交。
         """
         outcome = GroupExpansionOutcome()
         policy = policy or WashingPolicy()
-        if mode == "preserve":
+
+        # except 是排除规则而不是继承依赖，但活动配置中的引用仍必须指向已定义
+        # group。这里先校验 group 定义之外的引用，使“只有 except、没有 apply”
+        # 的配置也不会绕过检查。
+        root_groups_container = next(
+            (
+                node
+                for node in (self.root.children or [])
+                if node.effective
+                and node.is_block
+                and self._base_header(node.header) == "groups"
+            ),
+            None,
+        )
+        root_groups = {
+            self._group_definition_name(node.header): node
+            for node in (
+                root_groups_container.children
+                if root_groups_container is not None
+                and root_groups_container.children is not None
+                else []
+            )
+            if node.effective and node.is_block
+        }
+        if not self._validate_group_exclusions(
+            self._root_group_exclusions(self.root, root_groups_container),
+            root_groups,
+            outcome,
+        ):
+            outcome.events.append(
+                "Junos group 展开未完整解析，已整体回滚并保留原配置"
+            )
+            outcome.success = False
             return outcome
-        if mode not in {"relevant", "strict"}:
-            raise ValueError(f"未知 Junos group 处理模式: {mode}")
 
         # 所有展开先在深拷贝的工作树上进行，失败时原文档不会被部分修改。
-        prepared = self._prepare_working_tree(known_interfaces)
-        if prepared is None:
-            return outcome
-        working, groups_container, groups = prepared
+        working, groups_container, groups, removed_inactive = (
+            self._prepare_working_tree()
+        )
         state = _JunosExpansionState(
             groups_container=groups_container,
             groups=groups,
@@ -454,11 +404,11 @@ class JunosGroupExpander:
         )
         selected_roots = self._select_root_groups(
             working,
-            mode,
-            policy,
             state,
         )
         if not selected_roots:
+            if removed_inactive:
+                self.root = working
             return outcome
 
         # 在改写工作树前先校验整个依赖闭包，循环或缺失定义都整体回滚。
@@ -469,6 +419,25 @@ class JunosGroupExpander:
             outcome.success = False
             return outcome
 
+        # 只校验从活动根引用可达的 group。未使用模板中的陈旧 except 不应
+        # 阻断转换，同时 except 也不会因此成为新的依赖边。
+        selected_exclusions: list[str] = []
+        for name in sorted(state.selected_groups):
+            for excluded in self._group_exclusions(state.groups[name]):
+                if excluded not in selected_exclusions:
+                    selected_exclusions.append(excluded)
+        if not self._validate_group_exclusions(
+            selected_exclusions,
+            state.groups,
+            outcome,
+        ):
+            outcome.events.append(
+                "Junos group 展开未完整解析，已整体回滚并保留原配置"
+            )
+            outcome.success = False
+            return outcome
+
+        self._add_known_interfaces(working, known_interfaces)
         self._walk_expansion_tree(working, [], [], set(), state)
         if not outcome.success:
             outcome.events.append(
@@ -480,7 +449,7 @@ class JunosGroupExpander:
             return outcome
 
         # 展开完成后才隐藏已物化的 group 定义，并将工作树原子替换回文档。
-        self._commit_group_visibility(state, mode)
+        self._commit_group_visibility(state)
         self.root = working
         outcome.events.extend(
             f"已展开 Junos 配置组 {name}"
@@ -490,16 +459,17 @@ class JunosGroupExpander:
 
     def _prepare_working_tree(
         self,
-        known_interfaces: Iterable[str],
-    ) -> tuple[JunosNode, JunosNode, dict[str, JunosNode]] | None:
+    ) -> tuple[JunosNode, JunosNode, dict[str, JunosNode], bool]:
         """深拷贝原配置并建立 group、接口等展开阶段需要的工作索引。
 
-        拓扑中存在但配置未声明的接口会作为 synthetic 节点加入，以支持通配
-        group 匹配；没有有效 ``groups`` 容器时返回 ``None``。
+        工作副本会先移除所有 configured inactive 节点；返回值最后一项表示
+        是否发生清理，使没有活动 group 引用时也能提交清理结果。没有 ``groups``
+        容器时使用不写回的空容器，让未定义活动引用进入统一校验。
         """
         # 事务边界：本方法以后的所有变更都只发生在 working 上。
         working = copy.deepcopy(self.root)
         assert working.children is not None
+        removed_inactive = self._remove_inactive_nodes(working)
         groups_container = next(
             (
                 node
@@ -511,12 +481,60 @@ class JunosGroupExpander:
             None,
         )
         if groups_container is None or groups_container.children is None:
-            return None
+            groups_container = JunosNode("groups", [])
         groups = {
             self._group_definition_name(node.header): node
             for node in groups_container.children
             if node.effective and node.is_block
         }
+
+        return working, groups_container, groups, removed_inactive
+
+    def _remove_inactive_nodes(self, root: JunosNode) -> bool:
+        """做什么：递归删除所有 configured inactive 节点及其完整子树。
+
+        为什么：inactive 配置不会影响设备当前运行状态，自适应输出也不需要保留
+        将来手工激活它的能力。统一删除可以减少无效配置、悬空引用及 GNS3 镜像的
+        兼容风险；原始输入文档仍由事务边界保留，失败时不会被部分清理。
+        """
+        changed = False
+
+        def clean(node: JunosNode) -> None:
+            nonlocal changed
+            if node.children is None:
+                return
+            retained: list[JunosNode] = []
+            for child in node.children:
+                # 父节点 inactive 时整棵子树都无效，直接丢弃可避免误激活其后代。
+                if child.configured_inactive:
+                    changed = True
+                    continue
+                clean(child)
+                # 全部定义都被清理后不保留空的 groups 容器。
+                if (
+                    child.is_block
+                    and self._base_header(child.header) == "groups"
+                    and not child.children
+                ):
+                    changed = True
+                    continue
+                retained.append(child)
+            node.children = retained
+
+        clean(root)
+        return changed
+
+    def _add_known_interfaces(
+        self,
+        working: JunosNode,
+        known_interfaces: Iterable[str],
+    ) -> None:
+        """做什么：把拓扑已知但配置未声明的接口加入工作树。
+
+        为什么：Junos 通配 group 需要具体接口作为匹配目标；这一步放在活动引用
+        校验之后，避免仅清理 inactive group 时把 synthetic 接口意外写入配置。
+        """
+        assert working.children is not None
 
         # 拓扑中出现但配置未声明的接口也需参与通配 group 匹配。
         interfaces = next(
@@ -544,7 +562,6 @@ class JunosGroupExpander:
                 continue
             interfaces.children.append(JunosNode(name, [], origin="synthetic"))
             existing_names.add(name)
-        return working, groups_container, groups
 
     def _group_dependencies(self, group: JunosNode) -> list[str]:
         """递归收集一个 group 定义内声明的 apply-groups 依赖。
@@ -567,40 +584,97 @@ class JunosGroupExpander:
         collect(group)
         return result
 
+    def _group_exclusions(self, node: JunosNode) -> list[str]:
+        """做什么：递归收集指定子树内有效的 ``apply-groups-except`` 引用。
+
+        为什么：except 只是取消某条继承关系，并不会引入 group 内容，所以
+        这里单独收集它用于存在性校验，不能复用 ``_group_dependencies``，否则
+        会把被排除的 group 错误地加入展开集合和循环依赖检测。
+        """
+        result: list[str] = []
+
+        def collect(current: JunosNode) -> None:
+            # 控制语句是叶子节点；统一交给 _group_names 处理列表和带引号名称。
+            if current.children is None:
+                for name in self._group_names(
+                    current.header,
+                    "apply-groups-except",
+                ):
+                    # 保留首次出现顺序，既避免重复告警，也让告警顺序与原配置一致。
+                    if name not in result:
+                        result.append(name)
+                return
+            for child in current.children:
+                # inactive 节点不会在设备上生效，不应因其引用缺失而阻断转换。
+                if child.effective:
+                    collect(child)
+
+        collect(node)
+        return result
+
+    def _root_group_exclusions(
+        self,
+        root: JunosNode,
+        groups_container: JunosNode | None,
+    ) -> list[str]:
+        """做什么：收集主配置树中、group 定义之外的有效 except 引用。
+
+        为什么：主配置中的 except 即使没有配套的 ``apply-groups``，仍然是一个
+        需要校验的活动引用，不能被“没有待展开根 group”的提前返回漏掉；同时
+        必须跳过 groups 容器，因为未使用模板中的引用要等模板真正被选中后再校验。
+        """
+        result: list[str] = []
+
+        def collect(node: JunosNode) -> None:
+            # group 定义由 _group_exclusions 在依赖闭包确定后按需检查。
+            if node is groups_container:
+                return
+            if node.children is None:
+                for name in self._group_names(
+                    node.header,
+                    "apply-groups-except",
+                ):
+                    if name not in result:
+                        result.append(name)
+                return
+            for child in node.children:
+                if child.effective:
+                    collect(child)
+
+        collect(root)
+        return result
+
+    @staticmethod
+    def _validate_group_exclusions(
+        names: Iterable[str],
+        groups: dict[str, JunosNode],
+        outcome: GroupExpansionOutcome,
+    ) -> bool:
+        """做什么：检查每个 except 名称是否有对应定义并记录缺失告警。
+
+        为什么：引用合法性和继承依赖是两件事。单独校验可以拦截最终会被 Junos
+        拒绝的悬空引用，同时保证 except 不会选择 group、触发展开或形成依赖环。
+        """
+        valid = True
+        for name in names:
+            if name in groups:
+                continue
+            # 汇总全部缺失名称，而不是遇到第一个错误就停止，方便一次修完配置。
+            outcome.warnings.append(
+                f"Junos apply-groups-except 引用了未定义的组 {name}"
+            )
+            valid = False
+        return valid
+
     def _select_root_groups(
         self,
         working: JunosNode,
-        mode: str,
-        policy: WashingPolicy,
         state: _JunosExpansionState,
     ) -> set[str]:
-        """从非 group 工作树中选择本次展开的根 group。
-
-        strict 模式选择所有引用；relevant 模式结合当前配置路径、group 内容
-        及传递依赖判断相关性，并缓存结果避免重复遍历。
-        """
+        """从 group 定义之外的工作树中收集全部活动根引用。"""
         selected: set[str] = set()
-        relevance_cache: dict[str, bool] = {}
 
-        def is_relevant(name: str, visiting: set[str] | None = None) -> bool:
-            if name in relevance_cache:
-                return relevance_cache[name]
-            group = state.groups.get(name)
-            if group is None:
-                return False
-            visiting = set(visiting or ())
-            if name in visiting:
-                return False
-            visiting.add(name)
-            # 相关性会沿依赖传递：当前 group 本身无关，但它引用的 group 可能影响接口迁移。
-            relevant = self._group_tree_relevant(group, policy) or any(
-                is_relevant(dependency, visiting)
-                for dependency in state.dependencies.get(name, [])
-            )
-            relevance_cache[name] = relevant
-            return relevant
-
-        def walk(node: JunosNode, path: list[str]) -> None:
+        def walk(node: JunosNode) -> None:
             if node.children is None or node is state.groups_container:
                 return
             for child in node.children:
@@ -612,20 +686,11 @@ class JunosGroupExpander:
                     else []
                 )
                 for name in names:
-                    group = state.groups.get(name)
-                    # strict 模式全部展开；relevant 模式只选中影响转换/清洗的引用。
-                    # 根层未定义引用仍要选中，以便后续依赖校验能够正确报错。
-                    if (
-                        mode == "strict"
-                        or (not path and group is None)
-                        or self._group_path_relevant(path, policy)
-                        or (group is not None and is_relevant(name))
-                    ):
-                        selected.add(name)
+                    selected.add(name)
                 if child.is_block:
-                    walk(child, [*path, self._base_header(child.header)])
+                    walk(child)
 
-        walk(working, [])
+        walk(working)
         return selected
 
     def _select_dependency_closure(
@@ -922,37 +987,6 @@ class JunosGroupExpander:
     def _commit_group_visibility(
         self,
         state: _JunosExpansionState,
-        mode: str,
     ) -> None:
-        """在工作树中隐藏已物化且不再被保留 group 依赖的定义。
-
-        strict 模式隐藏整个 groups 容器；relevant 模式保留未展开定义及其传递
-        依赖，防止留下悬空的 ``apply-groups`` 引用。
-        """
-        groups_container = state.groups_container
-        assert groups_container.children is not None
-        if mode == "strict":
-            groups_container.active = False
-            return
-
-        # relevant 模式保留未展开的 group；它们的传递依赖也必须保留，
-        # 否则会在原样保留的 group 中制造悬空 apply-groups 引用。
-        preserved = set(state.groups) - state.selected_groups
-        pending = list(preserved)
-        while pending:
-            name = pending.pop()
-            for dependency in state.dependencies.get(name, []):
-                if dependency in state.groups and dependency not in preserved:
-                    preserved.add(dependency)
-                    pending.append(dependency)
-        for group in groups_container.children:
-            name = self._group_definition_name(group.header)
-            if (
-                group.effective
-                and name in state.selected_groups
-                and name not in preserved
-            ):
-                group.active = False
-        groups_container.active = any(
-            group.active for group in groups_container.children
-        )
+        """隐藏 groups 容器，因为所有活动引用均已完整物化。"""
+        state.groups_container.active = False

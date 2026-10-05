@@ -1,9 +1,6 @@
 # 管理账号、AAA、SSH/Telnet、SNMP 和聚合属性始终清理。
 # 下列扩大业务范围的清洗必须显式开启，默认全部关闭。
 group_handling:
-  # relevant（默认）只展开接口、协议引用和管理认证相关 group；
-  # strict 展开所有已应用 group；preserve 完全保留 group。
-  mode: strict
   # preserve 保留未知语句；warn 保留并报告；fail 遇到潜在未知冲突时回滚。
   unknown_identity: warn
 

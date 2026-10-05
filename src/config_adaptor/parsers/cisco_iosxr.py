@@ -462,17 +462,16 @@ class CiscoDocument:
     def expand_groups(
         self,
         known_interfaces: Iterable[str],
-        mode: str = "relevant",
         policy: WashingPolicy | None = None,
     ) -> GroupExpansionOutcome:
-        """按模式和策略展开 IOS XR group，并返回事件、冲突及成败信息。
+        """展开全部已应用 IOS XR group，并返回事件、冲突及成败信息。
 
         group 继承必须在接口分类前物化，但其语义远比基础块解析复杂；委托专用展开器
         可以隔离冲突处理，并让调用方通过结果对象决定是否安全继续转换。
         """
         from ..vendor.cisco.groups import CiscoGroupExpander
 
-        return CiscoGroupExpander(self).expand_groups(known_interfaces, mode, policy)
+        return CiscoGroupExpander(self).expand_groups(known_interfaces, policy)
 
     def remove_interface(self, name: str, include_children: bool = False) -> None:
         """逻辑停用指定接口，并可连同全部点号子接口一起停用。

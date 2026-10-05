@@ -140,27 +140,25 @@ TopologyPreflightHandler -> GroupExpansionHandler -> InterfaceClassificationHand
 
 ### 4.9 配置 Group 展开
 
-1. Group 处理模式由 `group_handling.mode` 控制：
-   - `relevant`（默认）：仅展开会影响接口、聚合、协议接口引用、管理认证和已启用可选清洗范围的 group；无关定义及其应用/排除语句原样保留；
-   - `strict`：展开并校验所有已应用 group；
-   - `preserve`：完全跳过 group 展开。
-2. IOS XR 支持识别并展开已选中的 `group ... end-group`、`apply-group`/`apply-groups`：
+1. Group 统一展开并校验所有活动引用及其完整依赖，不提供相关性筛选或原样保留模式；未被活动配置引用的模板不参与求值。
+2. IOS XR 支持识别并展开活动的 `group ... end-group`、`apply-group`/`apply-groups`：
    - 精确接口选择器展开到对应接口；
    - 引号包裹的接口正则选择器按照已知显式接口和拓扑接口展开；
    - 显式配置优先于 group 中的同类配置；
    - 未定义 group、运行时变量或 group 内再次应用其他 group 等无法安全求值的情况触发转换失败；正则选择器当前无匹配对象时视为无继承结果。
    - 显式配置高于 group；内层 `apply-group` 高于外层；同一条应用语句中靠前的 group 优先。
    - 同一 group 中多个正则匹配时，按最长匹配优先，长度相同按表达式词法顺序处理。
-3. Junos 支持识别并展开已选中的 `groups {}`、`apply-groups` 和 `apply-groups-except`：
+3. Junos 支持识别并展开活动的 `groups {}`、`apply-groups` 和 `apply-groups-except`：
    - 支持根层级和局部层级应用；
-   - 支持 Group 内递归应用其他 Group，并按传递依赖共同参与相关性判断；
+   - 支持 Group 内递归应用其他 Group，并校验完整传递依赖；
    - 间接未定义引用或 Group 循环引用触发事务回滚；
    - 支持常见 `<ge-*>`、`<*>` 通配节点；
    - 显式配置优先于 group 继承配置；
    - 无法安全解析的已应用 group 触发转换失败，不输出不完整的自适应配置。
    - 显式配置高于 group；嵌套层级的 group 高于外层；同一 `apply-groups` 列表中靠前的 group 优先。
-4. 展开后的接口和认证配置进入后续 NNI、UNI、Auth 处理器。已完整展开的 group 及其应用语句从输出中移除，避免在接口改名后再次引用旧接口；未选中的 group 保持可提交的原始结构。
-5. group 展开必须采用事务模式：本次选中的所有 group 均可安全解析时才提交展开结果；任一选中 group 无法解析时整体回滚并将本次转换标记为失败。`relevant` 模式下，无关 group 的未定义引用或 IOS XR 运行时变量、嵌套应用不参与本次校验。
+   - 所有 `inactive:` 节点及其完整子树必须从自适应配置中删除，不得激活或保留其后代配置。
+4. 展开后的配置进入后续 NNI、UNI、Auth 处理器。成功展开后从输出中移除 group 定义及其应用语句，避免接口改名后再次引用旧接口。
+5. group 展开必须采用事务模式：所有活动引用及其依赖均可安全解析时才提交展开结果；任一活动 group 无法解析时整体回滚并将本次转换标记为失败。
 6. 配置冲突使用完整层级和语义键判断，不能只比较命令首关键字：
    - `ipv4 address` 与 `ipv4 access-group` 是不同配置；
    - Junos多个 `address`、接口列表等可重复配置应同时保留；

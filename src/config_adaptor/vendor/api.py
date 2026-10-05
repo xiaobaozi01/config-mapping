@@ -32,7 +32,6 @@ class VendorConfiguration(Protocol):
         self,
         known_interfaces: set[str],
         *,
-        mode: str,
         policy: WashingPolicy,
     ) -> GroupExpansionOutcome: ...
 

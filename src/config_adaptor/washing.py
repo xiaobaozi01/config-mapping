@@ -19,7 +19,7 @@ _OPTIONAL_KEYS = {
 
 
 def load_washing_policy(path: Path | None) -> WashingPolicy:
-    """读取 group 处理模式和清洗开关。"""
+    """读取 group 未知语义策略和清洗开关。"""
     if path is None:
         return WashingPolicy()
     with path.open("r", encoding="utf-8") as handle:
@@ -33,12 +33,9 @@ def load_washing_policy(path: Path | None) -> WashingPolicy:
     group_handling = payload.get("group_handling", {})
     if not isinstance(group_handling, dict):
         raise ValueError("group_handling 必须是键值映射")
-    unknown_group_keys = sorted(set(group_handling) - {"mode", "unknown_identity"})
+    unknown_group_keys = sorted(set(group_handling) - {"unknown_identity"})
     if unknown_group_keys:
         raise ValueError(f"未知 group 处理配置: {', '.join(unknown_group_keys)}")
-    group_mode = group_handling.get("mode", "relevant")
-    if group_mode not in {"relevant", "strict", "preserve"}:
-        raise ValueError("group_handling.mode 必须是 relevant、strict 或 preserve")
     unknown_identity = group_handling.get("unknown_identity", "warn")
     if unknown_identity not in {"preserve", "warn", "fail"}:
         raise ValueError(
@@ -46,7 +43,6 @@ def load_washing_policy(path: Path | None) -> WashingPolicy:
         )
 
     values: dict[str, bool | str] = {
-        "group_handling": group_mode,
         "group_unknown_identity": unknown_identity,
     }
     for key in _OPTIONAL_KEYS:

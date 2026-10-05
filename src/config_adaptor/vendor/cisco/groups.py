@@ -2,7 +2,6 @@
 
 from __future__ import annotations
 
-import copy
 import re
 from dataclasses import dataclass, field
 from typing import Iterable
@@ -24,7 +23,6 @@ from .identity import resolve_cisco_identity
 class _CiscoGroupDefinition:
     """一个 IOS XR group 定义及其静态分析结果。"""
 
-    source_node: CiscoNode
     body: list[CiscoNode]
     has_runtime_variables: bool
     has_nested_apply: bool
@@ -133,67 +131,6 @@ class CiscoGroupExpander:
         if original_value.startswith("[") and original_value.endswith("]"):
             value = f"[ {value} ]"
         return f"{match.group(1)} {value}"
-
-    @staticmethod
-    def _cisco_group_path_relevant(path: list[str], policy: WashingPolicy) -> bool:
-        """判断配置路径是否落在本次转换需要物化的范围内。
-
-        接口、路由、业务和管理访问路径始终相关；认证、PKI、硬件、NAT 和
-        流量统计路径仅在相应清洗开关启用时相关。空路径返回 ``False``。
-        """
-        if not path:
-            return False
-        top = _normalized_command(path[0])
-        always = (
-            "interface ",
-            "router ",
-            "vrf ",
-            "l2vpn",
-            "mpls ",
-            "segment-routing",
-            "username ",
-            "aaa",
-            "tacacs",
-            "radius",
-            "taskgroup ",
-            "usergroup ",
-            "line ",
-            "snmp-server",
-            "ssh ",
-            "telnet ",
-        )
-        if top.startswith(always):
-            return True
-        if policy.protocol_authentication and top.startswith(("key chain", "key-chain")):
-            return True
-        if policy.pki and top.startswith(("crypto ", "crypto-key", "certificate ")):
-            return True
-        if policy.hardware and top.startswith(("hw-module ", "controller ", "platform ", "slot ")):
-            return True
-        if policy.nat and top.startswith(("nat ", "service-location ")):
-            return True
-        if policy.flow_statistics and top.startswith(("flow ", "flow-exporter ", "flow monitor ")):
-            return True
-        return False
-
-    def _is_group_body_relevant(
-        self,
-        group_body: list[CiscoNode],
-        policy: WashingPolicy,
-    ) -> bool:
-        """递归判断一个 group 定义是否包含相关配置路径。
-
-        只要任一节点自身或其后代命中 ``_cisco_group_path_relevant`` 就返回
-        ``True``；该结果用于 relevant 模式选择 group，不会修改树。
-        """
-        def walk(items: list[CiscoNode], path: list[str]) -> bool:
-            for item in items:
-                current = [*path, item.header]
-                if self._cisco_group_path_relevant(current, policy) or walk(item.children, current):
-                    return True
-            return False
-
-        return walk(group_body, [])
 
     @staticmethod
     def _cisco_pattern_match(pattern: str, target: str) -> bool:
@@ -420,33 +357,21 @@ class CiscoGroupExpander:
     def expand_groups(
         self,
         known_interfaces: Iterable[str],
-        mode: str = "relevant",
         policy: WashingPolicy | None = None,
     ) -> GroupExpansionOutcome:
-        """编排 IOS XR group 的选择、展开、校验和事务式提交。
+        """编排 IOS XR group 的收集、展开、校验和事务式提交。
 
-        ``relevant`` 只物化影响转换或清洗的 group，``strict`` 物化全部引用，
-        ``preserve`` 保持原文不变。返回值汇总事件、告警、冲突和规则命中数；
+        所有活动引用都会被物化。返回值汇总事件、告警、冲突和规则命中数；
         只有完整展开成功才替换原文档，任何未解析引用都会整体回滚。
         """
         outcome = GroupExpansionOutcome()
         policy = policy or WashingPolicy()
-        if mode == "preserve":
-            return outcome
-        if mode not in {"relevant", "strict"}:
-            raise ValueError(f"未知 IOS XR group 处理模式: {mode}")
 
         # 定义解析和工作树构建均不修改原根节点，便于任何失败直接回滚。
         group_definitions = self._load_group_definitions()
-        if not group_definitions:
-            return outcome
-
         working_root, terminal_commands = self._build_working_tree(known_interfaces)
         selected_groups = self._select_groups(
             working_root,
-            group_definitions,
-            mode,
-            policy,
         )
         if not selected_groups:
             return outcome
@@ -473,9 +398,6 @@ class CiscoGroupExpander:
         self.top_level_nodes = self._rebuild_top_level_nodes(
             working_root,
             terminal_commands,
-            group_definitions,
-            state.applied_groups,
-            mode,
         )
         outcome.events.extend(
             f"已展开 IOS XR 配置组 {name}"
@@ -516,7 +438,6 @@ class CiscoGroupExpander:
                 origin=f"group:{group_name}",
             )
             definitions[group_name] = _CiscoGroupDefinition(
-                source_node=definition_node,
                 body=body,
                 has_runtime_variables=any(
                     "$" in node.header for node in definition_node.walk()
@@ -578,40 +499,18 @@ class CiscoGroupExpander:
     def _select_groups(
         self,
         working_root: CiscoNode,
-        group_definitions: dict[str, _CiscoGroupDefinition],
-        mode: str,
-        policy: WashingPolicy,
     ) -> set[str]:
-        """从工作树收集本次需要物化的顶层 group 引用。
-
-        strict 模式选择所有引用；relevant 模式只选择命中相关配置路径或定义
-        内容的 group，同时保留根层未定义引用以便后续给出明确错误。
-        """
+        """从工作树收集全部活动的顶层 group 引用。"""
         selected_groups: set[str] = set()
 
-        def walk(node: CiscoNode, path: list[str]) -> None:
+        def walk(node: CiscoNode) -> None:
             for child in node.children:
                 for name in self._cisco_group_names(child.header, "apply-group"):
-                    definition = group_definitions.get(name)
-                    # strict 展开所有引用；relevant 只展开影响转换/清洗的路径。
-                    # 根层未定义引用仍要选中，否则会被错误地忽略而无法报错。
-                    if (
-                        mode == "strict"
-                        or (not path and definition is None)
-                        or self._cisco_group_path_relevant(path, policy)
-                        or (
-                            definition is not None
-                            and self._is_group_body_relevant(
-                                definition.body,
-                                policy,
-                            )
-                        )
-                    ):
-                        selected_groups.add(name)
+                    selected_groups.add(name)
                 if child.is_block:
-                    walk(child, [*path, child.header])
+                    walk(child)
 
-        walk(working_root, [])
+        walk(working_root)
         return selected_groups
 
     def _expand_node(
@@ -688,7 +587,7 @@ class CiscoGroupExpander:
             )
 
         state.applied_groups.update(local_group_names)
-        # 只校验当前实际应用的 group；relevant 模式下未用到的复杂 group 可原样保留。
+        # 只校验从活动配置实际引用的 group；未使用定义不影响转换。
         for name in local_group_names:
             definition = state.definitions.get(name)
             if definition is None:
@@ -760,28 +659,9 @@ class CiscoGroupExpander:
         self,
         working_root: CiscoNode,
         terminal_commands: list[str],
-        group_definitions: dict[str, _CiscoGroupDefinition],
-        applied_groups: set[str],
-        mode: str,
     ) -> list[CiscoNode]:
-        """把已展开工作树重新组装为可提交的 IOS XR 顶层节点。
-
-        relevant 模式保留未物化的 group 定义，strict 模式仅输出展开后的
-        配置；最后恢复终止命令，并返回新列表而不直接写入文档。
-        """
+        """把展开后的工作树和终止命令重新组装为 IOS XR 顶层节点。"""
         rebuilt_nodes: list[CiscoNode] = []
-        if mode == "relevant":
-            # relevant 模式必须保留未应用 group 的定义，以及它们原有的引用关系。
-            for name, definition in group_definitions.items():
-                if name in applied_groups:
-                    continue
-                rebuilt_nodes.extend(
-                    [
-                        copy.deepcopy(definition.source_node),
-                        CiscoNode(header="end-group"),
-                        CiscoNode(header="!"),
-                    ]
-                )
         for node in working_root.children:
             rebuilt_nodes.append(
                 CiscoNode(

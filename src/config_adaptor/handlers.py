@@ -105,16 +105,11 @@ class GroupExpansionHandler:
     def process(self, context: ConversionContext) -> None:
         """收集活动拓扑接口并逐设备展开 group，将结果写入共享上下文。
 
-        ``preserve`` 模式只记录事件并保留原配置；其他模式把拓扑中的父接口加入
-        展开候选，随后记录厂商展开器返回的普通事件、冲突、歧义和规则命中率。
+        把拓扑中的父接口加入展开候选，随后记录厂商展开器返回的普通事件、
+        冲突、歧义和规则命中率。
         展开失败会同时写入设备及全局错误，使流水线停止，因为继续使用部分展开的
         配置进行接口迁移可能丢失继承命令或覆盖显式配置。
         """
-        mode = context.washing_policy.group_handling
-        if mode == "preserve":
-            context.add_event("group-expansion", "已按策略保留所有厂商 group，不执行静态展开")
-            return
-
         # 拓扑接口即使未显式出现在配置中，也要作为正则/通配 group 的候选对象。
         known_by_device: dict[str, set[str]] = defaultdict(set)
         for link in context.topology.links:
@@ -128,7 +123,6 @@ class GroupExpansionHandler:
             device = context.devices[device_name]
             outcome = device.document.expand_groups(
                 known_by_device[device_name],
-                mode=mode,
                 policy=context.washing_policy,
             )
             device.warnings.extend(outcome.warnings)

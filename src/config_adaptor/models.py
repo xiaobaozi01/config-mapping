@@ -143,9 +143,8 @@ class ImageProfile:
 
 @dataclass(slots=True, frozen=True)
 class WashingPolicy:
-    """Group 展开/未知语义策略和默认关闭的扩展清洗开关。"""
+    """Group 未知语义策略和默认关闭的扩展清洗开关。"""
 
-    group_handling: str = "relevant"
     group_unknown_identity: str = "warn"
     protocol_authentication: bool = False
     pki: bool = False

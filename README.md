@@ -59,7 +59,7 @@ config-adaptor convert \
 
 管理账号、AAA/TACACS/RADIUS、SSH/Telnet 网络管理服务、SSH 信任、SNMP 以及聚合扁平化后的 LACP/门限属性始终清理。协议认证、PKI、硬件、NAT 和流量统计由独立的可选能力清洗阶段处理；`--washing-policy` 中的对应开关只有显式改为 `true` 才生效。
 
-group 默认采用 `relevant` 模式：只静态展开会影响接口、聚合、协议接口引用、管理认证以及已开启可选清洗范围的 group；日志、遥测等无关 group 连同其应用语句原样保留，也不会因其无法静态求值而阻断转换。`strict` 保持全量展开和全量校验，`preserve` 则完全跳过 group 展开。模式在策略文件的 `group_handling.mode` 中配置。
+group 统一采用全量处理：静态展开并校验所有活动的 group 引用及其依赖，成功后移除 group 定义和控制语句。未被活动配置引用的模板不参与求值；缺失引用、循环依赖或无法安全静态解释的活动 group 会使转换整体回滚。Junos 中所有 `inactive:` 节点及其完整子树都会从自适应配置中删除。
 
 group 叶子语句使用 XRv9000/vMX 路径感知规则判定语义冲突。未匹配规则且同路径同命令族出现不同值时，`group_handling.unknown_identity` 可设为 `preserve`、`warn`（默认）或 `fail`。报告中的 `group-identity-coverage` 事件和 summary 字段给出规则命中数、降级数及实际覆盖率。
 

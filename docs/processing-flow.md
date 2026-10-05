@@ -81,7 +81,7 @@ output/
         ↓
 预检链路端点并标记不支持的链路
         ↓
-按策略展开配置 Group（默认仅业务相关）
+展开并校验全部活动 Group 引用
         ↓
 处理 NNI 和聚合扁平化
         ↓
@@ -128,7 +128,7 @@ NNI 中的聚合链路识别先由纯函数 `plan_nni_components()` 生成不可
 
 `TopologyPreflightHandler` 在任何配置改写前验证链路端点，标记超出支持范围的链路，并为本端生成 `action=skip` 的 NNI 映射。后续 Group、NNI 和 UNI 只消费有效链路或明确保留的接口角色，避免跳过的 NNI 被误分类为 UNI。
 
-`GroupExpansionHandler` 支持三种模式：`relevant` 只展开接口迁移、协议接口引用、管理认证及已启用可选清洗所需的 group；`strict` 展开所有已应用 group；`preserve` 保留全部 group。默认使用 `relevant`，未被选中的定义、`apply-group(s)` 和排除语句继续保留。
+`GroupExpansionHandler` 统一展开并校验所有活动的 group 引用及其依赖。未被活动配置引用的模板不参与求值；成功展开后删除 group 定义和对应控制语句，任一活动引用无法安全解析时整体回滚。
 
 `InterfaceClassificationHandler` 使用厂商物理接口白名单分类接口。已知虚拟接口和未知接口均不参与 NNI/UNI 物理端口分配；未知接口原样保留并写入告警，若链接表把非物理接口作为端点则转换失败。
 
@@ -614,9 +614,9 @@ interfaces
 配置大括号不平衡时直接报错。
 
 `inactive:` 和 `protect:` 前缀在名称、路径及 identity 比较时被去除。两者的
-生效状态不同：`inactive:` 节点不参与 Group 展开、接口与 VLAN 识别或配置改写，
-并在输出中继续保持停用；`protect:` 节点仍作为有效配置参与转换，但最终输出会
-去掉保护前缀，避免生产设备的编辑保护妨碍 GNS3 中的配置加载和后续调整。
+生效状态不同：所有 `inactive:` 节点及其完整子树都会从自适应配置中删除，避免
+误激活后代配置；`protect:` 节点仍作为有效配置参与转换，但最终输出会去掉保护
+前缀，避免生产设备的编辑保护妨碍 GNS3 配置加载和后续调整。
 
 ### 8.2 Junos Groups 展开
 
@@ -650,8 +650,8 @@ apply-groups-except GROUP-A;
 
 Group 定义内可以继续应用其他 Group。系统递归求取依赖闭包，在真实配置
 层级上动态展开，因此间接 Group 中的通配节点和局部
-`apply-groups-except` 仍按最终接口路径生效。未应用 Group 所引用的定义会
-继续保留，避免相关 Group 展开后产生悬空引用。
+`apply-groups-except` 仍按最终接口路径生效。未应用 Group 不参与依赖求值；
+一旦存在活动引用并成功完成扁平化，原 `groups` 容器整体从输出中移除。
 
 优先级从高到低：
 
@@ -702,7 +702,8 @@ Group 定义内可以继续应用其他 Group。系统递归求取依赖闭包�
 - Group 直接或间接形成循环引用。
 - 配置层级无法安全求值。
 
-成功后才停用原 `groups` 块，并删除已经处理的 apply 语句。
+成功后才停用原 `groups` 块，并删除已经处理的 apply 语句。所有 inactive 节点
+即使没有活动 group 引用也会从自适应输出中清理。
 
 ### 8.3 Junos NNI 处理
 

@@ -719,7 +719,7 @@ apply-groups "EDGE GROUP";
         with self.assertRaisesRegex(ValueError, "大括号不平衡"):
             JunosDocument("system { host-name lab;")
 
-    def test_junos_inactive_apply_groups_is_preserved_and_ignored(self):
+    def test_junos_inactive_apply_groups_are_removed_without_expansion(self):
         source = """groups {
     COMMON {
         interfaces {
@@ -739,11 +739,67 @@ inactive: apply-groups MISSING;
 """
         document = JunosDocument(source)
         outcome = document.expand_groups([])
+        rendered = document.render()
 
         self.assertTrue(outcome.success)
         self.assertFalse(outcome.events)
         self.assertFalse(outcome.warnings)
-        self.assertEqual(document.render(), source)
+        self.assertIn("groups {", rendered)
+        self.assertNotIn("inactive: apply-groups", rendered)
+        self.assertNotIn("MISSING", rendered)
+
+    def test_junos_inactive_group_definition_is_removed_without_active_groups(self):
+        source = """groups {
+    inactive: DISABLED {
+        system {
+            host-name old;
+        }
+    }
+}
+inactive: apply-groups DISABLED;
+system {
+    host-name current;
+}
+"""
+        document = JunosDocument(source)
+        outcome = document.expand_groups([])
+        rendered = document.render()
+
+        self.assertTrue(outcome.success)
+        self.assertFalse(outcome.warnings)
+        self.assertNotIn("groups {", rendered)
+        self.assertNotIn("DISABLED", rendered)
+        self.assertIn("host-name current;", rendered)
+
+    def test_junos_all_inactive_nodes_are_removed_without_group_expansion(self):
+        source = """system {
+    inactive: host-name old;
+    host-name current;
+    inactive: services {
+        ssh;
+    }
+}
+interfaces {
+    inactive: ge-0/0/0 {
+        unit 0;
+    }
+    ge-0/0/1 {
+        inactive: mtu 1500;
+        mtu 9000;
+    }
+}
+"""
+        document = JunosDocument(source)
+        outcome = document.expand_groups([])
+        rendered = document.render()
+
+        self.assertTrue(outcome.success)
+        self.assertNotIn("inactive:", rendered)
+        self.assertNotIn("host-name old;", rendered)
+        self.assertNotIn("ge-0/0/0", rendered)
+        self.assertNotIn("mtu 1500;", rendered)
+        self.assertIn("host-name current;", rendered)
+        self.assertIn("mtu 9000;", rendered)
 
     def test_junos_inactive_nested_controls_do_not_change_expansion(self):
         source = """groups {
@@ -774,7 +830,7 @@ apply-groups COMMON;
         self.assertNotIn("groups {", rendered)
         self.assertNotIn("apply-groups", rendered)
 
-    def test_junos_inactive_group_is_preserved_but_not_expanded(self):
+    def test_junos_inactive_group_is_not_expanded(self):
         source = """groups {
     inactive: DISABLED {
         interfaces {
@@ -805,12 +861,12 @@ inactive: apply-groups DISABLED;
 
         self.assertTrue(outcome.success)
         self.assertEqual(outcome.events, ["已展开 Junos 配置组 ENABLED"])
-        self.assertIn("inactive: DISABLED {", rendered)
-        self.assertIn("inactive: apply-groups DISABLED;", rendered)
+        self.assertNotIn("inactive: DISABLED {", rendered)
+        self.assertNotIn("inactive: apply-groups DISABLED;", rendered)
         self.assertIn("mtu 9000;", rendered)
-        self.assertEqual(rendered.count("description disabled-group;"), 1)
+        self.assertNotIn("description disabled-group;", rendered)
 
-    def test_junos_inactive_value_does_not_override_group_value(self):
+    def test_junos_inactive_value_is_removed_before_group_merge(self):
         source = """groups {
     COMMON {
         interfaces {
@@ -833,7 +889,7 @@ apply-groups COMMON;
         rendered = document.render()
 
         self.assertTrue(outcome.success)
-        self.assertIn("inactive: mtu 1500;", rendered)
+        self.assertNotIn("inactive: mtu 1500;", rendered)
         self.assertIn("mtu 9000;", rendered)
         self.assertFalse(outcome.conflicts)
 
@@ -864,7 +920,7 @@ protect: apply-groups COMMON;
         self.assertNotIn("groups {", rendered)
         self.assertNotIn("apply-groups", rendered)
 
-    def test_junos_quoted_group_name_in_list_is_parsed_and_rewritten(self):
+    def test_junos_quoted_group_names_in_list_are_fully_expanded(self):
         source = """groups {
     "BUSINESS EDGE" {
         interfaces {
@@ -895,10 +951,17 @@ apply-groups [ "BUSINESS EDGE" "LOGGING CORE" ];
         rendered = document.render()
 
         self.assertTrue(outcome.success)
-        self.assertEqual(outcome.events, ["已展开 Junos 配置组 BUSINESS EDGE"])
+        self.assertEqual(
+            set(outcome.events),
+            {
+                "已展开 Junos 配置组 BUSINESS EDGE",
+                "已展开 Junos 配置组 LOGGING CORE",
+            },
+        )
         self.assertIn("mtu 9000;", rendered)
-        self.assertNotIn('"BUSINESS EDGE" {', rendered)
-        self.assertIn('apply-groups [ "LOGGING CORE" ];', rendered)
+        self.assertIn("syslog {", rendered)
+        self.assertNotIn("groups {", rendered)
+        self.assertNotIn("apply-groups", rendered)
 
     def test_junos_quoted_nested_group_and_except_are_resolved(self):
         source = """groups {
@@ -968,7 +1031,7 @@ apply-groups "EDGE GROUP";
         self.assertIn("inactive: vlan-id 300;", rendered)
         self.assertNotIn("protect:", rendered)
 
-    def test_relevant_mode_preserves_unrelated_iosxr_groups(self):
+    def test_full_expansion_rejects_unrelated_invalid_iosxr_group(self):
         source = """group BUSINESS
  interface 'GigabitEthernet.*'
   mtu 9000
@@ -990,15 +1053,31 @@ end
 """
         document = CiscoDocument(source)
         outcome = document.expand_groups(["GigabitEthernet0/0/0/5"])
+        self.assertFalse(outcome.success)
+        self.assertTrue(any("TELEMETRY" in warning for warning in outcome.warnings))
+        self.assertEqual(document.render(), source)
+
+    def test_iosxr_expands_non_interface_group(self):
+        source = """group TELEMETRY
+ telemetry model-driven
+  destination-group LAB
+ !
+end-group
+!
+apply-group TELEMETRY
+!
+end
+"""
+        document = CiscoDocument(source)
+        outcome = document.expand_groups([])
         rendered = document.render()
         self.assertTrue(outcome.success)
-        self.assertIn("mtu 9000", rendered)
-        self.assertNotIn("group BUSINESS", rendered)
-        self.assertIn("group TELEMETRY", rendered)
-        self.assertIn("apply-group TELEMETRY", rendered)
-        self.assertEqual(rendered.count("telemetry model-driven"), 1)
+        self.assertIn("telemetry model-driven", rendered)
+        self.assertIn("destination-group LAB", rendered)
+        self.assertNotIn("group TELEMETRY", rendered)
+        self.assertNotIn("apply-group TELEMETRY", rendered)
 
-    def test_relevant_mode_preserves_unrelated_junos_groups(self):
+    def test_full_expansion_rejects_unrelated_invalid_junos_group(self):
         source = """groups {
     BUSINESS {
         interfaces {
@@ -1027,16 +1106,11 @@ apply-groups [ BUSINESS LOGGING ];
 """
         document = JunosDocument(source)
         outcome = document.expand_groups([])
-        rendered = document.render()
-        self.assertTrue(outcome.success)
-        self.assertIn("mtu 9000;", rendered)
-        self.assertNotIn("BUSINESS {", rendered)
-        self.assertIn("LOGGING {", rendered)
-        self.assertIn("apply-groups [ LOGGING ];", rendered)
-        self.assertIn("apply-groups MISSING;", rendered)
-        self.assertEqual(rendered.count("syslog {"), 1)
+        self.assertFalse(outcome.success)
+        self.assertTrue(any("MISSING" in warning for warning in outcome.warnings))
+        self.assertEqual(document.render(), source)
 
-    def test_strict_and_preserve_group_modes(self):
+    def test_junos_expands_non_interface_group(self):
         source = """groups {
     LOGGING {
         system {
@@ -1050,16 +1124,12 @@ apply-groups [ BUSINESS LOGGING ];
 }
 apply-groups LOGGING;
 """
-        strict = JunosDocument(source)
-        strict_outcome = strict.expand_groups([], mode="strict")
-        self.assertTrue(strict_outcome.success)
-        self.assertNotIn("groups {", strict.render())
-        self.assertIn("syslog {", strict.render())
-
-        preserved = JunosDocument(source)
-        preserve_outcome = preserved.expand_groups([], mode="preserve")
-        self.assertTrue(preserve_outcome.success)
-        self.assertEqual(preserved.render(), source)
+        document = JunosDocument(source)
+        outcome = document.expand_groups([])
+        self.assertTrue(outcome.success)
+        self.assertNotIn("groups {", document.render())
+        self.assertNotIn("apply-groups", document.render())
+        self.assertIn("syslog {", document.render())
 
     def test_iosxr_group_conflict_precedence_and_semantic_keys(self):
         document = CiscoDocument(self.fixture_config("iosxr_group_conflicts.cfg"))
@@ -1198,16 +1268,121 @@ apply-groups EDGE;
         self.assertIn("mtu 9000;", second_interface)
         self.assertNotIn("apply-groups", rendered)
 
-    def test_junos_nested_group_cycle_and_missing_reference_roll_back(self):
-        """循环与间接未定义引用均在写回前失败并保留原配置。"""
-        cycle = """groups {
-    A {
-        apply-groups B;
+    def test_junos_undefined_apply_groups_except_rolls_back_without_apply(self):
+        """只有 except 引用时也必须校验 group 是否已定义。"""
+        source = """interfaces {
+    ge-0/0/0 {
+        apply-groups-except "MISSING GROUP";
+        unit 0;
+    }
+}
+"""
+        document = JunosDocument(source)
+        outcome = document.expand_groups([])
+        self.assertFalse(outcome.success)
+        self.assertTrue(
+            any(
+                "apply-groups-except" in warning and "MISSING GROUP" in warning
+                for warning in outcome.warnings
+            )
+        )
+        self.assertEqual(document.render(), source)
+
+    def test_junos_selected_group_validates_apply_groups_except(self):
+        """已选中 group 内的 except 引用缺失时整体回滚。"""
+        source = """groups {
+    EDGE {
+        interfaces {
+            <ge-*> {
+                apply-groups-except MISSING;
+                mtu 9000;
+            }
+        }
+    }
+}
+interfaces {
+    ge-0/0/0 {
+        unit 0;
+    }
+}
+apply-groups EDGE;
+"""
+        document = JunosDocument(source)
+        outcome = document.expand_groups([])
+        self.assertFalse(outcome.success)
+        self.assertTrue(any("MISSING" in warning for warning in outcome.warnings))
+        self.assertEqual(document.render(), source)
+
+    def test_junos_inactive_and_unused_group_exclusions_do_not_block_expansion(self):
+        """inactive 引用会删除，未使用模板中的 except 不阻断完整展开。"""
+        source = """groups {
+    EDGE {
         interfaces {
             <ge-*> {
                 mtu 9000;
             }
         }
+    }
+    UNUSED {
+        apply-groups-except MISSING-IN-UNUSED;
+    }
+}
+interfaces {
+    ge-0/0/0 {
+        inactive: apply-groups-except MISSING-INACTIVE;
+        unit 0;
+    }
+}
+apply-groups EDGE;
+"""
+        document = JunosDocument(source)
+        outcome = document.expand_groups([])
+        rendered = document.render()
+        self.assertTrue(outcome.success)
+        self.assertFalse(outcome.warnings)
+        self.assertIn("mtu 9000;", rendered)
+        self.assertNotIn("MISSING-IN-UNUSED", rendered)
+        self.assertNotIn("MISSING-INACTIVE", rendered)
+
+    def test_junos_apply_groups_except_does_not_create_dependency(self):
+        """合法 except 引用只校验存在性，不会单独选中或展开 group。"""
+        source = """groups {
+    EXCLUDED {
+        interfaces {
+            <ge-*> {
+                description SHOULD-NOT-EXPAND;
+            }
+        }
+    }
+    EDGE {
+        interfaces {
+            <ge-*> {
+                apply-groups-except EXCLUDED;
+                mtu 9000;
+            }
+        }
+    }
+}
+interfaces {
+    ge-0/0/0 {
+        unit 0;
+    }
+}
+apply-groups EDGE;
+"""
+        document = JunosDocument(source)
+        outcome = document.expand_groups([])
+        rendered = document.render()
+        self.assertTrue(outcome.success)
+        self.assertNotIn("已展开 Junos 配置组 EXCLUDED", outcome.events)
+        self.assertNotIn("description SHOULD-NOT-EXPAND;", rendered)
+        self.assertNotIn("groups {", rendered)
+
+    def test_junos_nested_group_cycle_and_missing_reference_roll_back(self):
+        """循环与间接未定义引用均在写回前失败并保留原配置。"""
+        cycle = """groups {
+    A {
+        apply-groups B;
     }
     B {
         apply-groups A;
@@ -1229,11 +1404,6 @@ apply-groups A;
         missing = """groups {
     A {
         apply-groups MISSING;
-        interfaces {
-            <ge-*> {
-                mtu 9000;
-            }
-        }
     }
 }
 interfaces {
@@ -1249,8 +1419,8 @@ apply-groups A;
         self.assertTrue(any("MISSING" in warning for warning in missing_outcome.warnings))
         self.assertEqual(missing_document.render(), missing)
 
-    def test_junos_keeps_dependencies_of_unapplied_groups(self):
-        """相关 Group 展开后，不删除仍被未应用 Group 引用的定义。"""
+    def test_junos_removes_unapplied_group_definitions_after_expansion(self):
+        """活动引用完整展开后删除全部 group 定义，包括未应用模板。"""
         source = """groups {
     BASE {
         interfaces {
@@ -1277,11 +1447,9 @@ apply-groups EDGE;
         outcome = document.expand_groups([])
         rendered = document.render()
         self.assertTrue(outcome.success)
-        self.assertIn("BASE {", rendered)
-        self.assertIn("UNUSED-TEMPLATE {", rendered)
-        self.assertNotIn("EDGE {", rendered)
-        self.assertIn("apply-groups BASE;", rendered)
-        self.assertEqual(rendered.count("mtu 9000;"), 2)
+        self.assertNotIn("groups {", rendered)
+        self.assertNotIn("apply-groups", rendered)
+        self.assertEqual(rendered.count("mtu 9000;"), 1)
 
     def test_group_expansion_rolls_back_on_unresolved_reference(self):
         source = self.fixture_config("junos_group_unresolved.cfg")
@@ -1291,6 +1459,32 @@ apply-groups EDGE;
         self.assertTrue(outcome.warnings)
         self.assertIn("apply-groups MISSING", document.render())
         self.assertIn("groups {", document.render())
+
+    def test_undefined_root_group_fails_without_any_definitions(self):
+        junos_source = """interfaces {
+    ge-0/0/0 {
+        unit 0;
+    }
+}
+apply-groups MISSING;
+"""
+        junos = JunosDocument(junos_source)
+        junos_outcome = junos.expand_groups([])
+        self.assertFalse(junos_outcome.success)
+        self.assertTrue(any("MISSING" in item for item in junos_outcome.warnings))
+        self.assertEqual(junos.render(), junos_source)
+
+        cisco_source = """apply-group MISSING
+!
+interface GigabitEthernet0/0/0/0
+!
+end
+"""
+        cisco = CiscoDocument(cisco_source)
+        cisco_outcome = cisco.expand_groups([])
+        self.assertFalse(cisco_outcome.success)
+        self.assertTrue(any("MISSING" in item for item in cisco_outcome.warnings))
+        self.assertEqual(cisco.render(), cisco_source)
 
     def test_unresolved_applied_group_fails_conversion_before_mapping(self):
         topology, config_dir = self.conversion_fixture("junos_unresolved")

@@ -98,7 +98,7 @@ router bgp 65000
 end
 """
         )
-        cisco_outcome = cisco.expand_groups([], mode="strict")
+        cisco_outcome = cisco.expand_groups([])
         self.assertTrue(cisco_outcome.success)
         self.assertIn("timers bgp 60 180", cisco.render())
         self.assertNotIn("timers bgp 30 90", cisco.render())
@@ -126,7 +126,7 @@ protocols {
 }
 """
         )
-        junos_outcome = junos.expand_groups([], mode="strict")
+        junos_outcome = junos.expand_groups([])
         self.assertTrue(junos_outcome.success)
         self.assertIn("peer-as 65002;", junos.render())
         self.assertNotIn("peer-as 65001;", junos.render())
@@ -156,24 +156,34 @@ end
         self.assertIn("vendor-knob inherited", warning_document.render())
         self.assertIn("vendor-knob local", warning_document.render())
 
-        strict_document = CiscoDocument(source)
-        before = strict_document.render()
-        strict_outcome = strict_document.expand_groups(
+        failing_document = CiscoDocument(source)
+        before = failing_document.render()
+        failing_outcome = failing_document.expand_groups(
             ["GigabitEthernet0/0/0/0"],
             policy=WashingPolicy(group_unknown_identity="fail"),
         )
-        self.assertFalse(strict_outcome.success)
-        self.assertEqual(len(strict_outcome.ambiguities), 1)
-        self.assertEqual(strict_document.render(), before)
+        self.assertFalse(failing_outcome.success)
+        self.assertEqual(len(failing_outcome.ambiguities), 1)
+        self.assertEqual(failing_document.render(), before)
 
     def test_unknown_identity_policy_is_loaded(self):
         with tempfile.TemporaryDirectory() as directory:
             path = Path(directory) / "washing.yaml"
             path.write_text(
-                "group_handling:\n  mode: relevant\n  unknown_identity: fail\n",
+                "group_handling:\n  unknown_identity: fail\n",
                 encoding="utf-8",
             )
             self.assertEqual(load_washing_policy(path).group_unknown_identity, "fail")
+
+    def test_removed_group_mode_is_rejected(self):
+        with tempfile.TemporaryDirectory() as directory:
+            path = Path(directory) / "washing.yaml"
+            path.write_text(
+                "group_handling:\n  mode: relevant\n",
+                encoding="utf-8",
+            )
+            with self.assertRaisesRegex(ValueError, "未知 group 处理配置: mode"):
+                load_washing_policy(path)
 
     def test_conversion_report_contains_identity_coverage(self):
         fixture = Path(__file__).parent / "fixtures" / "iosxr_bundle"
