@@ -9,6 +9,7 @@ import shlex
 from dataclasses import dataclass, field
 from typing import Iterable
 
+from ...errors import require_invariant
 from ...models import WashingPolicy
 from ...parsers.common import (
     GroupExpansionOutcome,
@@ -169,7 +170,10 @@ class JunosGroupExpander:
         每一级只保留有效且匹配的块节点，并按选择器具体程度排序后合并其
         子节点作为下一层候选；任一级无匹配时返回空列表。
         """
-        assert group.children is not None
+        require_invariant(
+            group.children is not None,
+            "Junos group 定义必须是包含子节点的块节点",
+        )
         candidates = group.children
         for component in path:
             matches = [
@@ -231,7 +235,10 @@ class JunosGroupExpander:
         显式配置始终胜出，group 之间按 ``rank`` 覆盖，并同步更新冲突、规则
         命中、fallback 和歧义报告；fail 策略会把 outcome 标为失败。
         """
-        assert target.children is not None
+        require_invariant(
+            target.children is not None,
+            "Junos group 合并目标必须是块节点",
+        )
         for source in source_children:
             if not source.effective or not source.header:
                 continue
@@ -455,7 +462,10 @@ class JunosGroupExpander:
         """
         # 事务边界：本方法以后的所有变更都只发生在 working 上。
         working = copy.deepcopy(self.root)
-        assert working.children is not None
+        require_invariant(
+            working.children is not None,
+            "Junos 工作树根节点必须可包含子节点",
+        )
         removed_inactive = self._remove_inactive_nodes(working)
         groups_container, groups, normalized_groups = (
             self._normalize_group_containers(working)
@@ -492,13 +502,19 @@ class JunosGroupExpander:
         先规范化可继续使用单个 ``groups_container``，避免每个递归方法都处理列表；
         同名定义的子节点按原始出现顺序合并，以符合配置片段的合并输入场景。
         """
-        assert root.children is not None
+        require_invariant(
+            root.children is not None,
+            "Junos group 规范化的根节点必须可包含子节点",
+        )
         containers = self._group_containers(root)
         if not containers:
             return JunosNode("groups", []), {}, False
 
         canonical = containers[0]
-        assert canonical.children is not None
+        require_invariant(
+            canonical.children is not None,
+            "Junos groups 容器必须是块节点",
+        )
         normalized_children: list[JunosNode] = []
         groups: dict[str, JunosNode] = {}
         changed = len(containers) > 1
@@ -514,7 +530,10 @@ class JunosGroupExpander:
                     groups[name] = definition
                     normalized_children.append(definition)
                     continue
-                assert existing.children is not None
+                require_invariant(
+                    existing.children is not None,
+                    f"Junos group {name} 定义必须是块节点",
+                )
                 existing.children.extend(definition.children or [])
                 changed = True
 
@@ -570,7 +589,10 @@ class JunosGroupExpander:
         为什么：Junos 通配 group 需要具体接口作为匹配目标；这一步放在活动引用
         校验之后，避免仅清理 inactive group 时把 synthetic 接口意外写入配置。
         """
-        assert working.children is not None
+        require_invariant(
+            working.children is not None,
+            "Junos 工作树根节点必须可包含子节点",
+        )
 
         # 拓扑中出现但配置未声明的接口也需参与通配 group 匹配。
         interfaces = next(
@@ -586,7 +608,10 @@ class JunosGroupExpander:
         if interfaces is None:
             interfaces = JunosNode("interfaces", [])
             working.children.append(interfaces)
-        assert interfaces.children is not None
+        require_invariant(
+            interfaces.children is not None,
+            "Junos interfaces 节点必须是块节点",
+        )
         existing_names = {
             canonical_junos_interface(self._base_header(node.header).split()[0])
             for node in interfaces.children
@@ -965,7 +990,10 @@ class JunosGroupExpander:
         只返回本次已选中的 group；排除集从父层复制后追加本层规则，使本层
         except 同时作用于本地引用和从祖先继承的引用。工作树保持不变。
         """
-        assert node.children is not None
+        require_invariant(
+            node.children is not None,
+            "Junos group 控制语句只能从块节点读取",
+        )
         local_names: list[str] = []
         local_excluded = set(inherited_excluded)
         for child in node.children:
@@ -996,7 +1024,10 @@ class JunosGroupExpander:
         一条列表中未选中的名称按原格式保留；全部名称均已展开时删除整条
         语句。普通配置节点和配置块不受影响。
         """
-        assert node.children is not None
+        require_invariant(
+            node.children is not None,
+            "Junos group 控制语句只能在块节点中改写",
+        )
         retained: list[JunosNode] = []
         for child in node.children:
             rewritten: str | None = child.header

@@ -103,14 +103,48 @@ def convert(
     rules_path: Path | None = None,
     washing_policy_path: Path | None = None,
 ) -> ConversionContext:
-    """执行完整转换；即使失败也写 report，便于定位输入问题。"""
+    """执行完整转换；即使失败也写 report，便于定位输入问题。
+
+    可预期的业务失败由各阶段写入 ``context.errors``。内部不变量或其他
+    未预期异常仍会继续向调用方抛出，但在此之前先写入失败报告，使 CLI
+    操作者不会只得到一条无上下文的错误。
+    """
     context = prepare_context(topology_path, config_dir, profiles_path, washing_policy_path)
-    if not context.errors:
-        # 先预检拓扑；group 展开和接口迁移完成后再执行清洗及镜像参数适配。
-        build_default_pipeline().execute(context)
-        # 用户扩展规则放在核心转换之后，避免规则改变接口分类依据。
-        apply_rules(context, load_rules(rules_path))
-    write_outputs(context, output_dir)
+    phase = "核心转换流水线"
+    try:
+        if not context.errors:
+            # 先预检拓扑；group 展开和接口迁移完成后再执行清洗及镜像参数适配。
+            build_default_pipeline().execute(context)
+            # 用户扩展规则放在核心转换之后，避免规则改变接口分类依据。
+            phase = "用户扩展规则"
+            apply_rules(context, load_rules(rules_path))
+        phase = "输出结果"
+        write_outputs(context, output_dir)
+    except Exception as exc:
+        detail = str(exc).strip() or "异常未提供详细信息"
+        message = (
+            f"{phase}发生内部异常 "
+            f"({type(exc).__name__}): {detail}"
+        )
+        context.errors.append(message)
+        context.add_event(
+            "internal-error",
+            message,
+            phase=phase,
+            exception_type=type(exc).__name__,
+        )
+        try:
+            # context 已标记失败，此次调用只写诊断文件，不再渲染设备配置。
+            write_outputs(context, output_dir)
+        except Exception as report_exc:
+            report_failure = RuntimeError(
+                f"转换失败后无法写入诊断报告: {report_exc}"
+            )
+            report_failure.add_note(
+                f"原始转换异常: {type(exc).__name__}: {detail}"
+            )
+            raise report_failure from report_exc
+        raise
     return context
 
 
@@ -187,11 +221,17 @@ def write_outputs(context: ConversionContext, output_dir: Path) -> None:
     if context.has_errors:
         return
 
+    # 先在内存中渲染全部配置；任一文档违反内部不变量时，不创建
+    # 本次运行的部分 configs 输出。
+    rendered_configs = {
+        device_name: device.document.render()
+        for device_name, device in context.devices.items()
+    }
     configs_dir = output_dir / "configs"
     configs_dir.mkdir(parents=True, exist_ok=True)
-    for device_name, device in context.devices.items():
+    for device_name, rendered in rendered_configs.items():
         output = configs_dir / f"{_safe_output_name(device_name)}.cfg"
-        output.write_text(device.document.render(), encoding="utf-8")
+        output.write_text(rendered, encoding="utf-8")
 
     adapted_config_files = {
         device_name: f"configs/{_safe_output_name(device_name)}.cfg"

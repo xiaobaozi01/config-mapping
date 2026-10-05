@@ -7,6 +7,7 @@ import re
 from dataclasses import dataclass
 from typing import Iterable
 
+from ..errors import require_invariant
 from ..models import SimulationAdaptationPolicy, WashingPolicy
 from .common import (
     CleanupOutcome,
@@ -315,7 +316,10 @@ class JunosDocument:
         统一入口可避免各模块重复遍历根节点，并保证新块只在明确 ``create=True`` 时
         追加，从而不因只读查询意外改变配置。
         """
-        assert self.root.children is not None
+        require_invariant(
+            self.root.children is not None,
+            "Junos 文档根节点必须可包含子节点",
+        )
         for node in self.root.children:
             if node.effective and node.is_block and self._base_header(node.header) == name:
                 return node
@@ -792,6 +796,9 @@ class JunosDocument:
         根节点本身不输出，已逻辑删除的子树被跳过，并统一添加末尾换行；稳定格式便于
         设备加载、生成可读差异，也使相同节点树得到确定性文本结果。
         """
-        assert self.root.children is not None
+        require_invariant(
+            self.root.children is not None,
+            "Junos 文档根节点必须可包含子节点",
+        )
         rendered = [self._render_node(node, 0) for node in self.root.children if node.active]
         return "\n".join(item for item in rendered if item).rstrip() + "\n"

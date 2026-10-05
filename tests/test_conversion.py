@@ -7,9 +7,11 @@ import shutil
 import tempfile
 import unittest
 from pathlib import Path
+from unittest.mock import patch
 
 from openpyxl import load_workbook
 
+from config_adaptor.errors import InvariantViolation
 from config_adaptor.models import SimulationAdaptationPolicy, Vendor, WashingPolicy
 from config_adaptor.parsers.cisco_iosxr import CiscoDocument
 from config_adaptor.parsers.juniper_junos import JunosDocument
@@ -1593,6 +1595,73 @@ end
             report = json.loads((output / "report.json").read_text(encoding="utf-8"))
             self.assertEqual(report["status"], "failed")
             self.assertTrue(any("group" in message for message in report["errors"]))
+
+    def test_internal_invariant_failure_writes_report_then_reraises(self):
+        """内部编程错误不被吞掉，但 CLI 仍能获得可诊断的失败报告。"""
+        topology, config_dir = self.conversion_fixture("iosxr_bundle")
+
+        class BrokenPipeline:
+            def execute(self, context) -> None:
+                raise InvariantViolation("测试内部不变量")
+
+        with tempfile.TemporaryDirectory() as directory:
+            output = Path(directory) / "output"
+            with patch(
+                "config_adaptor.pipeline.build_default_pipeline",
+                return_value=BrokenPipeline(),
+            ):
+                with self.assertRaisesRegex(
+                    InvariantViolation,
+                    "测试内部不变量",
+                ):
+                    convert(topology, config_dir, output)
+
+            self.assertFalse((output / "configs").exists())
+            report = json.loads((output / "report.json").read_text(encoding="utf-8"))
+            self.assertEqual(report["status"], "failed")
+            self.assertTrue(
+                any(
+                    "InvariantViolation" in message
+                    and "测试内部不变量" in message
+                    for message in report["errors"]
+                )
+            )
+            event = next(
+                item for item in report["events"]
+                if item["kind"] == "internal-error"
+            )
+            self.assertEqual(event["phase"], "核心转换流水线")
+            self.assertEqual(event["exception_type"], "InvariantViolation")
+
+    def test_render_invariant_failure_rewrites_report_as_failed(self):
+        """输出阶段的结构错误不应留下成功报告或部分配置。"""
+        topology, config_dir = self.conversion_fixture("junos_bundle")
+
+        class CorruptingPipeline:
+            def execute(self, context) -> None:
+                context.devices["J1"].document.root.children = None
+
+        with tempfile.TemporaryDirectory() as directory:
+            output = Path(directory) / "output"
+            with patch(
+                "config_adaptor.pipeline.build_default_pipeline",
+                return_value=CorruptingPipeline(),
+            ):
+                with self.assertRaisesRegex(
+                    InvariantViolation,
+                    "Junos 文档根节点",
+                ):
+                    convert(topology, config_dir, output)
+
+            self.assertFalse((output / "configs").exists())
+            report = json.loads((output / "report.json").read_text(encoding="utf-8"))
+            self.assertEqual(report["status"], "failed")
+            event = next(
+                item for item in report["events"]
+                if item["kind"] == "internal-error"
+            )
+            self.assertEqual(event["phase"], "输出结果")
+            self.assertEqual(event["exception_type"], "InvariantViolation")
 
 
 if __name__ == "__main__":

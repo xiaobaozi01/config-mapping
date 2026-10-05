@@ -5,6 +5,7 @@ from __future__ import annotations
 import copy
 import re
 
+from ...errors import require_invariant
 from ...parsers.cisco_iosxr import (
     CiscoDocument,
     CiscoNode,
@@ -37,7 +38,10 @@ def interface_specs(document: CiscoDocument) -> list[InterfaceSpec]:
     result: list[InterfaceSpec] = []
     for block in interface_nodes(document):
         name = block.interface_name
-        assert name is not None
+        require_invariant(
+            name is not None,
+            "Cisco 接口节点集合中的节点必须包含接口名",
+        )
         vlan = None
         inner_vlan = None
         for node in block.walk():
@@ -218,7 +222,10 @@ def bundle_members(document: CiscoDocument) -> dict[str, str]:
     result: dict[str, str] = {}
     for block in interface_nodes(document):
         name = block.interface_name
-        assert name is not None
+        require_invariant(
+            name is not None,
+            "Cisco 接口节点集合中的节点必须包含接口名",
+        )
         if _cisco_interface_kind(name) != InterfaceKind.PHYSICAL or interface_unit(name) is not None:
             continue
         for node in block.walk():

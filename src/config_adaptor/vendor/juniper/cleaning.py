@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 from ...constants import JUNOS_LAB_PASSWORD_HASH, LAB_USERNAME
+from ...errors import require_invariant
 from ...models import WashingPolicy
 from ...parsers.common import CleanupOutcome
 from ...parsers.juniper_junos import JunosDocument, JunosNode
@@ -43,7 +44,10 @@ def _disable_matching(
 
 def clean_management_access(document: JunosDocument) -> CleanupOutcome:
     system = document._top_block("system", create=True)
-    assert system is not None and system.children is not None
+    require_invariant(
+        system is not None and system.children is not None,
+        "Junos system 块在 create=True 后必须存在且可包含子节点",
+    )
     outcome = CleanupOutcome()
     blocked = {
         "login",
@@ -198,7 +202,10 @@ def clean_optional_features(document: JunosDocument, policy: WashingPolicy) -> C
 
 def add_lab_account(document: JunosDocument) -> None:
     system = document._top_block("system", create=True)
-    assert system is not None and system.children is not None
+    require_invariant(
+        system is not None and system.children is not None,
+        "Junos system 块在 create=True 后必须存在且可包含子节点",
+    )
     system.children.extend(
         [
             JunosNode(f'root-authentication encrypted-password "{JUNOS_LAB_PASSWORD_HASH}";'),

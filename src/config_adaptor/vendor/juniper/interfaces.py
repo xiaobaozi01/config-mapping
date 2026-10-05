@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import re
 
+from ...errors import require_invariant
 from ...parsers.common import InterfaceKind, InterfaceSpec, interface_parent, interface_unit
 from ...parsers.juniper_junos import (
     JunosDocument,
@@ -364,7 +365,10 @@ def clone_interface_tree(
     """
     source_node = find_interface_node(document, source)
     interfaces = document._interfaces_block(create=True)
-    assert interfaces is not None and interfaces.children is not None
+    require_invariant(
+        interfaces is not None and interfaces.children is not None,
+        "Junos interfaces 块在 create=True 后必须存在且可包含子节点",
+    )
     if source_node is None:
         clone = JunosNode(canonical_junos_interface(target), [])
     else:
@@ -400,7 +404,10 @@ def _merge_duplicate_interface(document: JunosDocument, preferred: JunosNode) ->
     ]
     if len(duplicates) < 2:
         return
-    assert preferred.children is not None
+    require_invariant(
+        preferred.children is not None,
+        "Junos 重复接口合并的首选节点必须是块节点",
+    )
     existing = {
         document._render_node(child, 0) for child in preferred.children
     }
@@ -456,10 +463,16 @@ def _ensure_target_parent(document: JunosDocument, target_parent: str) -> JunosN
         node = existing
     else:
         interfaces = document._interfaces_block(create=True)
-        assert interfaces is not None and interfaces.children is not None
+        require_invariant(
+            interfaces is not None and interfaces.children is not None,
+            "Junos interfaces 块在 create=True 后必须存在且可包含子节点",
+        )
         node = JunosNode(target_parent, [])
         interfaces.children.append(node)
-    assert node.children is not None
+    require_invariant(
+        node.children is not None,
+        "Junos 接口修改目标必须是块节点",
+    )
     node.children = [
         child
         for original in node.children
@@ -513,7 +526,10 @@ def map_uni(
     unit_number = interface_unit(source)
     source_node = find_interface_node(document, source_parent)
     target_node = _ensure_target_parent(document, target_parent)
-    assert target_node.children is not None
+    require_invariant(
+        target_node.children is not None,
+        "Junos 目标接口节点必须是块节点",
+    )
     unit_node = None
     if source_node:
         units = document._unit_nodes(source_node)
@@ -536,7 +552,10 @@ def map_uni(
     else:
         unit_node = unit_node.clone()
     unit_node.header = f"unit {vlan}"
-    assert unit_node.children is not None
+    require_invariant(
+        unit_node.children is not None,
+        "Junos unit 节点必须是块节点",
+    )
     unit_node.children = _strip_vlan_termination(document, unit_node.children)
     unit_node.children.insert(
         0,
