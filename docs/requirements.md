@@ -150,6 +150,7 @@ TopologyPreflightHandler -> GroupExpansionHandler -> InterfaceClassificationHand
    - 同一 group 中多个正则匹配时，按最长匹配优先，长度相同按表达式词法顺序处理。
 3. Junos 支持识别并展开活动的 `groups {}`、`apply-groups` 和 `apply-groups-except`：
    - 支持根层级和局部层级应用；
+   - 多个顶层 `groups {}` 容器必须规范化为一个容器，同名 group 定义的子配置按原始出现顺序合并；
    - 支持 Group 内递归应用其他 Group，并校验完整传递依赖；
    - 间接未定义引用或 Group 循环引用触发事务回滚；
    - 支持常见 `<ge-*>`、`<*>` 通配节点；

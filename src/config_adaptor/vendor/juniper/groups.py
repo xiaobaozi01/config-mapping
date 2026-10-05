@@ -357,28 +357,15 @@ class JunosGroupExpander:
         # except 是排除规则而不是继承依赖，但活动配置中的引用仍必须指向已定义
         # group。这里先校验 group 定义之外的引用，使“只有 except、没有 apply”
         # 的配置也不会绕过检查。
-        root_groups_container = next(
-            (
-                node
-                for node in (self.root.children or [])
-                if node.effective
-                and node.is_block
-                and self._base_header(node.header) == "groups"
-            ),
-            None,
-        )
+        root_groups_containers = self._group_containers(self.root)
         root_groups = {
             self._group_definition_name(node.header): node
-            for node in (
-                root_groups_container.children
-                if root_groups_container is not None
-                and root_groups_container.children is not None
-                else []
-            )
+            for container in root_groups_containers
+            for node in (container.children or [])
             if node.effective and node.is_block
         }
         if not self._validate_group_exclusions(
-            self._root_group_exclusions(self.root, root_groups_container),
+            self._root_group_exclusions(self.root, root_groups_containers),
             root_groups,
             outcome,
         ):
@@ -389,7 +376,7 @@ class JunosGroupExpander:
             return outcome
 
         # 所有展开先在深拷贝的工作树上进行，失败时原文档不会被部分修改。
-        working, groups_container, groups, removed_inactive = (
+        working, groups_container, groups, working_changed = (
             self._prepare_working_tree()
         )
         state = _JunosExpansionState(
@@ -407,7 +394,7 @@ class JunosGroupExpander:
             state,
         )
         if not selected_roots:
-            if removed_inactive:
+            if working_changed:
                 self.root = working
             return outcome
 
@@ -462,33 +449,82 @@ class JunosGroupExpander:
     ) -> tuple[JunosNode, JunosNode, dict[str, JunosNode], bool]:
         """深拷贝原配置并建立 group、接口等展开阶段需要的工作索引。
 
-        工作副本会先移除所有 configured inactive 节点；返回值最后一项表示
-        是否发生清理，使没有活动 group 引用时也能提交清理结果。没有 ``groups``
-        容器时使用不写回的空容器，让未定义活动引用进入统一校验。
+        工作副本会先移除 configured inactive 节点，再把多个 ``groups`` 块规范
+        化为一个容器；返回值最后一项表示工作树是否改变，使没有活动 group 引用
+        时也能提交规范化结果。没有容器时使用不写回的空容器参与统一校验。
         """
         # 事务边界：本方法以后的所有变更都只发生在 working 上。
         working = copy.deepcopy(self.root)
         assert working.children is not None
         removed_inactive = self._remove_inactive_nodes(working)
-        groups_container = next(
-            (
-                node
-                for node in working.children
-                if node.effective
-                and node.is_block
-                and self._base_header(node.header) == "groups"
-            ),
-            None,
+        groups_container, groups, normalized_groups = (
+            self._normalize_group_containers(working)
         )
-        if groups_container is None or groups_container.children is None:
-            groups_container = JunosNode("groups", [])
-        groups = {
-            self._group_definition_name(node.header): node
-            for node in groups_container.children
-            if node.effective and node.is_block
-        }
 
-        return working, groups_container, groups, removed_inactive
+        return (
+            working,
+            groups_container,
+            groups,
+            removed_inactive or normalized_groups,
+        )
+
+    def _group_containers(self, root: JunosNode) -> list[JunosNode]:
+        """做什么：返回根节点下全部有效的顶层 ``groups`` 容器。
+
+        为什么：规范的 Junos 输出通常只有一个容器，但手写或拼接配置可能重复
+        声明。完整收集能让存在性检查和后续规范化看到每个容器中的定义。
+        """
+        return [
+            node
+            for node in (root.children or [])
+            if node.effective
+            and node.is_block
+            and self._base_header(node.header) == "groups"
+        ]
+
+    def _normalize_group_containers(
+        self,
+        root: JunosNode,
+    ) -> tuple[JunosNode, dict[str, JunosNode], bool]:
+        """做什么：把多个 groups 容器及重复的同名定义合并为规范单容器。
+
+        为什么：后续遍历需要一个明确的跳过边界，而依赖索引必须包含所有定义。
+        先规范化可继续使用单个 ``groups_container``，避免每个递归方法都处理列表；
+        同名定义的子节点按原始出现顺序合并，以符合配置片段的合并输入场景。
+        """
+        assert root.children is not None
+        containers = self._group_containers(root)
+        if not containers:
+            return JunosNode("groups", []), {}, False
+
+        canonical = containers[0]
+        assert canonical.children is not None
+        normalized_children: list[JunosNode] = []
+        groups: dict[str, JunosNode] = {}
+        changed = len(containers) > 1
+
+        for container in containers:
+            for definition in container.children or []:
+                if not definition.effective or not definition.is_block:
+                    normalized_children.append(definition)
+                    continue
+                name = self._group_definition_name(definition.header)
+                existing = groups.get(name)
+                if existing is None:
+                    groups[name] = definition
+                    normalized_children.append(definition)
+                    continue
+                assert existing.children is not None
+                existing.children.extend(definition.children or [])
+                changed = True
+
+        canonical.children = normalized_children
+        if len(containers) > 1:
+            extra_ids = {id(container) for container in containers[1:]}
+            root.children = [
+                node for node in root.children if id(node) not in extra_ids
+            ]
+        return canonical, groups, changed
 
     def _remove_inactive_nodes(self, root: JunosNode) -> bool:
         """做什么：递归删除所有 configured inactive 节点及其完整子树。
@@ -615,19 +651,20 @@ class JunosGroupExpander:
     def _root_group_exclusions(
         self,
         root: JunosNode,
-        groups_container: JunosNode | None,
+        groups_containers: Iterable[JunosNode],
     ) -> list[str]:
         """做什么：收集主配置树中、group 定义之外的有效 except 引用。
 
         为什么：主配置中的 except 即使没有配套的 ``apply-groups``，仍然是一个
         需要校验的活动引用，不能被“没有待展开根 group”的提前返回漏掉；同时
-        必须跳过 groups 容器，因为未使用模板中的引用要等模板真正被选中后再校验。
+        必须跳过所有 groups 容器，因为未使用模板中的引用要等模板被选中后再校验。
         """
         result: list[str] = []
+        containers = tuple(groups_containers)
 
         def collect(node: JunosNode) -> None:
             # group 定义由 _group_exclusions 在依赖闭包确定后按需检查。
-            if node is groups_container:
+            if any(node is container for container in containers):
                 return
             if node.children is None:
                 for name in self._group_names(
@@ -655,7 +692,6 @@ class JunosGroupExpander:
         为什么：引用合法性和继承依赖是两件事。单独校验可以拦截最终会被 Junos
         拒绝的悬空引用，同时保证 except 不会选择 group、触发展开或形成依赖环。
         """
-        valid = True
         for name in names:
             if name in groups:
                 continue
@@ -663,8 +699,8 @@ class JunosGroupExpander:
             outcome.warnings.append(
                 f"Junos apply-groups-except 引用了未定义的组 {name}"
             )
-            valid = False
-        return valid
+            return False
+        return True
 
     def _select_root_groups(
         self,

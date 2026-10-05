@@ -679,6 +679,103 @@ class ConversionTest(unittest.TestCase):
         self.assertNotIn("groups {", rendered)
         self.assertNotIn("apply-groups COMMON", rendered)
 
+    def test_junos_multiple_group_containers_share_dependency_index(self):
+        source = """groups {
+    EDGE {
+        apply-groups BASE;
+    }
+}
+groups {
+    BASE {
+        interfaces {
+            <ge-*> {
+                mtu 9000;
+            }
+        }
+    }
+}
+interfaces {
+    ge-0/0/0 {
+        unit 0;
+    }
+}
+apply-groups EDGE;
+"""
+        document = JunosDocument(source)
+        outcome = document.expand_groups([])
+        rendered = document.render()
+
+        self.assertTrue(outcome.success)
+        self.assertFalse(outcome.warnings)
+        self.assertIn("mtu 9000;", rendered)
+        self.assertNotIn("groups {", rendered)
+        self.assertNotIn("apply-groups", rendered)
+        self.assertEqual(
+            set(outcome.events),
+            {
+                "已展开 Junos 配置组 BASE",
+                "已展开 Junos 配置组 EDGE",
+            },
+        )
+
+    def test_junos_multiple_group_containers_normalize_without_application(self):
+        source = """groups {
+    FIRST {
+        system {
+            host-name first;
+        }
+    }
+}
+groups {
+    SECOND {
+        system {
+            domain-name example.net;
+        }
+    }
+}
+"""
+        document = JunosDocument(source)
+        outcome = document.expand_groups([])
+        rendered = document.render()
+
+        self.assertTrue(outcome.success)
+        self.assertEqual(rendered.count("groups {"), 1)
+        self.assertIn("FIRST {", rendered)
+        self.assertIn("SECOND {", rendered)
+
+    def test_junos_duplicate_group_definitions_merge_their_payload(self):
+        source = """groups {
+    COMMON {
+        interfaces {
+            ge-0/0/0 {
+                mtu 9000;
+            }
+        }
+    }
+}
+groups {
+    COMMON {
+        system {
+            host-name lab;
+        }
+    }
+}
+interfaces {
+    ge-0/0/0 {
+        unit 0;
+    }
+}
+apply-groups COMMON;
+"""
+        document = JunosDocument(source)
+        outcome = document.expand_groups([])
+        rendered = document.render()
+
+        self.assertTrue(outcome.success)
+        self.assertIn("mtu 9000;", rendered)
+        self.assertIn("host-name lab;", rendered)
+        self.assertNotIn("groups {", rendered)
+
     def test_junos_inline_blocks_are_parsed_and_expanded(self):
         source = '''groups { "EDGE GROUP" { interfaces { ge-0/0/0 { mtu 9000; } } } }
 interfaces { ge-0/0/0 { unit 0; description "literal { brace; }"; } }
