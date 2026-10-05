@@ -33,6 +33,24 @@ class CiscoAstTest(unittest.TestCase):
         self.assertEqual(document.root.children[1].header, "end-group")
         self.assertEqual(document.root.children[3].header, "hostname XR")
 
+    def test_hostname_returns_last_active_top_level_value(self):
+        """多条 hostname 时应返回文档顺序中最后一条生效值。"""
+        document = CiscoDocument(
+            "hostname OLD\n"
+            "!\n"
+            "hostname CURRENT\n"
+            "!\n"
+            "end\n"
+        )
+
+        self.assertEqual(document.hostname(), "CURRENT")
+
+    def test_hostname_returns_none_when_absent(self):
+        """没有 hostname 命令时应返回 None，而不是报错。"""
+        document = CiscoDocument("interface GigabitEthernet0/0/0/0\n!\nend\n")
+
+        self.assertIsNone(document.hostname())
+
     def test_empty_interface_receives_inherited_group_configuration(self):
         """空接口仍是配置块，应能接收根层 group 的继承配置。"""
         source = (

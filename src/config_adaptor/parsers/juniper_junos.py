@@ -149,6 +149,30 @@ class JunosDocument:
         self.root = JunosNode("<root>", [])
         self._parse(text)
 
+    def hostname(self) -> str | None:
+        """返回 ``system`` 块下最后一条有效的 ``host-name`` 语句值，未配置时返回 ``None``。
+
+        Junos 把设备名放在顶层 ``system`` 容器的 ``host-name`` 叶子中，可能带引号；
+        方法按文档顺序取最后一条活动语句以反映加载后的最终值，并去除外层引号与
+        结尾分号，便于与 Excel 中的设备名直接比较。
+        """
+        system = self._top_block("system")
+        if not system or system.children is None:
+            return None
+        value: str | None = None
+        for child in system.children:
+            if not child.effective or child.is_block:
+                continue
+            statement = self._base_header(child.header)
+            match = re.match(r"host-name\s+(.+)$", statement, re.IGNORECASE)
+            if not match:
+                continue
+            candidate = match.group(1).strip()
+            if candidate.endswith(";"):
+                candidate = candidate[:-1].rstrip()
+            value = candidate.strip('"').strip("'")
+        return value
+
     @staticmethod
     def _expand_inline_blocks(text: str) -> str:
         """把单行块预展开为原逐行解析器可识别的标准多行文本。

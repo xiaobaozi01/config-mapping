@@ -28,6 +28,8 @@ class VendorConfiguration(Protocol):
 
     vendor: str
 
+    def hostname(self) -> str | None: ...
+
     def expand_groups(
         self,
         known_interfaces: set[str],

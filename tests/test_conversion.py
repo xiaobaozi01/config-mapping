@@ -812,6 +812,25 @@ apply-groups "EDGE GROUP";
         self.assertIn("services {", rendered)
         self.assertIn("ssh;", rendered)
 
+    def test_junos_hostname_returns_last_active_system_value(self):
+        """应跳过 inactive 语句，返回最后一条生效且已去引号的 host-name。"""
+        document = JunosDocument(
+            """system {
+    host-name first;
+    inactive: host-name old;
+    host-name "current-name";
+}
+"""
+        )
+
+        self.assertEqual(document.hostname(), "current-name")
+
+    def test_junos_hostname_returns_none_without_system_block(self):
+        """没有 system/host-name 时应返回 None，而不是报错。"""
+        document = JunosDocument("interfaces {\n    ge-0/0/0 {\n        unit 0;\n    }\n}\n")
+
+        self.assertIsNone(document.hostname())
+
     def test_junos_inline_parser_still_rejects_unbalanced_braces(self):
         with self.assertRaisesRegex(ValueError, "出现多余右大括号"):
             JunosDocument("system { host-name lab; } }")

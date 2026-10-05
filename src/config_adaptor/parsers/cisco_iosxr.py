@@ -292,6 +292,22 @@ class CiscoDocument:
         self.root = CiscoNode("<root>", is_block=True)
         self.root.children = self._parse(text)
 
+    def hostname(self) -> str | None:
+        """返回配置中最后一条有效的顶层 ``hostname`` 命令值，未配置时返回 ``None``。
+
+        IOS XR 用无缩进的顶层 ``hostname`` 单行命令声明设备名；按文档顺序取最后一条
+        活动命令以反映加载后的最终值。返回前去除可能包裹的外层引号，便于与 Excel 中
+        的设备名直接比较。
+        """
+        value: str | None = None
+        for node in self.root.children:
+            if not node.active:
+                continue
+            match = re.match(r"hostname\s+(.+)$", node.header.strip(), re.IGNORECASE)
+            if match:
+                value = match.group(1).strip().strip('"').strip("'")
+        return value
+
     @staticmethod
     def _is_group_node(node: CiscoNode) -> bool:
         """判断当前顶层节点是否为 IOS XR group 定义。
