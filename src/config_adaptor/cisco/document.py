@@ -5,6 +5,7 @@ from __future__ import annotations
 import copy
 import re
 from dataclasses import dataclass, field
+from functools import lru_cache
 from typing import Iterable
 
 from ..common.cleaning import matches_cleaning_path
@@ -80,21 +81,9 @@ class CiscoNode:
         该属性放在统一节点上，但只有顶层 ``interface`` 节点会被接口模块使用；
         去掉 ``l2transport`` 模式后缀才能与拓扑中的纯接口名匹配。
         """
-        match = re.match(r"^interface\s+(.+?)\s*$", self.header, re.IGNORECASE)
-        if not match:
+        if not self.header.lower().startswith("interface"):
             return None
-        value = match.group(1)
-        if self.is_preconfigured_interface:
-            preconfigured = re.match(
-                r"^interface\s+preconfigure(?:\s+(.+?))?\s*$",
-                self.header,
-                re.IGNORECASE,
-            )
-            value = preconfigured.group(1) if preconfigured else None
-            if not value:
-                return None
-        value = re.sub(r"\s+l2transport\s*$", "", value, flags=re.IGNORECASE)
-        return canonical_cisco_interface(value)
+        return _interface_name_from_header(self.header)
 
     @property
     def is_preconfigured_interface(self) -> bool:
@@ -111,6 +100,26 @@ class CiscoNode:
         名称变更时丢失二层属性。
         """
         return bool(re.match(r"interface\s+.+\s+l2transport\s*$", self.header, re.IGNORECASE))
+
+
+@lru_cache(maxsize=32_768)
+def _interface_name_from_header(header: str) -> str | None:
+    """按不可变 header 缓存接口名；节点改名后会自动使用新键。"""
+    match = re.match(r"^interface\s+(.+?)\s*$", header, re.IGNORECASE)
+    if not match:
+        return None
+    value = match.group(1)
+    if re.match(r"^interface\s+preconfigure(?:\s|$)", header, re.IGNORECASE):
+        preconfigured = re.match(
+            r"^interface\s+preconfigure(?:\s+(.+?))?\s*$",
+            header,
+            re.IGNORECASE,
+        )
+        value = preconfigured.group(1) if preconfigured else None
+        if not value:
+            return None
+    value = re.sub(r"\s+l2transport\s*$", "", value, flags=re.IGNORECASE)
+    return canonical_cisco_interface(value)
 
 
 def _clone_cisco_nodes(

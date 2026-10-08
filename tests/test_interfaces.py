@@ -7,6 +7,7 @@ from pathlib import Path
 
 from config_adaptor.adaptation.cleaning_rules import load_rules
 from config_adaptor.cisco.document import CiscoDocument
+from config_adaptor.common.interface import referenced_interface_names
 from config_adaptor.juniper.document import JunosDocument
 
 
@@ -16,6 +17,17 @@ FIXTURES = Path(__file__).parent / "fixtures" / "interfaces"
 def interface_config(name: str) -> str:
     """读取接口业务分析测试配置。"""
     return (FIXTURES / name).read_text(encoding="utf-8")
+
+
+class InterfaceReferenceScanTest(unittest.TestCase):
+    def test_overlapping_names_keep_original_reference_boundaries(self):
+        names = {"ge-0/0/1", "ge-0/0/1:0", "ge-0/0/1.20", "ge-0/0/2"}
+        text = "interface ge-0/0/1:0; interface ge-0/0/1.20; xge-0/0/2"
+
+        self.assertEqual(
+            referenced_interface_names(text, names),
+            {"ge-0/0/1", "ge-0/0/1:0", "ge-0/0/1.20"},
+        )
 
 
 class CiscoInterfaceBusinessTest(unittest.TestCase):

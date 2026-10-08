@@ -46,3 +46,29 @@ def interface_unit(name: str) -> str | None:
     """返回点号后的逻辑单元编号；物理接口返回 ``None``。"""
 
     return name.rsplit(".", 1)[1] if "." in name else None
+
+
+def referenced_interface_names(text: str, names: set[str]) -> set[str]:
+    """用字符串查找和原有边界规则识别完整接口引用。"""
+    if not text or not names:
+        return set()
+    found: set[str] = set()
+    for name in names:
+        if not name:
+            continue
+        start = 0
+        while (position := text.find(name, start)) != -1:
+            end = position + len(name)
+            if (
+                (position == 0 or text[position - 1] not in _REFERENCE_NAME_CHARS)
+                and (end == len(text) or text[end] not in _REFERENCE_NAME_CHARS)
+            ):
+                found.add(name)
+                break
+            start = position + 1
+    return found
+
+
+_REFERENCE_NAME_CHARS = frozenset(
+    "ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789_.-"
+)

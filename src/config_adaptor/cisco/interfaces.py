@@ -13,7 +13,13 @@ from .document import (
     canonical_cisco_interface,
     strip_matching_nodes,
 )
-from ..common.interface import InterfaceKind, InterfaceSpec, interface_parent, interface_unit
+from ..common.interface import (
+    InterfaceKind,
+    InterfaceSpec,
+    interface_parent,
+    interface_unit,
+    referenced_interface_names,
+)
 
 
 def interface_nodes(document: CiscoDocument) -> list[CiscoNode]:
@@ -264,18 +270,17 @@ def business_interface_names(document: CiscoDocument) -> set[str]:
         if block.active and not block.interface_name
         for text in [block.header, *(node.header for node in block.walk())]
     )
-    for name in known:
-        if kinds.get(name) in mappable_kinds and re.search(
-            rf"(?<![A-Za-z0-9_.-]){re.escape(name)}(?![A-Za-z0-9_.-])",
-            external_text,
-        ):
+    referenced = referenced_interface_names(
+        external_text, known | {spec.parent for spec in specs}
+    )
+    for name in known & referenced:
+        if kinds.get(name) in mappable_kinds:
             active.add(name)
-    for parent in {spec.parent for spec in specs}:
-        parent_specs = [spec for spec in specs if spec.parent == parent]
-        if parent_specs and parent_specs[0].kind in mappable_kinds and re.search(
-            rf"(?<![A-Za-z0-9_.-]){re.escape(parent)}(?![A-Za-z0-9_.-])",
-            external_text,
-        ):
+    specs_by_parent: dict[str, list[InterfaceSpec]] = {}
+    for spec in specs:
+        specs_by_parent.setdefault(spec.parent, []).append(spec)
+    for parent, parent_specs in specs_by_parent.items():
+        if parent in referenced and parent_specs[0].kind in mappable_kinds:
             active.update(spec.name for spec in parent_specs)
 
     for attachments, gateways in _bridge_domain_bindings(document):

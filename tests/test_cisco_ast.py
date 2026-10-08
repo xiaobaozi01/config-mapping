@@ -20,6 +20,14 @@ def cisco_config(name: str) -> str:
 class CiscoAstTest(unittest.TestCase):
     """覆盖多级缩进和 ``!`` 边界组成的树结构。"""
 
+    def test_interface_name_reflects_header_edits(self):
+        document = CiscoDocument("interface GigabitEthernet0/0/0/1\n description old\n!\n")
+        interface = document.root.children[0]
+
+        self.assertEqual(interface.interface_name, "GigabitEthernet0/0/0/1")
+        interface.header = "interface GigabitEthernet0/0/0/2"
+        self.assertEqual(interface.interface_name, "GigabitEthernet0/0/0/2")
+
     def test_group_accepts_unindented_children_until_end_group(self):
         """Group 内的无缩进命令不应被误判为新顶层块。"""
         document = CiscoDocument(cisco_config("group_unindented_children.cfg"))
