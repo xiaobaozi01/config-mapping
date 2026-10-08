@@ -3,11 +3,14 @@
 from __future__ import annotations
 
 from pathlib import Path
+from typing import cast
 
 import yaml
 
 from ..common.policies import WashingPolicy
-from .models import ConversionContext
+from ..cisco.cleaning import clean_ptp_interfaces
+from ..cisco.document import CiscoDocument
+from .models import ConversionContext, Vendor
 
 
 _OPTIONAL_KEYS = {
@@ -17,6 +20,25 @@ _OPTIONAL_KEYS = {
     "nat",
     "flow_statistics",
 }
+
+
+class PTPCleanupHandler:
+    """在接口迁移完成后停用 XRv9000 实验不需要的 PTP 接口块。"""
+
+    def process(self, context: ConversionContext) -> None:
+        for device_name in sorted(context.devices):
+            device = context.devices[device_name]
+            if device.device.vendor != Vendor.CISCO_IOSXR:
+                continue
+            document = cast(CiscoDocument, device.document)
+            outcome = clean_ptp_interfaces(document)
+            if outcome.total:
+                context.add_event(
+                    "ptp-cleanup",
+                    f"设备 {device_name} 已清理 PTP 配置",
+                    device=device_name,
+                    removed_by_type=outcome.removed,
+                )
 
 
 def load_washing_policy(path: Path | None) -> WashingPolicy:
@@ -52,6 +74,8 @@ def load_washing_policy(path: Path | None) -> WashingPolicy:
             raise ValueError(f"清洗开关 {key} 必须是 true 或 false")
         values[key] = value
     return WashingPolicy(**values)
+
+
 class OptionalFeatureWashingHandler:
     """按用户显式开启的策略清理非必需但可能影响模拟运行的配置能力。
 

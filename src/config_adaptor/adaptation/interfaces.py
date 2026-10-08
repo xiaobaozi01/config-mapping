@@ -2,8 +2,32 @@
 
 from __future__ import annotations
 
+from typing import cast
+
 from ..common.interface import InterfaceKind
-from .models import ConversionContext
+from ..cisco.cleaning import clean_preconfigured_interfaces
+from ..cisco.document import CiscoDocument
+from .models import ConversionContext, Vendor
+
+
+class PreconfiguredInterfaceCleanupHandler:
+    """在接口分类前忽略 IOS XR 尚未实例化的物理接口候选配置。"""
+
+    def process(self, context: ConversionContext) -> None:
+        for device_name in sorted(context.devices):
+            device = context.devices[device_name]
+            if device.device.vendor != Vendor.CISCO_IOSXR:
+                continue
+            document = cast(CiscoDocument, device.document)
+            outcome = clean_preconfigured_interfaces(document)
+            if outcome.total:
+                context.add_event(
+                    "preconfigured-interface-cleanup",
+                    f"设备 {device_name} 已忽略未实例化的预配置接口",
+                    device=device_name,
+                    removed_by_type=outcome.removed,
+                )
+
 
 class InterfaceClassificationHandler:
     """审计厂商接口分类结果，并对未知接口采用保守的保留策略。

@@ -6,6 +6,7 @@ import unittest
 from pathlib import Path
 
 from config_adaptor.cisco.document import CiscoDocument
+from config_adaptor.cisco.cleaning import clean_preconfigured_interfaces, clean_ptp_interfaces
 from config_adaptor.juniper.document import JunosDocument
 
 
@@ -18,6 +19,44 @@ def interface_config(name: str) -> str:
 
 
 class CiscoInterfaceBusinessTest(unittest.TestCase):
+    def test_preconfigure_name_is_physical_name_and_mode_is_explicit(self):
+        document = CiscoDocument(
+            "interface preconfigure HundredGigE 0/3/0/2\n"
+            " ipv4 address 192.0.2.1/31\n!\n"
+        )
+        block = document.root.children[0]
+        self.assertTrue(block.is_preconfigured_interface)
+        self.assertEqual(block.interface_name, "HundredGigE0/3/0/2")
+        self.assertEqual(document.interface_kind(block.interface_name), "physical")
+
+        outcome = clean_preconfigured_interfaces(document)
+        self.assertEqual(outcome.removed["preconfigured-interface"], 1)
+        self.assertFalse(block.active)
+        self.assertNotIn("interface preconfigure", document.render())
+        self.assertEqual(document.interface_specs(), [])
+        self.assertEqual(document.business_interface_names(), set())
+
+    def test_ptp_cleanup_only_deactivates_ptp_interface_blocks(self):
+        document = CiscoDocument(
+            "ptp\n clock\n!\n"
+            "interface PTP0/RP0/CPU0/0\n ipv4 address 192.0.2.1/31\n!\n"
+            "interface GigabitEthernet0/0/0/1\n"
+            " ptp\n  profile timing\n ipv4 address 198.51.100.1/31\n!\n"
+            "frequency-synchronization\n"
+            " synchronous-ethernet prefer-interface ptp-receiver\n!\n"
+        )
+        ptp_block = document.root.children[2]
+        self.assertEqual(document.interface_kind("PTP0/RP0/CPU0/0"), "virtual")
+        outcome = clean_ptp_interfaces(document)
+        rendered = document.render()
+        self.assertEqual(outcome.removed["ptp-interface"], 1)
+        self.assertFalse(ptp_block.active)
+        self.assertNotIn("PTP0/RP0/CPU0/0", rendered)
+        self.assertIn("ptp\n clock", rendered)
+        self.assertIn("profile timing", rendered)
+        self.assertIn("synchronous-ethernet prefer-interface ptp-receiver", rendered)
+        self.assertIn("ipv4 address 198.51.100.1/31", rendered)
+
     def test_unknown_l2_attachment_does_not_activate_gateway(self):
         """未知接口即使带二层业务，也不能间接触发 BVI 的 UNI 迁移。"""
         document = CiscoDocument(interface_config("cisco_unknown_l2_attachment.cfg"))

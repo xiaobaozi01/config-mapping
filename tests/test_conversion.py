@@ -27,6 +27,54 @@ def conversion_fixture(name: str) -> tuple[Path, Path]:
 class ConversionTest(unittest.TestCase):
     """覆盖两个厂商的 NNI、UNI、认证及 group 关键边界。"""
 
+    def test_iosxr_preconfigured_interfaces_are_ignored(self):
+        topology, source_config_dir = conversion_fixture("iosxr_bundle")
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            config_dir = root / "configs"
+            shutil.copytree(source_config_dir, config_dir)
+            config_path = config_dir / "R1.cfg"
+            source = config_path.read_text(encoding="utf-8")
+            source = source.replace(
+                "\nend\n",
+                "\ninterface preconfigure GigabitEthernet 0/0/0/5\n"
+                " ipv4 address 198.51.100.1/31\n"
+                "!\n"
+                "interface preconfigure GigabitEthernet 0/0/0/6\n"
+                " description RESERVED\n!\n"
+                "interface PTP0/RP0/CPU0/0\n"
+                " ipv4 address 203.0.113.1/31\n!\n"
+                "ptp\n clock\n!\nend\n",
+            )
+            config_path.write_text(source, encoding="utf-8")
+
+            output = root / "output"
+            context = convert(topology, config_dir, output)
+            self.assertFalse(context.has_errors, context.errors)
+            converted = (output / "configs" / "R1.cfg").read_text(encoding="utf-8")
+            self.assertNotIn("interface preconfigure", converted)
+            self.assertNotIn("interface PTP", converted)
+            self.assertNotIn("description RESERVED", converted)
+            self.assertIn("ptp\n clock", converted)
+            self.assertNotIn("ipv4 address 198.51.100.1/31", converted)
+            self.assertFalse(any(
+                item.source_interface in {
+                    "GigabitEthernet0/0/0/5",
+                    "GigabitEthernet0/0/0/6",
+                }
+                for item in context.devices["R1"].mappings
+            ))
+            self.assertFalse(any(
+                "PTP0/RP0/CPU0/0 类型无法识别" in warning
+                for warning in context.devices["R1"].warnings
+            ))
+            report = json.loads((output / "report.json").read_text(encoding="utf-8"))
+            self.assertTrue(any(
+                event["kind"] == "preconfigured-interface-cleanup"
+                for event in report["events"]
+            ))
+            self.assertTrue(any(event["kind"] == "ptp-cleanup" for event in report["events"]))
+
     def test_iosxr_bundle_nni_uni_and_auth(self):
         topology, config_dir = conversion_fixture("iosxr_bundle")
         with tempfile.TemporaryDirectory() as directory:

@@ -80,6 +80,8 @@ PYTHONPATH=src python3 -m config_adaptor convert --topology topology.xlsx --conf
 
 IOS XR 认证清洗同时删除自定义 `usergroup`、`taskgroup` 以及 `line` 下对旧认证、授权、计费和用户组的引用；`exec-timeout` 等非认证终端参数保留。删除结果按类别写入 `report.json` 认证事件的 `removed_by_type`。
 
+XRv9000 7.11.1 的默认适配会识别 IOS XR `interface preconfigure`，并在接口分类前通过 `active=False` 忽略这些尚未实例化的接口候选配置。实验不需要的 `interface PTP...` 虚拟接口块会在接口迁移和引用改写完成后停用。
+
 ## 默认 Excel 列
 
 设备列表：`设备名称`、`厂商`、`配置文件`。链接表：`A端设备`、`A端接口`、`Z端设备`、`Z端接口`。程序同时识别常见中英文别名。

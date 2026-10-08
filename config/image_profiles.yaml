@@ -2,7 +2,7 @@ profiles:
   cisco_iosxr:
     image: xrv9000
     # 可选：填写实际镜像版本，便于报告和后续版本特定规则匹配。
-    version: null
+    version: "7.11.1"
     interfaces:
       - GigabitEthernet0/0/0/0
       - GigabitEthernet0/0/0/1

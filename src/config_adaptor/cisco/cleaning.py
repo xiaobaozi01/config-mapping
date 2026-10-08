@@ -172,6 +172,30 @@ def _clean_protocol_authentication(document: CiscoDocument, outcome: CleanupOutc
             outcome.record("protocol-auth-reference", removed)
 
 
+def clean_preconfigured_interfaces(document: CiscoDocument) -> CleanupOutcome:
+    """逻辑停用源设备上尚未实例化的物理接口候选配置。"""
+    outcome = CleanupOutcome()
+    for block in document.root.children:
+        if block.active and block.is_preconfigured_interface:
+            block.active = False
+            outcome.record("preconfigured-interface")
+    return outcome
+
+
+def clean_ptp_interfaces(document: CiscoDocument) -> CleanupOutcome:
+    """逻辑停用 XRv9000 实验不需要的 IOS XR PTP 虚拟接口块。"""
+    outcome = CleanupOutcome()
+    for block in document.root.children:
+        if (
+            block.active
+            and block.interface_name
+            and re.match(r"^PTP(?:\d|$)", block.interface_name, re.IGNORECASE)
+        ):
+            block.active = False
+            outcome.record("ptp-interface")
+    return outcome
+
+
 def add_lab_account(document: CiscoDocument) -> None:
     """在 ``end``/``commit`` 结束标记前插入统一的实验账号。
 

@@ -79,11 +79,28 @@ class CiscoNode:
         该属性放在统一节点上，但只有顶层 ``interface`` 节点会被接口模块使用；
         去掉 ``l2transport`` 模式后缀才能与拓扑中的纯接口名匹配。
         """
-        match = re.match(r"interface\s+(.+?)\s*$", self.header, re.IGNORECASE)
+        match = re.match(r"^interface\s+(.+?)\s*$", self.header, re.IGNORECASE)
         if not match:
             return None
-        value = re.sub(r"\s+l2transport\s*$", "", match.group(1), flags=re.IGNORECASE)
+        value = match.group(1)
+        if self.is_preconfigured_interface:
+            preconfigured = re.match(
+                r"^interface\s+preconfigure(?:\s+(.+?))?\s*$",
+                self.header,
+                re.IGNORECASE,
+            )
+            value = preconfigured.group(1) if preconfigured else None
+            if not value:
+                return None
+        value = re.sub(r"\s+l2transport\s*$", "", value, flags=re.IGNORECASE)
         return canonical_cisco_interface(value)
+
+    @property
+    def is_preconfigured_interface(self) -> bool:
+        """区分 IOS XR 的预配置模式与真实接口名。"""
+        return bool(
+            re.match(r"^interface\s+preconfigure(?:\s|$)", self.header, re.IGNORECASE)
+        )
 
     @property
     def l2transport(self) -> bool:
@@ -265,6 +282,8 @@ def _cisco_interface_kind(name: str) -> InterfaceKind:
         return InterfaceKind.BUNDLE
     if re.fullmatch(r"bvi\d+", parent):
         return InterfaceKind.GATEWAY
+    if re.match(r"^ptp(?:\d|$)", parent, re.IGNORECASE):
+        return InterfaceKind.VIRTUAL
     if _CISCO_PHYSICAL_INTERFACE.match(parent):
         return InterfaceKind.PHYSICAL
     if _CISCO_VIRTUAL_INTERFACE.match(parent):

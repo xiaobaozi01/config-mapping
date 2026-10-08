@@ -107,6 +107,8 @@ TopologyPreflightHandler
         ↓
 GroupExpansionHandler
         ↓
+PreconfiguredInterfaceCleanupHandler
+        ↓
 InterfaceClassificationHandler
         ↓
 NNIHandler
@@ -114,6 +116,8 @@ NNIHandler
 UNIHandler
         ↓
 ReferenceRewriteHandler
+        ↓
+PTPCleanupHandler
         ↓
 OptionalFeatureWashingHandler
         ↓
@@ -131,6 +135,10 @@ NNI 中的聚合链路识别先由纯函数 `plan_nni_components()` 生成不可
 `GroupExpansionHandler` 统一展开并校验所有活动的 group 引用及其依赖。未被活动配置引用的模板不参与求值；成功展开后删除 group 定义和对应控制语句，任一活动引用无法安全解析时整体回滚。
 
 `InterfaceClassificationHandler` 使用厂商物理接口白名单分类接口。已知虚拟接口和未知接口均不参与 NNI/UNI 物理端口分配；未知接口原样保留并写入告警，若链接表把非物理接口作为端点则转换失败。
+
+`interface preconfigure` 表示源设备硬件尚未插入时保存的物理接口候选配置。系统按“当前设备已经实例化并生效的配置”生成 GNS3 实验，因此 Group 展开后，`PreconfiguredInterfaceCleanupHandler` 在接口分类前通过 `active=False` 忽略整个候选块。预配置接口不会进入 NNI/UNI、接口引用改写或目标端口分配，输出中也不会出现 `interface preconfigure`。
+
+`PTPCleanupHandler` 在 NNI/UNI 迁移和引用改写完成后，将 `interface PTP...` 虚拟接口块标记为非活动。PTP 接口被明确分类为虚拟接口，不参与业务口映射，也不会产生未知接口告警；全局 `ptp`、普通数据口下的 `ptp` 及频率同步配置不属于该清理范围。
 
 ## 4. 输入准备
 

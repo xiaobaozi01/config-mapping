@@ -607,9 +607,9 @@ class CiscoGroupExpander:
 
         # 配置中缺失的候选接口也要参与通配 group 匹配。
         existing_interface_names = {
-            canonical_cisco_interface(node.header.split(maxsplit=1)[1])
+            node.interface_name
             for node in working_root.children
-            if re.match(r"interface\s+\S+", node.header, re.IGNORECASE)
+            if node.interface_name
         }
         for candidate_name in candidate_interface_names:
             canonical_name = canonical_cisco_interface(candidate_name)
