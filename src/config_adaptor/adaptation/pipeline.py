@@ -72,12 +72,3 @@ def build_default_pipeline() -> ConversionPipeline:
             SimulationAdaptationHandler(),
         ]
     )
-
-
-def build_default_chain() -> ConversionPipeline:
-    """通过旧的 chain 构建入口返回当前默认转换流水线。
-
-    该函数不维护另一套阶段列表，而是直接委托 ``build_default_pipeline``，从而兼容
-    既有调用方的同时保证新旧入口拥有完全相同的处理顺序，避免两套流程逐渐分叉。
-    """
-    return build_default_pipeline()
