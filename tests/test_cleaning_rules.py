@@ -5,7 +5,7 @@ from __future__ import annotations
 import unittest
 
 from config_adaptor.adaptation.cleaning_rules import (
-    DEFAULT_RULES_PATHS,
+    _RULE_SOURCES,
     _parse_rule,
     load_rules,
 )
@@ -73,7 +73,9 @@ class CleaningPathTest(unittest.TestCase):
 
 class CleaningRuleLoadingTest(unittest.TestCase):
     def test_default_rules_are_split_by_target_vendor(self):
-        cisco_path, juniper_path = DEFAULT_RULES_PATHS
+        (cisco_path, cisco_vendor), (juniper_path, juniper_vendor) = _RULE_SOURCES
+        self.assertEqual(cisco_vendor.value, "cisco_iosxr")
+        self.assertEqual(juniper_vendor.value, "juniper_junos")
         self.assertEqual(cisco_path.parts[-4:], ("cisco", "rules", "xrv9000", "cleaning.yaml"))
         self.assertEqual(juniper_path.parts[-4:], ("juniper", "rules", "vmx", "cleaning.yaml"))
         rules = load_rules()
