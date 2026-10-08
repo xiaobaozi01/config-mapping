@@ -44,7 +44,7 @@ class NniComponentPlan:
 
     component_rows: dict[int, tuple[int, ...]]
     redundant_rows: dict[int, int]
-    errors: tuple[str, ...]
+    warnings: tuple[str, ...]
 
 
 # 按 (行号, 设备名) 查询该端点聚合到的 bundle 名；None 表示该端点未聚合。
@@ -55,12 +55,12 @@ def plan_nni_components(
     links: list[Link],
     bundles: BundleLookup,
 ) -> NniComponentPlan:
-    """做什么：把 NNI 链接行按 bundle 聚合成组件，产出保留/冗余/错误计划。
+    """做什么：把 NNI 链接行按 bundle 聚合成组件，产出保留/冗余/警告计划。
 
     为什么：Excel 中一条聚合 NNI 常拆成多行（每行一个成员接口），只有先识别
     它们属于同一条物理链路，后续才能决定保留哪一行、把其余行标记为冗余。
     流程：并查集合并共享 bundle 的行 → 按根行号分组 → 逐组件选保留行、标冗余、
-    校验成员一致性。
+    校验成员一致性。成员关系不一致只产生警告，不阻止后续转换。
     """
     if not links:
         return NniComponentPlan({}, {}, ())
@@ -91,7 +91,7 @@ def plan_nni_components(
     by_row = {link.row: link for link in links}
     component_rows: dict[int, tuple[int, ...]] = {}
     redundant_rows: dict[int, int] = {}
-    errors: list[str] = []
+    warnings: list[str] = []
     for rows in components.values():
         ordered_rows = tuple(sorted(rows))
         keep = min(ordered_rows)
@@ -99,14 +99,14 @@ def plan_nni_components(
         if len(ordered_rows) <= 1:
             continue
 
-        error = _validate_component_bundles(ordered_rows, by_row, bundles)
-        if error is not None:
-            errors.append(error)
+        warning = _validate_component_bundles(ordered_rows, by_row, bundles)
+        if warning is not None:
+            warnings.append(warning)
         for row in ordered_rows:
             if row != keep:
                 redundant_rows[row] = keep
 
-    return NniComponentPlan(component_rows, redundant_rows, tuple(errors))
+    return NniComponentPlan(component_rows, redundant_rows, tuple(warnings))
 
 
 def _validate_component_bundles(
@@ -118,7 +118,7 @@ def _validate_component_bundles(
 
     为什么：同一物理链路上的所有成员行，在同一设备端点上应指向同一个 bundle；
     任一设备端点上 bundle 缺失或不唯一都说明成员关系不一致。一致时返回
-    ``None``，否则返回描述错误的文本。
+    ``None``，否则返回描述不一致的文本。
     """
     row_links = [by_row[row] for row in ordered_rows]
     device_names = sorted(
@@ -172,15 +172,13 @@ class NNIHandler:
         if not links:
             return
 
-        # 前两个阶段只构造索引和计划。任何错误都必须阻止后面的 AST 改写，
+        # 分析阶段只构造索引；发现非法端点时必须阻止后面的 AST 改写，
         # 避免生成一半成功、一半失败的设备配置。
         analysis = self._resolve_endpoints(context, links)
         if context.has_errors:
             return
 
         component_rows = self._plan_components(context, links, analysis.bundles)
-        if context.has_errors:
-            return
 
         plans = self._allocate_targets(context, links, component_rows, analysis)
         for device_name, device_plans in plans.items():
@@ -240,14 +238,12 @@ class NNIHandler:
         """把同一逻辑聚合的成员链路合并为一个 NNI 组件。
 
         返回“保留行 -> 组件全部行”的映射，并把冗余 Excel 链路标记为
-        inactive；成员关系不一致时把错误写入 ``context``。
+        inactive；成员关系不一致只写警告，不阻止转换。
         """
-        # planner 只根据拓扑和聚合关系做纯计算，不接触配置 AST。若一组
-        # 成员在任一设备侧无法归入同一聚合，它会返回错误而不是猜测。
+        # planner 只根据拓扑和聚合关系做纯计算，不接触配置 AST。成员关系
+        # 不一致被视为可接受的输入差异，仅记录警告，仍按既有分组继续处理。
         plan = plan_nni_components(links, bundles)
-        context.errors.extend(plan.errors)
-        if context.has_errors:
-            return plan.component_rows
+        context.warnings.extend(plan.warnings)
 
         links_by_row = {link.row: link for link in context.topology.links}
         # 一个聚合可能在 Excel 中表现为多条成员链路。转换后的模拟拓扑只

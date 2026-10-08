@@ -34,7 +34,7 @@ class NniPlanningTest(unittest.TestCase):
 
         self.assertEqual(plan.component_rows, {2: (2, 3)})
         self.assertEqual(plan.redundant_rows, {3: 2})
-        self.assertFalse(plan.errors)
+        self.assertFalse(plan.warnings)
         self.assertTrue(all(link.active for link in links))
 
     def test_same_bundle_across_peers_remains_separate_mlag_components(self):
@@ -53,7 +53,7 @@ class NniPlanningTest(unittest.TestCase):
 
         self.assertEqual(plan.component_rows, {2: (2,), 3: (3,)})
         self.assertFalse(plan.redundant_rows)
-        self.assertFalse(plan.errors)
+        self.assertFalse(plan.warnings)
 
 
 class UniVlanAllocationTest(unittest.TestCase):
