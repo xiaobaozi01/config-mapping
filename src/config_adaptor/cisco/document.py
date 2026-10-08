@@ -726,15 +726,21 @@ class CiscoDocument(VendorConfiguration):
         def expand_nodes(nodes: list[CiscoNode]) -> list[CiscoNode]:
             """递归展开节点命令中的接口引用并保留子树结构。
 
-            每个命令变体获得独立深拷贝，随后递归处理其 children；因此一对多 M-LAG
-            引用可以在任意深度展开，而不会把子命令留在被替换节点之外。
+            单一目标直接修改当前 AST；一对多 M-LAG 展开时为每个目标
+            克隆独立子树，避免目标之间互相影响。
             """
             expanded: list[CiscoNode] = []
             for node in nodes:
                 if node.is_formatting:
-                    expanded.append(node.clone())
+                    expanded.append(node)
                     continue
-                for header in expand(node.header):
+                headers = expand(node.header)
+                if len(headers) == 1:
+                    node.header = headers[0]
+                    node.children = expand_nodes(node.children)
+                    expanded.append(node)
+                    continue
+                for header in headers:
                     clone = node.clone()
                     clone.header = header
                     clone.children = expand_nodes(clone.children)
@@ -749,8 +755,13 @@ class CiscoDocument(VendorConfiguration):
                 rebuilt.append(block)
                 continue
             header_variants = expand(block.header)
+            if len(header_variants) == 1:
+                block.header = header_variants[0]
+                block.children = expand_nodes(block.children)
+                rebuilt.append(block)
+                continue
             for header in header_variants:
-                clone = copy.deepcopy(block)
+                clone = block.clone()
                 clone.header = header
                 clone.children = expand_nodes(clone.children)
                 rebuilt.append(clone)
