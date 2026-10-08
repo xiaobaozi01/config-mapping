@@ -18,7 +18,6 @@ def _parser() -> argparse.ArgumentParser:
     command.add_argument("--config-dir", type=Path, required=True, help="原始配置文件目录")
     command.add_argument("--output-dir", type=Path, required=True, help="输出目录")
     command.add_argument("--profiles", type=Path, help="镜像接口配置 YAML")
-    command.add_argument("--washing-policy", type=Path, help="Group 未知语义策略 YAML")
     return parser
 
 
@@ -31,7 +30,6 @@ def main(argv: list[str] | None = None) -> int:
             config_dir=args.config_dir,
             output_dir=args.output_dir,
             profiles_path=args.profiles,
-            washing_policy_path=args.washing_policy,
         )
     except Exception as exc:  # CLI 是最外层边界，只向操作者显示简洁错误。
         print(f"转换失败: {exc}", file=sys.stderr)

@@ -115,7 +115,6 @@ Excel 至少包含两个工作表：
 | 文件 | CLI 参数 | 用途 |
 | --- | --- | --- |
 | 镜像 Profile | `--profiles` | 定义镜像、版本、可用接口和模拟参数策略 |
-| Group 策略 | `--washing-policy` | 定义 Group 未知语义处理方式 |
 
 镜像接口列表有一个容易忽略的约定：
 
@@ -787,8 +786,7 @@ config-adaptor convert \
   --topology topology.xlsx \
   --config-dir configs \
   --output-dir output \
-  --profiles config/image_profiles.yaml \
-  --washing-policy config/washing_policy.example.yaml
+  --profiles config/image_profiles.yaml
 ```
 
 也可不安装直接执行：
@@ -1051,7 +1049,6 @@ Cisco 块结构和 Junos 树结构差异很大。当前设计只统一应用层�
 - `docs/requirements.md`：需求与验收基线。
 - `docs/processing-flow.md`：Cisco/Junos 配置改写的详细规则。
 - `config/image_profiles.yaml`：镜像 Profile 示例。
-- `config/washing_policy.example.yaml`：Group 未知语义策略示例。
 - `src/config_adaptor/cisco/rules/xrv9000/cleaning.yaml`：XRv9000 配置清洗规则。
 - `src/config_adaptor/juniper/rules/vmx/cleaning.yaml`：vMX 配置清洗规则。
 

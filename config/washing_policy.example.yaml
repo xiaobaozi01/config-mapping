@@ -1,5 +1,0 @@
-# 这里只保留 Group 未知语义处理策略。配置删除规则统一位于
-# cisco/rules/xrv9000/cleaning.yaml 和 juniper/rules/vmx/cleaning.yaml。
-group_handling:
-  # preserve 保留未知语句；warn 保留并报告；fail 遇到潜在未知冲突时回滚。
-  unknown_identity: warn

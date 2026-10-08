@@ -1,39 +1,8 @@
-"""加载 Group 策略并替换实验环境管理认证。"""
+"""替换实验环境管理认证。"""
 
 from __future__ import annotations
 
-from pathlib import Path
-
-import yaml
-
-from ..common.policies import WashingPolicy
 from .models import ConversionContext
-
-
-def load_washing_policy(path: Path | None) -> WashingPolicy:
-    """读取 Group 未知语义处理策略。"""
-    if path is None:
-        return WashingPolicy()
-    with path.open("r", encoding="utf-8") as handle:
-        payload = yaml.safe_load(handle) or {}
-    if not isinstance(payload, dict):
-        raise ValueError("washing policy 必须是键值映射")
-    unknown = sorted(set(payload) - {"group_handling"})
-    if unknown:
-        raise ValueError(f"未知 washing policy 配置: {', '.join(unknown)}")
-    group_handling = payload.get("group_handling", {})
-    if not isinstance(group_handling, dict):
-        raise ValueError("group_handling 必须是键值映射")
-    unknown_group_keys = sorted(set(group_handling) - {"unknown_identity"})
-    if unknown_group_keys:
-        raise ValueError(f"未知 group 处理配置: {', '.join(unknown_group_keys)}")
-    unknown_identity = group_handling.get("unknown_identity", "warn")
-    if unknown_identity not in {"preserve", "warn", "fail"}:
-        raise ValueError(
-            "group_handling.unknown_identity 必须是 preserve、warn 或 fail"
-        )
-
-    return WashingPolicy(group_unknown_identity=unknown_identity)
 
 
 class AuthWashingHandler:

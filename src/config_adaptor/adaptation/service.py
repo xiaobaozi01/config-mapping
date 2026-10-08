@@ -12,7 +12,7 @@ from .models import ConversionContext, DeviceContext, Vendor
 from .pipeline import build_default_pipeline
 from .profiles import load_profiles
 from .topology import load_topology, write_adapted_topology
-from .washing import load_washing_policy
+from ..common.policies import WashingPolicy
 
 
 CONFIG_EXTENSIONS = (".cfg", ".conf", ".txt")
@@ -54,12 +54,11 @@ def prepare_context(
     topology_path: Path,
     config_dir: Path,
     profiles_path: Path | None = None,
-    washing_policy_path: Path | None = None,
 ) -> ConversionContext:
     """加载拓扑、镜像规格和厂商文档，构造一次转换的共享上下文。"""
     topology = load_topology(topology_path)
     profiles = load_profiles(profiles_path)
-    washing_policy = load_washing_policy(washing_policy_path)
+    washing_policy = WashingPolicy()
     device_contexts: dict[str, DeviceContext] = {}
     warnings: list[str] = []
     errors: list[str] = []
@@ -99,7 +98,6 @@ def convert(
     config_dir: Path,
     output_dir: Path,
     profiles_path: Path | None = None,
-    washing_policy_path: Path | None = None,
 ) -> ConversionContext:
     """执行完整转换；即使失败也写 report，便于定位输入问题。
 
@@ -107,7 +105,7 @@ def convert(
     未预期异常仍会继续向调用方抛出，但在此之前先写入失败报告，使 CLI
     操作者不会只得到一条无上下文的错误。
     """
-    context = prepare_context(topology_path, config_dir, profiles_path, washing_policy_path)
+    context = prepare_context(topology_path, config_dir, profiles_path)
     phase = "核心转换流水线"
     try:
         if not context.errors:

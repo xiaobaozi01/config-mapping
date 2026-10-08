@@ -52,8 +52,7 @@ config-adaptor convert \
   --topology topology.xlsx \
   --config-dir configs \
   --output-dir output \
-  --profiles config/image_profiles.yaml \
-  --washing-policy config/washing_policy.example.yaml
+  --profiles config/image_profiles.yaml
 ```
 
 `--profiles` 可配置镜像名称/版本、数据接口列表和模拟参数适配策略；列表最后一个接口用于 UNI，其余接口可分配给 NNI。清洗规则随程序发布，按厂商分别位于 `config_adaptor/cisco/rules/xrv9000/cleaning.yaml` 和 `config_adaptor/juniper/rules/vmx/cleaning.yaml`，转换时不接受外部规则文件。
@@ -64,7 +63,7 @@ config-adaptor convert \
 
 group 统一采用全量处理：静态展开并校验所有活动的 group 引用及其依赖，成功后移除 group 定义和控制语句。未被活动配置引用的模板不参与求值；缺失引用、循环依赖或无法安全静态解释的活动 group 会使转换整体回滚。Junos 中所有 `inactive:` 节点及其完整子树都会删除；重复的顶层 `groups {}` 容器及同名定义会先合并再求值。
 
-group 叶子语句使用 XRv9000/vMX 路径感知规则判定语义冲突。未匹配规则且同路径同命令族出现不同值时，`group_handling.unknown_identity` 可设为 `preserve`、`warn`（默认）或 `fail`。报告中的 `group-identity-coverage` 事件和 summary 字段给出规则命中数、降级数及实际覆盖率。
+group 叶子语句使用 XRv9000/vMX 路径感知规则判定语义冲突。未匹配规则且同路径同命令族出现不同值时，固定按 `warn` 处理：保留语句并报告潜在歧义。报告中的 `group-identity-coverage` 事件和 summary 字段给出规则命中数、降级数及实际覆盖率。
 
 Cisco 与 Juniper 的跨厂商 NNI 会按链路两端各自的厂商语法和镜像 Profile 独立分配接口，不要求两端目标接口同名。转换器不审计链路两端的 IP、VLAN、MTU 或封装是否一致，这些业务一致性由输入配置保证。
 

@@ -8,7 +8,6 @@ import unittest
 from pathlib import Path
 
 from config_adaptor.adaptation.service import convert
-from config_adaptor.adaptation.washing import load_washing_policy
 from config_adaptor.cisco.document import CiscoDocument
 from config_adaptor.cisco.identity import resolve_cisco_identity
 from config_adaptor.common.policies import WashingPolicy
@@ -126,25 +125,6 @@ class SemanticIdentityTest(unittest.TestCase):
         self.assertFalse(failing_outcome.success)
         self.assertEqual(len(failing_outcome.ambiguities), 1)
         self.assertEqual(failing_document.render(), before)
-
-    def test_unknown_identity_policy_is_loaded(self):
-        with tempfile.TemporaryDirectory() as directory:
-            path = Path(directory) / "washing.yaml"
-            path.write_text(
-                "group_handling:\n  unknown_identity: fail\n",
-                encoding="utf-8",
-            )
-            self.assertEqual(load_washing_policy(path).group_unknown_identity, "fail")
-
-    def test_removed_group_mode_is_rejected(self):
-        with tempfile.TemporaryDirectory() as directory:
-            path = Path(directory) / "washing.yaml"
-            path.write_text(
-                "group_handling:\n  mode: relevant\n",
-                encoding="utf-8",
-            )
-            with self.assertRaisesRegex(ValueError, "未知 group 处理配置: mode"):
-                load_washing_policy(path)
 
     def test_conversion_report_contains_identity_coverage(self):
         fixture = FIXTURES / "iosxr_bundle"
