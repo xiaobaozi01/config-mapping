@@ -1,58 +1,26 @@
-"""加载默认关闭的扩展配置清洗策略。"""
+"""加载 Group 策略并替换实验环境管理认证。"""
 
 from __future__ import annotations
 
 from pathlib import Path
-from typing import cast
 
 import yaml
 
 from ..common.policies import WashingPolicy
-from ..cisco.cleaning import clean_ptp_interfaces
-from ..cisco.document import CiscoDocument
-from .models import ConversionContext, Vendor
-
-
-_OPTIONAL_KEYS = {
-    "protocol_authentication",
-    "pki",
-    "hardware",
-    "nat",
-    "flow_statistics",
-}
-
-
-class PTPCleanupHandler:
-    """在接口迁移完成后停用 XRv9000 实验不需要的 PTP 接口块。"""
-
-    def process(self, context: ConversionContext) -> None:
-        for device_name in sorted(context.devices):
-            device = context.devices[device_name]
-            if device.device.vendor != Vendor.CISCO_IOSXR:
-                continue
-            document = cast(CiscoDocument, device.document)
-            outcome = clean_ptp_interfaces(document)
-            if outcome.total:
-                context.add_event(
-                    "ptp-cleanup",
-                    f"设备 {device_name} 已清理 PTP 配置",
-                    device=device_name,
-                    removed_by_type=outcome.removed,
-                )
+from .models import ConversionContext
 
 
 def load_washing_policy(path: Path | None) -> WashingPolicy:
-    """读取 group 未知语义策略和清洗开关。"""
+    """读取 Group 未知语义处理策略。"""
     if path is None:
         return WashingPolicy()
     with path.open("r", encoding="utf-8") as handle:
         payload = yaml.safe_load(handle) or {}
-    optional = payload.get("optional_washing", {})
-    if not isinstance(optional, dict):
-        raise ValueError("optional_washing 必须是键值映射")
-    unknown = sorted(set(optional) - _OPTIONAL_KEYS)
+    if not isinstance(payload, dict):
+        raise ValueError("washing policy 必须是键值映射")
+    unknown = sorted(set(payload) - {"group_handling"})
     if unknown:
-        raise ValueError(f"未知可选清洗开关: {', '.join(unknown)}")
+        raise ValueError(f"未知 washing policy 配置: {', '.join(unknown)}")
     group_handling = payload.get("group_handling", {})
     if not isinstance(group_handling, dict):
         raise ValueError("group_handling 必须是键值映射")
@@ -65,56 +33,8 @@ def load_washing_policy(path: Path | None) -> WashingPolicy:
             "group_handling.unknown_identity 必须是 preserve、warn 或 fail"
         )
 
-    values: dict[str, bool | str] = {
-        "group_unknown_identity": unknown_identity,
-    }
-    for key in _OPTIONAL_KEYS:
-        value = optional.get(key, False)
-        if not isinstance(value, bool):
-            raise ValueError(f"清洗开关 {key} 必须是 true 或 false")
-        values[key] = value
-    return WashingPolicy(**values)
+    return WashingPolicy(group_unknown_identity=unknown_identity)
 
-
-class OptionalFeatureWashingHandler:
-    """按用户显式开启的策略清理非必需但可能影响模拟运行的配置能力。
-
-    可选类别包括协议认证、PKI、硬件绑定、NAT 和流量统计；这些配置可能依赖真实
-    设备能力或外部系统，但删除也可能改变业务语义，因此不能像管理账号清洗一样
-    默认执行。独立处理器让风险较高的清理保持显式可控，并为每台设备留下分类统计。
-    """
-
-    def process(self, context: ConversionContext) -> None:
-        """执行已启用的可选清洗项，并记录开关及按类别删除数量。
-
-        方法把完整策略交给厂商实现，由其按 IOS XR 或 Junos 语法删除对应节点；
-        即使没有匹配内容也记录 ``optional-washing`` 事件，便于报告证明哪些高影响
-        开关被实际请求过。它与强制认证替换分离，是为了避免用户仅想重建实验账号时
-        意外删除 NAT、PKI 或硬件相关业务配置。
-        """
-        policy = context.washing_policy
-        enabled = [
-            name
-            for name in (
-                "protocol_authentication",
-                "pki",
-                "hardware",
-                "nat",
-                "flow_statistics",
-            )
-            if getattr(policy, name)
-        ]
-        for device_name in sorted(context.devices):
-            device = context.devices[device_name]
-            cleanup = device.document.clean_optional_features(policy)
-            context.add_event(
-                "optional-washing",
-                f"设备 {device_name} 已执行可选能力清洗",
-                device=device_name,
-                enabled=enabled,
-                removed_sections=cleanup.total,
-                removed_by_type=cleanup.removed,
-            )
 
 class AuthWashingHandler:
     """移除生产管理面认证信息，并为输出配置建立统一实验账号。

@@ -7,7 +7,9 @@
 - XRv9000：`src/config_adaptor/cisco/rules/xrv9000/`
 - vMX：`src/config_adaptor/juniper/rules/vmx/`
 
-规则按 `interfaces.yaml`、`routing.yaml`、`policy.yaml` 和 `system.yaml` 分类。在已有文件中追加规则时不需要修改 manifest；新增规则文件时，必须同时把文件名加入对应的 `manifest.yaml.rule_files`。
+identity 规则按 `interfaces.yaml`、`routing.yaml`、`policy.yaml` 和 `system.yaml` 分类。在已有文件中追加规则时不需要修改 manifest；新增 identity 规则文件时，必须同时把文件名加入对应的 `manifest.yaml.rule_files`。
+
+同目录下的 `cleaning.yaml` 是配置清洗规则，由 `CleaningRulesHandler` 单独加载，不属于 identity 规则，也不加入 `manifest.yaml.rule_files`。
 
 ## 完整示例
 

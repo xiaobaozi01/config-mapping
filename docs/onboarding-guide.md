@@ -23,7 +23,7 @@
 flowchart LR
     Operator[网络工程师] -->|拓扑 Excel| Adaptor[配置自适应系统]
     Operator -->|IOS XR / Junos 配置| Adaptor
-    Operator -->|镜像 Profile / 清洗策略| Adaptor
+    Operator -->|镜像 Profile / Group 策略 / 清洗规则| Adaptor
 
     Adaptor -->|适配后的拓扑 Excel| GNS3[GNS3 实验环境]
     Adaptor -->|XRv9000 / vMX 配置| GNS3
@@ -115,8 +115,7 @@ Excel 至少包含两个工作表：
 | 文件 | CLI 参数 | 用途 |
 | --- | --- | --- |
 | 镜像 Profile | `--profiles` | 定义镜像、版本、可用接口和模拟参数策略 |
-| 清洗策略 | `--washing-policy` | 定义 Group 未知语义策略和可选能力清洗开关 |
-| 外部清洗规则 | `--rules` | 追加 `delete/replace/mask/warn` 规则 |
+| Group 策略 | `--washing-policy` | 定义 Group 未知语义处理方式 |
 
 镜像接口列表有一个容易忽略的约定：
 
@@ -160,7 +159,7 @@ flowchart TD
     CLI[CLI: config-adaptor convert] --> Prepare[prepare_context]
     Prepare --> Excel[读取和校验 Excel]
     Prepare --> Profiles[加载镜像 Profile]
-    Prepare --> Policy[加载清洗策略]
+    Prepare --> Policy[加载 Group 策略]
     Prepare --> Parse[按厂商解析每台设备配置]
 
     Excel --> Context[ConversionContext]
@@ -170,16 +169,15 @@ flowchart TD
 
     Context --> Preflight[1. 拓扑预检]
     Preflight --> Groups[2. Group 展开]
-    Groups --> Classify[3. 接口分类]
-    Classify --> NNI[4. NNI 规划与改写]
-    NNI --> UNI[5. UNI 规划与改写]
-    UNI --> Rewrite[6. 全局引用更新]
-    Rewrite --> Optional[7. 可选能力清洗]
-    Optional --> Auth[8. 管理认证清洗]
-    Auth --> Simulation[9. 模拟参数适配]
-
-    Simulation --> Rules[外部清洗规则]
-    Rules --> HasError{存在错误?}
+    Groups --> Preconfigured[3. 忽略预配置接口]
+    Preconfigured --> Classify[4. 接口分类]
+    Classify --> NNI[5. NNI 规划与改写]
+    NNI --> UNI[6. UNI 规划与改写]
+    UNI --> Rewrite[7. 全局引用更新]
+    Rewrite --> Rules[8. 统一配置清洗规则]
+    Rules --> Auth[9. 管理认证清洗]
+    Auth --> Simulation[10. 模拟参数适配]
+    Simulation --> HasError{存在错误?}
     HasError -->|是| Diagnostics[只写 mapping + report]
     HasError -->|否| Outputs[写拓扑、配置、mapping、report、README]
 ```
@@ -196,7 +194,6 @@ sequenceDiagram
     participant Flow as ConversionPipeline
     participant Stage as adaptation 业务模块
     participant Doc as VendorConfiguration
-    participant Rules as cleaning_rules.py
     participant Output as write_outputs
 
     User->>CLI: config-adaptor convert ...
@@ -216,13 +213,12 @@ sequenceDiagram
             Flow-->>Entry: 立即停止后续 Stage
         end
     end
-    Entry->>Rules: apply_rules(context, rules)
     Entry->>Output: write_outputs(context, output_dir)
     Output-->>CLI: ConversionContext
     CLI-->>User: 退出码 0 或 2
 ```
 
-注意：只要输入准备阶段没有错误，核心 Pipeline 返回后就会执行外部清洗规则；即使某个 Stage 已报错并停止后续 Stage，规则阶段仍可能记录命中，但失败结果最终只输出诊断文件。`write_outputs()` 无论成功失败都会执行，以确保失败报告可用。
+清洗规则已经是核心 Pipeline 的一个 Stage。前序 Stage 报错时不会继续清洗；`write_outputs()` 无论成功失败都会执行，以确保失败报告可用。
 
 ## 5. 代码架构
 
@@ -301,7 +297,7 @@ flowchart TB
 | --- | --- | --- |
 | `adaptation/cli.py` | 参数解析、退出码 | 是 |
 | `adaptation/service.py` | 准备上下文、执行流程、写输出 | 是 |
-| `adaptation/topology.py`、`groups.py`、`interfaces.py`、`nni.py`、`uni.py`、`washing.py`、`simulation.py` | 九个业务阶段 | 是，核心 |
+| `adaptation/topology.py`、`groups.py`、`interfaces.py`、`nni.py`、`uni.py`、`cleaning_rules.py`、`washing.py`、`simulation.py` | 十个业务阶段 | 是，核心 |
 | `adaptation/models.py` | 设备、链路、映射、Profile、上下文 | 是 |
 | `adaptation/pipeline.py` | Stage 协议和停止规则 | 是 |
 | `adaptation/nni.py` | 聚合链路分组的纯计算 | NNI 业务时读 |
@@ -310,11 +306,12 @@ flowchart TB
 | `cisco/document.py、juniper/document.py` | AST、解析、渲染及兼容 Facade | 第二阶段读 |
 | `cisco/groups.py、juniper/groups.py` | 厂商 Group 事务式展开 | 专项阅读 |
 | `cisco/interfaces.py、juniper/interfaces.py` | 业务接口分析和配置树修改 | 专项阅读 |
-| `cisco/cleaning.py、juniper/cleaning.py` | 强制及可选清洗 | 专项阅读 |
+| `cisco/cleaning.py、juniper/cleaning.py` | 强制管理面清洗 | 专项阅读 |
 | `cisco/simulation.py、juniper/simulation.py` | 镜像运行参数适配 | 专项阅读 |
 | `adaptation/topology.py` | Excel 读写和列别名处理 | 输入问题时读 |
 | `adaptation/profiles.py` / `adaptation/washing.py` | YAML 配置加载与校验 | 策略问题时读 |
-| `adaptation/cleaning_rules.py` | 外部清洗规则 | 自定义清洗时读 |
+| `adaptation/cleaning_rules.py` | 统一清洗规则加载与调度 | 修改清洗框架时读 |
+| `cisco/rules/xrv9000/cleaning.yaml`、`juniper/rules/vmx/cleaning.yaml` | 各厂商的 PTP、可选能力及扩展清洗规则 | 增删清洗项时读 |
 
 ### 5.3 为什么有些东西是类，有些是函数
 
@@ -435,19 +432,20 @@ classDiagram
 
 随后 `ReferenceRewriteHandler` 用它更新路由协议、L2VPN、策略等非接口定义中的引用。
 
-## 7. 九个核心 Stage
+## 7. 十个核心 Stage
 
 | 顺序 | Stage | 输入关注点 | 主要副作用 | 关键失败条件 |
 | --- | --- | --- | --- | --- |
 | 1 | `TopologyPreflightHandler` | 拓扑设备和链路端点 | 标记跳过链路，保留 NNI 角色 | 端点设备不存在 |
 | 2 | `GroupExpansionHandler` | 活动 Group 引用、已知接口 | 事务式展开 Group，记录冲突 | 引用缺失、循环或无法静态求值 |
-| 3 | `InterfaceClassificationHandler` | 厂商接口类型 | 未知接口告警并保留 | 本阶段一般不失败 |
-| 4 | `NNIHandler` | 活跃链路、聚合成员 | 分组、扁平化、M-LAG 拆分、端口分配 | 类型错误、成员歧义、端口不足 |
-| 5 | `UNIHandler` | 剩余业务接口 | 删除裸口、QinQ 迁移、VLAN 分配 | VLAN 空间耗尽 |
-| 6 | `ReferenceRewriteHandler` | 完整接口映射 | 更新全局接口引用 | 由厂商实现保证安全 |
-| 7 | `OptionalFeatureWashingHandler` | 显式开关 | 清理协议认证、PKI、硬件、NAT、流量统计 | 策略文件先期校验 |
-| 8 | `AuthWashingHandler` | 管理面配置 | 删除旧认证并增加实验账号 | 与清洗和写入视为同一阶段 |
-| 9 | `SimulationAdaptationHandler` | Profile 与已映射数据口 | 启用接口、去硬件参数、提高过低 BFD 值 | 非法 Profile 先期校验 |
+| 3 | `PreconfiguredInterfaceCleanupHandler` | IOS XR 预配置接口 | 忽略未实例化接口候选块 | 本阶段一般不失败 |
+| 4 | `InterfaceClassificationHandler` | 厂商接口类型 | 未知接口告警并保留 | 本阶段一般不失败 |
+| 5 | `NNIHandler` | 活跃链路、聚合成员 | 分组、扁平化、M-LAG 拆分、端口分配 | 类型错误、成员歧义、端口不足 |
+| 6 | `UNIHandler` | 剩余业务接口 | 删除裸口、QinQ 迁移、VLAN 分配 | VLAN 空间耗尽 |
+| 7 | `ReferenceRewriteHandler` | 完整接口映射 | 更新全局接口引用 | 由厂商实现保证安全 |
+| 8 | `CleaningRulesHandler` | 已启用 YAML 规则 | 按路径删除、替换、脱敏或告警 | 规则文件先期校验 |
+| 9 | `AuthWashingHandler` | 管理面配置 | 删除旧认证并增加实验账号 | 与清洗和写入视为同一阶段 |
+| 10 | `SimulationAdaptationHandler` | Profile 与已映射数据口 | 启用接口、去硬件参数、提高过低 BFD 值 | 非法 Profile 先期校验 |
 
 `ConversionPipeline` 每执行完一个 Stage 就检查 `context.has_errors`。一旦为真，后续 Stage 不再运行。
 
@@ -705,21 +703,11 @@ interfaces {
 
 随后写入固定实验账号。账号只应用于隔离的 GNS3 实验环境，报告不得回显被删除的秘密值。
 
-### 12.2 可选能力清洗
+### 12.2 统一清洗规则
 
-以下清洗默认关闭，只有策略文件显式设为 `true` 才执行：
+PTP、协议认证、PKI、硬件、NAT、流量统计和镜像扩展清洗按厂商位于各目标镜像目录的 `cleaning.yaml`。两份文件由同一加载器和 Handler 执行，不通过 CLI 接收外部规则。每条规则通过 `enable` 独立控制，通过 `category` 汇总报告；`path` 描述完整父级路径，支持 `[]`、`*` 和 `**`。协议认证等可能改变业务能力的规则默认关闭。
 
-- `protocol_authentication`
-- `pki`
-- `hardware`
-- `nat`
-- `flow_statistics`
-
-默认保留未知配置是本项目的重要保守原则：不能确认不兼容时，不做大范围删除。
-
-### 12.3 外部规则
-
-外部规则在核心转换之后运行，支持：
+规则在接口迁移和引用改写之后运行，支持：
 
 | 动作 | 语义 |
 | --- | --- |
@@ -728,9 +716,9 @@ interfaces {
 | `mask` | 清除秘密值但保留结构 |
 | `warn` | 不修改，只记录命中 |
 
-把外部规则放到核心接口分类之后，是为了防止自定义规则意外删除分类依据，改变 NNI/UNI 的核心语义。
+把规则放到核心接口分类之后，是为了防止清洗意外删除分类依据，改变 NNI/UNI 的核心语义。默认保留未知配置仍是项目的保守原则。
 
-### 12.4 模拟参数模式
+### 12.3 模拟参数模式
 
 | 模式 | 行为 |
 | --- | --- |
@@ -800,8 +788,7 @@ config-adaptor convert \
   --config-dir configs \
   --output-dir output \
   --profiles config/image_profiles.yaml \
-  --washing-policy config/washing_policy.example.yaml \
-  --rules config/cleaning_rules.example.yaml
+  --washing-policy config/washing_policy.example.yaml
 ```
 
 也可不安装直接执行：
@@ -909,8 +896,9 @@ flowchart TD
 ### 16.5 增加清洗项
 
 - 所有环境都必须清理的管理面内容：修改厂商 `clean_management_access()`。
-- 会改变业务能力、需要用户确认的内容：增加到 `WashingPolicy` 和 `clean_optional_features()`。
-- 项目外部、镜像版本相关的个别规则：优先使用外部 YAML rule。
+- PTP、协议认证、PKI、硬件、NAT、流量统计及镜像版本相关内容：在对应厂商目标镜像目录的 `cleaning.yaml` 增加规则。
+- 会改变业务能力的规则保持 `enable: false`，需要时由项目维护者在内置文件中开启。
+- 只有“删除旧认证并创建实验账号”这类复合业务动作继续保留专用 Handler。
 
 ## 17. 测试策略
 
@@ -1025,8 +1013,7 @@ config_adaptor.adaptation.cli.main
   → config_adaptor.adaptation.pipeline.build_default_pipeline
   → ConversionPipeline.execute
   → 各 Handler.process
-  → VendorConfiguration 的厂商实现
-  → config_adaptor.adaptation.cleaning_rules.apply_rules
+  → CleaningRulesHandler / VendorConfiguration 的厂商实现
   → config_adaptor.adaptation.service.write_outputs
 ```
 
@@ -1046,9 +1033,9 @@ Cisco 块结构和 Junos 树结构差异很大。当前设计只统一应用层�
 
 删除未知配置的风险高于保留。只要它没有被当作 NNI 物理端点，系统会告警并原样保留；若它被用作必须映射的 NNI，则因为无法保证正确性而失败。
 
-### 为什么外部规则在核心转换之后？
+### 为什么清洗规则在接口转换之后？
 
-核心分类需要完整的原始业务依据。先运行外部删除规则，可能让一个有效接口失去 IP、VLAN 或引用，从而改变 NNI/UNI 决策。
+核心分类需要完整的原始业务依据。先运行清洗删除规则，可能让一个有效接口失去 IP、VLAN 或引用，从而改变 NNI/UNI 决策。
 
 ### 为什么失败还会创建输出目录？
 
@@ -1064,7 +1051,8 @@ Cisco 块结构和 Junos 树结构差异很大。当前设计只统一应用层�
 - `docs/requirements.md`：需求与验收基线。
 - `docs/processing-flow.md`：Cisco/Junos 配置改写的详细规则。
 - `config/image_profiles.yaml`：镜像 Profile 示例。
-- `config/washing_policy.example.yaml`：Group 与可选清洗策略示例。
-- `config/cleaning_rules.example.yaml`：外部规则示例。
+- `config/washing_policy.example.yaml`：Group 未知语义策略示例。
+- `src/config_adaptor/cisco/rules/xrv9000/cleaning.yaml`：XRv9000 配置清洗规则。
+- `src/config_adaptor/juniper/rules/vmx/cleaning.yaml`：vMX 配置清洗规则。
 
 建议把本文作为第一入口，把 `requirements.md` 当作“系统必须满足什么”，把 `processing-flow.md` 当作“具体语法如何改写”。

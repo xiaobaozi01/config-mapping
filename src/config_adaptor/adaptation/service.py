@@ -7,7 +7,6 @@ import re
 from pathlib import Path
 
 from ..common.lab_account import LAB_PASSWORD, LAB_USERNAME
-from .cleaning_rules import apply_rules, load_rules
 from .factory import parse_document
 from .models import ConversionContext, DeviceContext, Vendor
 from .pipeline import build_default_pipeline
@@ -100,7 +99,6 @@ def convert(
     config_dir: Path,
     output_dir: Path,
     profiles_path: Path | None = None,
-    rules_path: Path | None = None,
     washing_policy_path: Path | None = None,
 ) -> ConversionContext:
     """执行完整转换；即使失败也写 report，便于定位输入问题。
@@ -113,11 +111,11 @@ def convert(
     phase = "核心转换流水线"
     try:
         if not context.errors:
-            # 先预检拓扑；group 展开和接口迁移完成后再执行清洗及镜像参数适配。
-            build_default_pipeline().execute(context)
-            # 用户扩展规则放在核心转换之后，避免规则改变接口分类依据。
-            phase = "用户扩展规则"
-            apply_rules(context, load_rules(rules_path))
+            phase = "清洗规则加载"
+            pipeline = build_default_pipeline()
+            phase = "核心转换流水线"
+            # 清洗规则在接口迁移和引用改写之后执行，不改变 NNI/UNI 分类依据。
+            pipeline.execute(context)
         phase = "输出结果"
         write_outputs(context, output_dir)
     except Exception as exc:
@@ -189,6 +187,15 @@ def write_outputs(context: ConversionContext, output_dir: Path) -> None:
         if event.get("kind") == "group-identity-coverage"
     )
     group_identity_total = group_identity_rule_hits + group_identity_fallbacks
+    cleaning_rule_hits_by_category: dict[str, int] = {}
+    for event in context.events:
+        if event.get("kind") != "cleaning-rule":
+            continue
+        category = str(event.get("category", "uncategorized"))
+        cleaning_rule_hits_by_category[category] = (
+            cleaning_rule_hits_by_category.get(category, 0)
+            + int(event.get("hits", 0))
+        )
     report = {
         "status": "failed" if context.has_errors else "success",
         "errors": list(dict.fromkeys(combined_errors)),
@@ -210,6 +217,7 @@ def write_outputs(context: ConversionContext, output_dir: Path) -> None:
                 else None
             ),
             "simulation_adaptation_count": simulation_adaptation_count,
+            "cleaning_rule_hits_by_category": cleaning_rule_hits_by_category,
         },
     }
     (output_dir / "report.json").write_text(

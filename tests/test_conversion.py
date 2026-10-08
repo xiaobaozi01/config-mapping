@@ -69,11 +69,24 @@ class ConversionTest(unittest.TestCase):
                 for warning in context.devices["R1"].warnings
             ))
             report = json.loads((output / "report.json").read_text(encoding="utf-8"))
+            preconfigured_event = next(
+                event
+                for event in report["events"]
+                if event["kind"] == "preconfigured-interface-cleanup"
+            )
+            self.assertEqual(
+                preconfigured_event["removed_by_type"],
+                {"preconfigured-interface": 2},
+            )
             self.assertTrue(any(
-                event["kind"] == "preconfigured-interface-cleanup"
+                event["kind"] == "cleaning-rule"
+                and event["rule_id"] == "cisco.remove.ptp.interface"
                 for event in report["events"]
             ))
-            self.assertTrue(any(event["kind"] == "ptp-cleanup" for event in report["events"]))
+            self.assertEqual(
+                report["summary"]["cleaning_rule_hits_by_category"]["ptp-interface"],
+                1,
+            )
 
     def test_iosxr_bundle_nni_uni_and_auth(self):
         topology, config_dir = conversion_fixture("iosxr_bundle")

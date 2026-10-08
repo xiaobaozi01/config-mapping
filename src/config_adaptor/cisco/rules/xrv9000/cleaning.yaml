@@ -1,0 +1,87 @@
+rules:
+  # XRv9000 实验固定清理项。
+  - id: remove.ptp.interface
+    vendor: cisco_iosxr
+    enable: true
+    category: ptp-interface
+    path: []
+    match: '^interface\s+PTP(?:\d|$)'
+    action: delete
+    reason: 'XRv9000 实验不使用 PTP 虚拟接口'
+
+  # IOS XR 可选清理项；修改 enable 即可控制单条规则。
+  - id: remove.protocol.auth.definition
+    vendor: cisco_iosxr
+    enable: false
+    category: protocol-auth-definition
+    path: []
+    match: '^(?:key\s+chain|key-?chain)\b'
+    action: delete
+    reason: '删除生产路由协议认证密钥定义'
+
+  - id: remove.routing.protocol.auth.reference
+    vendor: cisco_iosxr
+    enable: false
+    category: protocol-auth-reference
+    path:
+      - '^(?:router\s+(?:bgp|isis|ospf|ospfv3|rip)|mpls\s+ldp|rsvp)\b'
+      - '**'
+    match: '(?:^|\s)(?:authentication(?:-key(?:-chain)?|-algorithm|-type)?|password|key-?chain)(?:\s|$)'
+    action: delete
+    reason: '删除路由协议和 MPLS/RSVP 下的生产认证引用'
+
+  - id: remove.interface.auth.reference
+    vendor: cisco_iosxr
+    enable: false
+    category: protocol-auth-reference
+    path:
+      - '^interface\b'
+      - '**'
+    match: '^(?:authentication(?:-key(?:-chain)?|-algorithm|-type)?|key-?chain)\b'
+    action: delete
+    reason: '删除接口下的生产协议认证引用'
+
+  - id: remove.pki
+    vendor: cisco_iosxr
+    enable: false
+    category: pki
+    path: []
+    match: '^(?:crypto\s+(?:pki|ca|key)\b|certificate\b|trustpoint\b)'
+    action: delete
+    reason: '实验环境不使用生产 PKI 配置'
+
+  - id: remove.hardware
+    vendor: cisco_iosxr
+    enable: false
+    category: hardware
+    path: []
+    match: '^(?:hw-module|platform|service-location|slot)\b'
+    action: delete
+    reason: '删除目标镜像不适用的物理硬件配置'
+
+  - id: remove.nat
+    vendor: cisco_iosxr
+    enable: false
+    category: nat
+    path: []
+    match: '^(?:nat|cgn|service\s+cgn)\b'
+    action: delete
+    reason: '实验环境不使用生产 NAT 配置'
+
+  - id: remove.flow.statistics
+    vendor: cisco_iosxr
+    enable: false
+    category: flow-statistics
+    path: []
+    match: '^(?:flow(?:-exporter|-monitor)?|sampler|monitor-session)\b'
+    action: delete
+    reason: '实验环境不使用生产流量统计配置'
+
+  - id: warn.telemetry
+    vendor: cisco_iosxr
+    enable: false
+    category: telemetry
+    path: []
+    match: '^telemetry\s+model-driven$'
+    action: warn
+    reason: '请确认目标 XRv9000 版本是否支持 telemetry'

@@ -8,7 +8,7 @@ from ..common.interface import interface_parent
 from .models import ConversionContext
 
 class GroupExpansionHandler:
-    """按清洗策略把厂商 group 的继承配置物化到后续可分析的配置树中。
+    """按 Group 策略把厂商继承配置物化到后续可分析的配置树中。
 
     处理器把活动拓扑接口作为通配 group 的候选对象，逐设备执行厂商专用展开，
     并汇总警告、冲突、语义规则覆盖率和失败状态。该阶段必须早于接口分类与迁移，

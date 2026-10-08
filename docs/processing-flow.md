@@ -89,13 +89,11 @@ output/
         ↓
 更新协议和策略中的接口引用
         ↓
-执行显式启用的可选能力清洗
+执行统一配置清洗规则
         ↓
 清洗认证与权限配置
         ↓
 按镜像 Profile 适配模拟参数
-        ↓
-执行可选外部清洗规则
         ↓
 生成配置、拓扑、映射和报告
 ```
@@ -117,9 +115,7 @@ UNIHandler
         ↓
 ReferenceRewriteHandler
         ↓
-PTPCleanupHandler
-        ↓
-OptionalFeatureWashingHandler
+CleaningRulesHandler
         ↓
 AuthWashingHandler
         ↓
@@ -138,7 +134,7 @@ NNI 中的聚合链路识别先由纯函数 `plan_nni_components()` 生成不可
 
 `interface preconfigure` 表示源设备硬件尚未插入时保存的物理接口候选配置。系统按“当前设备已经实例化并生效的配置”生成 GNS3 实验，因此 Group 展开后，`PreconfiguredInterfaceCleanupHandler` 在接口分类前通过 `active=False` 忽略整个候选块。预配置接口不会进入 NNI/UNI、接口引用改写或目标端口分配，输出中也不会出现 `interface preconfigure`。
 
-`PTPCleanupHandler` 在 NNI/UNI 迁移和引用改写完成后，将 `interface PTP...` 虚拟接口块标记为非活动。PTP 接口被明确分类为虚拟接口，不参与业务口映射，也不会产生未知接口告警；全局 `ptp`、普通数据口下的 `ptp` 及频率同步配置不属于该清理范围。
+`CleaningRulesHandler` 在 NNI/UNI 迁移和引用改写完成后统一执行两家目标镜像目录下 `cleaning.yaml` 中 `enable: true` 的规则。默认启用的 `cisco.remove.ptp.interface` 只将 `interface PTP...` 虚拟接口块标记为非活动；PTP 接口被明确分类为虚拟接口，不参与业务口映射，也不会产生未知接口告警。全局 `ptp`、普通数据口下的 `ptp` 及频率同步配置不命中该规则。
 
 ## 4. 输入准备
 
@@ -233,7 +229,7 @@ NNI 阶段还负责确定：
 Group → NNI → UNI
 ```
 
-完整责任链还会在它们之前执行拓扑预检，并在之后执行引用更新、可选能力清洗、认证替换和模拟参数适配。
+完整责任链还会在它们之前执行拓扑预检，并在之后执行引用更新、统一规则清洗、认证替换和模拟参数适配。
 
 如果未来需要交换 NNI/UNI 执行顺序，必须先增加独立的“接口分析与规划阶段”，一次性计算完整 NNI 闭包、UNI 集合和目标端口，不能简单交换两个处理器。
 
@@ -831,26 +827,44 @@ system {
 - 密码使用 SHA-512 crypt 哈希。
 - root authentication 用于保证配置可以正常提交。
 
-### 8.6 可选扩展清洗
+### 8.6 统一配置清洗规则
 
-`--washing-policy` 读取独立 YAML，以下开关默认均为 `false`：
+PTP、协议认证、PKI、硬件、NAT、流量统计和镜像扩展清洗按厂商分别定义在随程序发布的 `config_adaptor/cisco/rules/xrv9000/cleaning.yaml` 和 `config_adaptor/juniper/rules/vmx/cleaning.yaml` 中。转换时固定合并加载这两份文件，不接受外部规则路径。
 
 ```yaml
-optional_washing:
-  protocol_authentication: false
-  pki: false
-  hardware: false
-  nat: false
-  flow_statistics: false
+rules:
+  - id: remove.ptp.interface
+    vendor: cisco_iosxr
+    enable: true
+    category: ptp-interface
+    path: []
+    match: '^interface\s+PTP(?:\d|$)'
+    action: delete
+    reason: 'XRv9000 实验不使用 PTP 虚拟接口'
 ```
 
-- `protocol_authentication`：删除 OSPF/IS-IS/BGP 等协议认证定义和引用。
-- `pki`：删除明确的 PKI、证书及密钥生成配置。
-- `hardware`：删除目标虚拟镜像不需要的硬件、槽位或 chassis 配置。
-- `nat`：删除 NAT/CGN 配置。
-- `flow_statistics`：删除流量采样和流量监控配置。
+规则字段含义：
 
-这些开关会改变业务能力，只有显式启用才由 `OptionalFeatureWashingHandler` 执行；它与 `AuthWashingHandler` 的强制管理面替换分开报告。清洗报告只记录类别和数量，不记录秘密值。
+- `enable`：布尔值，决定该规则是否执行。
+- `id`：不带厂商前缀的点号名称；加载时根据 `vendor` 自动生成 `cisco.<id>` 或 `juniper.<id>`。
+- `category`：报告中的清洗分类，不参与匹配。
+- `path`：目标节点的完整父级路径。`[]` 只匹配顶层，`*` 匹配恰好一级，`**` 匹配零级或多级。
+- `match`：匹配目标节点本身的正则表达式。
+- `action`：支持 `delete`、`replace`、`mask`、`warn`；`replace` 还必须提供 `value`。
+
+`path` 的每个普通元素对应一级父节点。例如删除第四层的 `maximum-paths` 时，前三层全部写入路径：
+
+```yaml
+path:
+  - '^router\s+bgp\s+65000$'
+  - '^vrf\s+CUST-A$'
+  - '^address-family\s+ipv4\s+unicast$'
+match: '^maximum-paths\s+ebgp\b'
+```
+
+Cisco 使用去除缩进后的命令头匹配；Junos 的 `inactive:` 节点不参与清洗，其他节点会先去除 `protect:` 和行尾分号。`path` 必须匹配从配置根到目标父节点的完整路径，避免同名命令在其他层级被误删。
+
+协议认证、PKI、硬件、NAT 和流量统计规则默认关闭，因为这些删除可能改变业务能力。需要清理时由项目维护者把内置规则的 `enable` 改为 `true`；协议认证的定义和引用规则应同时开启。规则命中事件记录 ID、类别、动作、数量和原因，不记录被删除的秘密值。
 
 ### 8.7 模拟参数适配
 
@@ -904,9 +918,9 @@ Cisco 会更新非接口配置块头和块内容中的引用。
 
 Junos 会跳过 `interfaces` 定义本身，只递归更新其他层级中的引用，避免对已经迁移完成的接口节点再次替换。
 
-## 10. 可选清洗规则
+## 10. 统一清洗规则
 
-核心转换后可以加载外部 YAML 规则：
+`CleaningRulesHandler` 在引用改写后加载并执行 YAML 规则：
 
 ```text
 delete  → 删除匹配配置
@@ -919,14 +933,17 @@ warn    → 保留配置但记录告警
 
 ```yaml
 rules:
-  - id: remove-hardware-feature
+  - id: remove.hardware.feature
     vendor: cisco_iosxr
-    match: "^hw-module"
+    enable: false
+    category: hardware
+    path: []
+    match: '^hw-module\b'
     action: delete
-    reason: "XRv9000 不支持真实硬件模块配置"
+    reason: 'XRv9000 不支持真实硬件模块配置'
 ```
 
-每次命中都会在 `report.json` 中记录规则 ID、动作、命中数量和原因。
+每次命中都会在 `report.json` 中记录规则 ID、类别、动作、命中数量和原因。两家厂商规则均随程序发布，并在创建默认流水线时固定加载。
 
 ## 11. 失败处理
 
@@ -967,10 +984,10 @@ report.json
 - M-LAG 按对端拆分的源接口、目标接口和 Excel 行。
 - 接口映射数量。
 - 有效和跳过链路数量。
-- 可选能力清洗分类统计。
+- 清洗规则的 ID、类别、动作和命中数量。
 - 认证清洗分类统计。
 - 模拟参数适配分类统计。
-- 外部规则命中记录。
+- 清洗规则命中记录。
 
 认证报告只记录删除类别和数量，不记录原密码、密钥或其他认证秘密。
 
@@ -983,6 +1000,6 @@ report.json
 - IOS、IOS XE 或 NX-OS 到 IOS XR 的语法转换。
 - UNI 的真实 GNS3 外部连接。
 - 包含运行时变量且无法静态求值的复杂 Group。
-- 未通过内置逻辑或外部规则明确指定的大范围硬件配置删除。
+- 未通过内置逻辑或内置清洗规则明确指定的大范围硬件配置删除。
 
 对于无法安全处理的配置，系统优先失败或保留并告警，不进行猜测式改写。

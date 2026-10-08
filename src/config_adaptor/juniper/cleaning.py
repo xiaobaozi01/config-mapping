@@ -5,7 +5,6 @@ from __future__ import annotations
 from ..common.lab_account import JUNOS_LAB_PASSWORD_HASH, LAB_USERNAME
 from ..common.errors import require_invariant
 from ..common.outcomes import CleanupOutcome
-from ..common.policies import WashingPolicy
 from .document import JunosDocument, JunosNode
 
 
@@ -32,8 +31,8 @@ def _disable_matching(
     """把首 token 命中 ``keywords`` 的子节点标记为停用，并计入 ``category``。
 
     Junos 用 ``active`` 标记表达逻辑删除，命中节点连同其整棵子树一起停用，因此
-    命中后不再下钻；把“匹配 + 停用 + 统计”收敛成单一原语，可让管理面清洗和
-    可选能力清洗复用同一套递归规则，避免各自重复写遍历循环。
+    命中后不再下钻；把“匹配 + 停用 + 统计”收敛成单一原语，供管理面清洗中的
+    多处递归删除复用。
     """
     if node.children is None:
         return
@@ -137,105 +136,6 @@ def clean_management_access(document: JunosDocument) -> CleanupOutcome:
     security = document._top_block("security")
     if security:
         _disable_matching(document, security, {"ssh-known-hosts"}, "ssh-trust", outcome)
-    return outcome
-
-
-def clean_optional_features(document: JunosDocument, policy: WashingPolicy) -> CleanupOutcome:
-    """按 ``WashingPolicy`` 的显式开关清除可选能力配置，并返回分类统计。
-
-    协议认证、PKI、chassis、NAT 和流量统计会影响业务语义，默认不能删除；只有
-    对应开关开启时才逐个调用 ``_disable_matching`` 移除，避免在用户未确认时意外
-    丢失 NAT/PKI/硬件相关配置。
-    """
-    outcome = CleanupOutcome()
-    system = document._top_block("system")
-    security = document._top_block("security")
-
-    if policy.protocol_authentication:
-        if security:
-            _disable_matching(
-                document,
-                security,
-                {"authentication-key-chains"},
-                "protocol-auth-definition",
-                outcome,
-            )
-        protocol_keywords = {
-            "authentication",
-            "authentication-key",
-            "authentication-key-chain",
-            "authentication-algorithm",
-            "authentication-type",
-        }
-        for root_name in ("protocols", "routing-instances", "logical-systems", "interfaces"):
-            root = document._top_block(root_name)
-            if root:
-                _disable_matching(
-                    document,
-                    root,
-                    protocol_keywords,
-                    "protocol-auth-reference",
-                    outcome,
-                    recursive=True,
-                )
-
-    if policy.pki:
-        if security:
-            _disable_matching(document, security, {"pki", "certificates"}, "pki", outcome)
-        if system:
-            _disable_matching(document, system, {"certificates"}, "pki", outcome)
-
-    if policy.hardware:
-        chassis = document._top_block("chassis")
-        if chassis:
-            chassis.active = False
-            outcome.record("hardware")
-
-    if policy.nat:
-        if security:
-            _disable_matching(document, security, {"nat"}, "nat", outcome)
-        services_top = document._top_block("services")
-        if services_top:
-            _disable_matching(
-                document,
-                services_top,
-                {"nat", "nat-rules"},
-                "nat",
-                outcome,
-                recursive=True,
-            )
-
-    if policy.flow_statistics:
-        services_top = document._top_block("services")
-        if services_top:
-            _disable_matching(
-                document,
-                services_top,
-                {"flow-monitoring"},
-                "flow-statistics",
-                outcome,
-                recursive=True,
-            )
-        forwarding = document._top_block("forwarding-options")
-        if forwarding:
-            _disable_matching(
-                document,
-                forwarding,
-                {"sampling"},
-                "flow-statistics",
-                outcome,
-                recursive=True,
-            )
-        interfaces = document._top_block("interfaces")
-        if interfaces:
-            _disable_matching(
-                document,
-                interfaces,
-                {"sampling"},
-                "flow-statistics",
-                outcome,
-                recursive=True,
-            )
     return outcome
 
 

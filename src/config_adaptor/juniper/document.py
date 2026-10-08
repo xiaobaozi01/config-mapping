@@ -7,6 +7,7 @@ import re
 from dataclasses import dataclass
 from typing import Iterable
 
+from ..common.cleaning import matches_cleaning_path
 from ..common.contracts import VendorConfiguration
 from ..common.errors import require_invariant
 from ..common.interface import InterfaceKind, InterfaceSpec, interface_parent
@@ -133,7 +134,7 @@ class JunosNode:
 class JunosDocument(VendorConfiguration):
     """提供可修改 Junos 配置树及应用层所需的统一厂商门面。
 
-    类本身负责大括号解析、渲染、外部规则和引用替换；接口迁移、group、清洗及模拟
+    类本身负责大括号解析、渲染、声明式清洗规则和引用替换；接口迁移、group、清洗及模拟
     适配委托给独立厂商模块。这样应用层不需要了解 ``JunosNode``，厂商语法操作也
     能按职责拆分，而仍由一个文档对象维护完整转换状态。
     """
@@ -631,32 +632,6 @@ class JunosDocument(VendorConfiguration):
 
         return clean_management_access(self)
 
-    def clean_optional_features(
-        self,
-        policy: WashingPolicy,
-    ) -> CleanupOutcome:
-        """按显式策略清理 Junos 的可选能力配置并返回统计。
-
-        PKI、chassis、NAT、流量统计和协议认证会影响业务语义，只有策略开启时才应
-        删除；交给厂商清洗模块可按 Junos 层级递归处理，而上层无需接触节点树。
-        """
-        from .cleaning import clean_optional_features
-
-        return clean_optional_features(self, policy)
-
-    def clean_authentication(
-        self,
-        policy: WashingPolicy | None = None,
-    ) -> CleanupOutcome:
-        """兼容旧入口，顺序组合管理面清洗与策略控制的可选清洗。
-
-        旧调用方期望一次完成两类操作，因此该方法合并两个结果；新流程将它们拆成
-        独立阶段以区分强制安全处理和可能改变业务能力的显式选择。
-        """
-        outcome = self.clean_management_access()
-        outcome.merge(self.clean_optional_features(policy or WashingPolicy()))
-        return outcome
-
     def add_lab_account(self) -> None:
         """向 Junos 文档添加统一实验账号及根认证信息。
 
@@ -669,46 +644,37 @@ class JunosDocument(VendorConfiguration):
 
     def apply_cleaning_rule(
         self,
+        path: tuple[str, ...],
         match: str,
         action: str,
         value: str | None,
     ) -> int:
-        """递归匹配 Junos 节点路径或 header，并执行外部清洗规则。
-
-        方法支持删除、替换和脱敏，返回活动节点命中数；路径匹配让规则可定位嵌套
-        层级，而封装遍历细节可使外部规则模块不依赖 ``JunosNode`` 的内部表示。
-        """
+        """按完整父级路径遍历 Junos 配置树并执行一条清洗规则。"""
         pattern = re.compile(match, re.IGNORECASE)
         hits = 0
 
-        def walk(node: JunosNode, path: list[str]) -> None:
-            """深度优先遍历节点，并维护供规则匹配的点分层级路径。
-
-            每层只取 header 的首个语义字段构造路径，同时仍允许正则直接匹配完整
-            header，以兼顾结构化定位和具体语句内容匹配。
-            """
+        def walk(node: JunosNode, ancestors: tuple[str, ...]) -> None:
             nonlocal hits
-            if node is not self.root and not node.effective:
+            if not node.effective:
                 return
-            if node is self.root:
-                next_path = path
-            else:
-                component = self._base_header(node.header).split(maxsplit=1)[0].rstrip(";")
-                next_path = [*path, component] if component else path
-                dotted = ".".join(next_path)
-                if pattern.search(dotted) or pattern.search(node.header):
-                    hits += 1
-                    if action == "delete":
-                        node.active = False
-                    elif action == "replace":
-                        node.header = pattern.sub(value or "", node.header)
-                    elif action == "mask":
-                        node.header = "<masked>;"
+            header = self._base_header(node.header).rstrip(";").strip()
+            if matches_cleaning_path(ancestors, path) and pattern.search(header):
+                hits += 1
+                if action == "delete":
+                    node.active = False
+                    return
+                if action == "replace":
+                    suffix = "" if node.is_block else ";"
+                    node.header = pattern.sub(value or "", header) + suffix
+                elif action == "mask":
+                    node.header = "<masked>" + ("" if node.is_block else ";")
+                header = self._base_header(node.header).rstrip(";").strip()
             if node.children:
                 for child in node.children:
-                    walk(child, next_path)
+                    walk(child, (*ancestors, header))
 
-        walk(self.root, [])
+        for block in self.root.children or []:
+            walk(block, ())
         return hits
 
     def replace_references(self, replacements: dict[str, list[str]]) -> None:

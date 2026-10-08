@@ -5,8 +5,8 @@ from __future__ import annotations
 import unittest
 from pathlib import Path
 
+from config_adaptor.adaptation.cleaning_rules import load_rules
 from config_adaptor.cisco.document import CiscoDocument
-from config_adaptor.cisco.cleaning import clean_preconfigured_interfaces, clean_ptp_interfaces
 from config_adaptor.juniper.document import JunosDocument
 
 
@@ -29,13 +29,6 @@ class CiscoInterfaceBusinessTest(unittest.TestCase):
         self.assertEqual(block.interface_name, "HundredGigE0/3/0/2")
         self.assertEqual(document.interface_kind(block.interface_name), "physical")
 
-        outcome = clean_preconfigured_interfaces(document)
-        self.assertEqual(outcome.removed["preconfigured-interface"], 1)
-        self.assertFalse(block.active)
-        self.assertNotIn("interface preconfigure", document.render())
-        self.assertEqual(document.interface_specs(), [])
-        self.assertEqual(document.business_interface_names(), set())
-
     def test_ptp_cleanup_only_deactivates_ptp_interface_blocks(self):
         document = CiscoDocument(
             "ptp\n clock\n!\n"
@@ -47,9 +40,18 @@ class CiscoInterfaceBusinessTest(unittest.TestCase):
         )
         ptp_block = document.root.children[2]
         self.assertEqual(document.interface_kind("PTP0/RP0/CPU0/0"), "virtual")
-        outcome = clean_ptp_interfaces(document)
+        rule = next(
+            item for item in load_rules()
+            if item.rule_id == "cisco.remove.ptp.interface"
+        )
+        hits = document.apply_cleaning_rule(
+            rule.path,
+            rule.match,
+            rule.action,
+            rule.value,
+        )
         rendered = document.render()
-        self.assertEqual(outcome.removed["ptp-interface"], 1)
+        self.assertEqual(hits, 1)
         self.assertFalse(ptp_block.active)
         self.assertNotIn("PTP0/RP0/CPU0/0", rendered)
         self.assertIn("ptp\n clock", rendered)

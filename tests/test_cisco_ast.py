@@ -5,8 +5,8 @@ from __future__ import annotations
 import unittest
 from pathlib import Path
 
+from config_adaptor.adaptation.cleaning_rules import load_rules
 from config_adaptor.cisco.document import CiscoDocument, CiscoNode
-from config_adaptor.common.policies import WashingPolicy
 
 
 FIXTURES = Path(__file__).parent / "fixtures" / "cisco_ast"
@@ -80,12 +80,20 @@ class CiscoAstTest(unittest.TestCase):
         """清理嵌套认证模式时应连同秘钥子树删除，不影响同级业务命令。"""
         document = CiscoDocument(cisco_config("nested_cleanup_subtree.cfg"))
 
-        outcome = document.clean_optional_features(
-            WashingPolicy(protocol_authentication=True)
+        rule = next(
+            item
+            for item in load_rules()
+            if item.rule_id == "cisco.remove.routing.protocol.auth.reference"
+        )
+        hits = document.apply_cleaning_rule(
+            rule.path,
+            rule.match,
+            rule.action,
+            rule.value,
         )
         rendered = document.render()
 
-        self.assertEqual(outcome.removed["protocol-auth-reference"], 2)
+        self.assertEqual(hits, 1)
         self.assertNotIn("authentication", rendered)
         self.assertNotIn("key-chain PROD", rendered)
         self.assertIn("   cost 10", rendered)

@@ -3,11 +3,9 @@
 from __future__ import annotations
 
 import re
-from dataclasses import dataclass
 
 from ..common.lab_account import LAB_PASSWORD, LAB_USERNAME
 from ..common.outcomes import CleanupOutcome
-from ..common.policies import WashingPolicy
 from .document import CiscoDocument, CiscoNode, strip_matching_nodes
 
 
@@ -62,137 +60,6 @@ def clean_management_access(document: CiscoDocument) -> CleanupOutcome:
                 match_anywhere=True,
             )
             outcome.record("line-auth-reference", removed)
-    return outcome
-
-
-@dataclass(frozen=True, slots=True)
-class _OptionalRule:
-    """一条由策略开关控制的可选能力清洗规则。
-
-    用命名字段而非裸元组表达 ``enabled``/``category``/``pattern``，调用处无需
-    逐位猜测每个位置的含义。
-    """
-
-    enabled: bool
-    category: str
-    pattern: str
-
-
-def clean_optional_features(document: CiscoDocument, policy: WashingPolicy) -> CleanupOutcome:
-    """按策略开关删除可选能力顶层块，并清理协议认证引用。
-
-    PKI、硬件、NAT 和流量统计会影响业务语义，需显式开启才删除；协议认证则拆成
-    “顶层 key-chain 定义”与“协议/接口内引用”两层处理，避免只删定义却遗留失效引用。
-    """
-    outcome = CleanupOutcome()
-    optional_rules = [
-        _OptionalRule(
-            policy.pki,
-            "pki",
-            r"^(?:crypto\s+(?:pki|ca|key)\b|certificate\b|trustpoint\b)",
-        ),
-        _OptionalRule(
-            policy.hardware,
-            "hardware",
-            r"^(?:hw-module|platform|service-location|slot)\b",
-        ),
-        _OptionalRule(
-            policy.nat,
-            "nat",
-            r"^(?:nat|cgn|service\s+cgn)\b",
-        ),
-        _OptionalRule(
-            policy.flow_statistics,
-            "flow-statistics",
-            r"^(?:flow(?:-exporter|-monitor)?|sampler|monitor-session)\b",
-        ),
-    ]
-    top_level = [
-        (rule.category, re.compile(rule.pattern, re.IGNORECASE))
-        for rule in optional_rules
-        if rule.enabled
-    ]
-    if policy.protocol_authentication:
-        top_level.append(
-            (
-                "protocol-auth-definition",
-                re.compile(r"^(?:key\s+chain|key-?chain)\b", re.IGNORECASE),
-            )
-        )
-    for block in document.root.children:
-        if not block.active:
-            continue
-        header = block.header.strip()
-        matched = next(
-            (category for category, pattern in top_level if pattern.match(header)),
-            None,
-        )
-        if matched:
-            block.active = False
-            outcome.record(matched)
-
-    if policy.protocol_authentication:
-        _clean_protocol_authentication(document, outcome)
-    return outcome
-
-
-def _clean_protocol_authentication(document: CiscoDocument, outcome: CleanupOutcome) -> None:
-    """剥除路由进程、MPLS/RSVP 和接口块内的协议认证子命令。
-
-    认证关键字既可作顶层 key-chain 定义，也会以子命令形式出现在 bgp/ospf 等进程
-    与接口内部；两者锚点不同，需单独一层清理，避免漏删散落在子层级里的引用。
-    """
-    protocol_header = re.compile(
-        r"^(?:router\s+(?:bgp|isis|ospf|ospfv3|rip)|mpls\s+ldp|rsvp)\b",
-        re.IGNORECASE,
-    )
-    protocol_auth = re.compile(
-        r"(?:^|\s)(?:authentication(?:-key(?:-chain)?|-algorithm|-type)?|"
-        r"password|key-?chain)(?:\s|$)",
-        re.IGNORECASE,
-    )
-    interface_auth = re.compile(
-        r"^(?:authentication(?:-key(?:-chain)?|-algorithm|-type)?|key-?chain)\b",
-        re.IGNORECASE,
-    )
-    for block in document.root.children:
-        if not block.active:
-            continue
-        pattern = None
-        if protocol_header.match(block.header.strip()):
-            pattern = protocol_auth
-        elif block.interface_name:
-            pattern = interface_auth
-        if pattern:
-            block.children, removed = strip_matching_nodes(
-                block.children,
-                pattern,
-                match_anywhere=True,
-            )
-            outcome.record("protocol-auth-reference", removed)
-
-
-def clean_preconfigured_interfaces(document: CiscoDocument) -> CleanupOutcome:
-    """逻辑停用源设备上尚未实例化的物理接口候选配置。"""
-    outcome = CleanupOutcome()
-    for block in document.root.children:
-        if block.active and block.is_preconfigured_interface:
-            block.active = False
-            outcome.record("preconfigured-interface")
-    return outcome
-
-
-def clean_ptp_interfaces(document: CiscoDocument) -> CleanupOutcome:
-    """逻辑停用 XRv9000 实验不需要的 IOS XR PTP 虚拟接口块。"""
-    outcome = CleanupOutcome()
-    for block in document.root.children:
-        if (
-            block.active
-            and block.interface_name
-            and re.match(r"^PTP(?:\d|$)", block.interface_name, re.IGNORECASE)
-        ):
-            block.active = False
-            outcome.record("ptp-interface")
     return outcome
 
 

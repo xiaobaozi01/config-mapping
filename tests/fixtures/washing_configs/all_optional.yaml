@@ -1,6 +1,0 @@
-optional_washing:
-  protocol_authentication: true
-  pki: true
-  hardware: true
-  nat: true
-  flow_statistics: true

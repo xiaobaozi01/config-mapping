@@ -1,0 +1,115 @@
+rules:
+  # Junos 可选清理项；修改 enable 即可控制单条规则。
+  - id: remove.protocol.auth.definition
+    vendor: juniper_junos
+    enable: false
+    category: protocol-auth-definition
+    path:
+      - '^security$'
+    match: '^authentication-key-chains$'
+    action: delete
+    reason: '删除生产路由协议认证密钥定义'
+
+  - id: remove.protocol.auth.reference
+    vendor: juniper_junos
+    enable: false
+    category: protocol-auth-reference
+    path:
+      - '^(?:protocols|routing-instances|logical-systems|interfaces)$'
+      - '**'
+    match: '^(?:authentication|authentication-key|authentication-key-chain|authentication-algorithm|authentication-type)\b'
+    action: delete
+    reason: '删除协议和接口下的生产认证引用'
+
+  - id: remove.security.pki
+    vendor: juniper_junos
+    enable: false
+    category: pki
+    path:
+      - '^security$'
+    match: '^(?:pki|certificates)$'
+    action: delete
+    reason: '实验环境不使用生产 PKI 配置'
+
+  - id: remove.system.certificates
+    vendor: juniper_junos
+    enable: false
+    category: pki
+    path:
+      - '^system$'
+    match: '^certificates$'
+    action: delete
+    reason: '实验环境不使用生产证书配置'
+
+  - id: remove.hardware
+    vendor: juniper_junos
+    enable: false
+    category: hardware
+    path: []
+    match: '^chassis$'
+    action: delete
+    reason: '删除目标镜像不适用的物理硬件配置'
+
+  - id: remove.security.nat
+    vendor: juniper_junos
+    enable: false
+    category: nat
+    path:
+      - '^security$'
+    match: '^nat$'
+    action: delete
+    reason: '实验环境不使用生产 NAT 配置'
+
+  - id: remove.services.nat
+    vendor: juniper_junos
+    enable: false
+    category: nat
+    path:
+      - '^services$'
+      - '**'
+    match: '^(?:nat|nat-rules)\b'
+    action: delete
+    reason: '实验环境不使用生产 NAT 服务配置'
+
+  - id: remove.flow.monitoring
+    vendor: juniper_junos
+    enable: false
+    category: flow-statistics
+    path:
+      - '^services$'
+      - '**'
+    match: '^flow-monitoring$'
+    action: delete
+    reason: '实验环境不使用生产流量监控配置'
+
+  - id: remove.forwarding.sampling
+    vendor: juniper_junos
+    enable: false
+    category: flow-statistics
+    path:
+      - '^forwarding-options$'
+      - '**'
+    match: '^sampling$'
+    action: delete
+    reason: '实验环境不使用生产转发采样配置'
+
+  - id: remove.interface.sampling
+    vendor: juniper_junos
+    enable: false
+    category: flow-statistics
+    path:
+      - '^interfaces$'
+      - '**'
+    match: '^sampling$'
+    action: delete
+    reason: '实验环境不使用生产接口采样配置'
+
+  - id: remove.phone.home
+    vendor: juniper_junos
+    enable: false
+    category: phone-home
+    path:
+      - '^system$'
+    match: '^phone-home$'
+    action: delete
+    reason: '实验环境不使用 phone-home'

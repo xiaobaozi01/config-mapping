@@ -1,15 +1,5 @@
-# 管理账号、AAA、SSH/Telnet、SNMP 和聚合属性始终清理。
-# 下列扩大业务范围的清洗必须显式开启，默认全部关闭。
+# 这里只保留 Group 未知语义处理策略。配置删除规则统一位于
+# cisco/rules/xrv9000/cleaning.yaml 和 juniper/rules/vmx/cleaning.yaml。
 group_handling:
   # preserve 保留未知语句；warn 保留并报告；fail 遇到潜在未知冲突时回滚。
   unknown_identity: warn
-
-optional_washing:
-  # 协议认证会同时删除密钥定义及 OSPF/IS-IS/BGP 等引用。
-  protocol_authentication: false
-  # PKI 只匹配明确的证书、信任点和密钥生成配置。
-  pki: false
-  # Junos 开启后会删除整个 chassis；确认目标镜像不需要端口配置后再启用。
-  hardware: false
-  nat: false
-  flow_statistics: false

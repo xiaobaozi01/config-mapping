@@ -7,6 +7,7 @@ import re
 from dataclasses import dataclass, field
 from typing import Iterable
 
+from ..common.cleaning import matches_cleaning_path
 from ..common.contracts import VendorConfiguration
 from ..common.interface import InterfaceKind, InterfaceSpec, interface_parent
 from ..common.outcomes import (
@@ -294,7 +295,7 @@ def _cisco_interface_kind(name: str) -> InterfaceKind:
 class CiscoDocument(VendorConfiguration):
     """提供可修改 IOS XR 配置树及应用层所需的统一厂商门面。
 
-    类本身负责文本解析、渲染、外部规则和引用替换；接口迁移、group、清洗及模拟
+    类本身负责文本解析、渲染、声明式清洗规则和引用替换；接口迁移、group、清洗及模拟
     适配委托给独立厂商模块。虚拟根节点承载所有顶层命令，使 Cisco 和 Juniper
     都以“Document + root + 单一节点类型”表达完整文档。
     """
@@ -628,32 +629,6 @@ class CiscoDocument(VendorConfiguration):
 
         return clean_management_access(self)
 
-    def clean_optional_features(
-        self,
-        policy: WashingPolicy,
-    ) -> CleanupOutcome:
-        """按显式策略清理 IOS XR 的可选能力配置并返回统计。
-
-        PKI、硬件、NAT、流量统计和协议认证会影响业务语义，只有策略开启时才应删除；
-        交给厂商清洗模块可按 IOS XR 语法执行，而上层无需接触块结构。
-        """
-        from .cleaning import clean_optional_features
-
-        return clean_optional_features(self, policy)
-
-    def clean_authentication(
-        self,
-        policy: WashingPolicy | None = None,
-    ) -> CleanupOutcome:
-        """兼容旧入口，顺序组合管理面清洗与策略控制的可选清洗。
-
-        旧调用方期望一次完成两类操作，因此该方法合并两个结果；新流程将它们拆成
-        独立阶段以区分强制安全处理和可能改变业务能力的显式选择。
-        """
-        outcome = self.clean_management_access()
-        outcome.merge(self.clean_optional_features(policy or WashingPolicy()))
-        return outcome
-
     def add_lab_account(self) -> None:
         """向 IOS XR 文档添加统一实验账号。
 
@@ -666,28 +641,35 @@ class CiscoDocument(VendorConfiguration):
 
     def apply_cleaning_rule(
         self,
+        path: tuple[str, ...],
         match: str,
         action: str,
         value: str | None,
     ) -> int:
-        """在 IOS XR 顶层配置节点上应用外部规则。
-
-        方法按正则匹配活动顶层节点 header，并执行删除、替换或脱敏，返回命中节点数。
-        规则模块只依赖该厂商门面而不读取 ``root`` 内部表示，因此外部自定义清洗无需
-        与解析器数据结构耦合，也不会误改未命中的块内文本。
-        """
+        """按完整父级路径遍历 IOS XR 配置树并执行一条清洗规则。"""
         pattern = re.compile(match, re.IGNORECASE)
         hits = 0
+
+        def walk(node: CiscoNode, ancestors: tuple[str, ...]) -> None:
+            nonlocal hits
+            if not node.active or node.is_formatting:
+                return
+            header = node.header.strip()
+            if matches_cleaning_path(ancestors, path) and pattern.search(header):
+                hits += 1
+                if action == "delete":
+                    node.active = False
+                    return
+                if action == "replace":
+                    node.header = pattern.sub(value or "", node.header)
+                elif action == "mask":
+                    node.header = pattern.sub("<masked>", node.header)
+                header = node.header.strip()
+            for child in node.children:
+                walk(child, (*ancestors, header))
+
         for block in self.root.children:
-            if not block.active or not pattern.search(block.header.strip()):
-                continue
-            hits += 1
-            if action == "delete":
-                block.active = False
-            elif action == "replace":
-                block.header = pattern.sub(value or "", block.header)
-            elif action == "mask":
-                block.header = pattern.sub("<masked>", block.header)
+            walk(block, ())
         return hits
 
     def replace_references(self, replacements: dict[str, list[str]]) -> None:

@@ -21,11 +21,6 @@ ParamAdjustmentPolicy = SimulationAdaptationPolicy
 
 @dataclass(slots=True, frozen=True)
 class WashingPolicy:
-    """Group 未知语义策略和默认关闭的扩展清洗开关。"""
+    """Group 未知语义处理策略。"""
 
     group_unknown_identity: str = "warn"
-    protocol_authentication: bool = False
-    pki: bool = False
-    hardware: bool = False
-    nat: bool = False
-    flow_statistics: bool = False

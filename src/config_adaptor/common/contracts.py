@@ -1,7 +1,7 @@
 """跨厂商配置文档共同实现的能力协议。
 
 协议只描述转换流程真正需要的能力。Cisco/Junos 的 AST、节点和语法辅助函数
-均属于实现细节，不应泄漏到责任链和外部清洗规则中。
+均属于实现细节，不应泄漏到责任链和声明式清洗规则中。
 """
 
 from __future__ import annotations
@@ -74,8 +74,6 @@ class VendorConfiguration(Protocol):
 
     def clean_management_access(self) -> CleanupOutcome: ...
 
-    def clean_optional_features(self, policy: WashingPolicy) -> CleanupOutcome: ...
-
     def add_lab_account(self) -> None: ...
 
     def adapt_to_simulation(
@@ -86,6 +84,7 @@ class VendorConfiguration(Protocol):
 
     def apply_cleaning_rule(
         self,
+        path: tuple[str, ...],
         match: str,
         action: str,
         value: str | None,

@@ -5,7 +5,6 @@ from __future__ import annotations
 from typing import cast
 
 from ..common.interface import InterfaceKind
-from ..cisco.cleaning import clean_preconfigured_interfaces
 from ..cisco.document import CiscoDocument
 from .models import ConversionContext, Vendor
 
@@ -19,13 +18,17 @@ class PreconfiguredInterfaceCleanupHandler:
             if device.device.vendor != Vendor.CISCO_IOSXR:
                 continue
             document = cast(CiscoDocument, device.document)
-            outcome = clean_preconfigured_interfaces(document)
-            if outcome.total:
+            removed = 0
+            for block in document.root.children:
+                if block.active and block.is_preconfigured_interface:
+                    block.active = False
+                    removed += 1
+            if removed:
                 context.add_event(
                     "preconfigured-interface-cleanup",
                     f"设备 {device_name} 已忽略未实例化的预配置接口",
                     device=device_name,
-                    removed_by_type=outcome.removed,
+                    removed_by_type={"preconfigured-interface": removed},
                 )
 
 

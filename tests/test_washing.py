@@ -1,16 +1,13 @@
-"""验证管理面必清、可选能力清洗与 Bundle 扁平化清理。"""
+"""验证管理面必清、声明式清洗规则与 Bundle 扁平化清理。"""
 
 from __future__ import annotations
 
-import json
-import tempfile
 import unittest
+from dataclasses import replace
 from pathlib import Path
 
-from config_adaptor.adaptation.service import convert
-from config_adaptor.adaptation.washing import load_washing_policy
+from config_adaptor.adaptation.cleaning_rules import load_rules
 from config_adaptor.cisco.document import CiscoDocument
-from config_adaptor.common.policies import WashingPolicy
 from config_adaptor.juniper.document import JunosDocument
 
 
@@ -22,17 +19,9 @@ def washing_config(name: str) -> str:
     return (FIXTURES / "washing_configs" / name).read_text(encoding="utf-8")
 
 
-def conversion_fixture(name: str) -> tuple[Path, Path]:
-    """返回端到端场景的拓扑文件和设备配置目录。"""
-    root = FIXTURES / name
-    return root / "topology.xlsx", root / "configs"
-
-
 class WashingTest(unittest.TestCase):
     def test_mandatory_washing_removes_management_access_and_snmp(self):
         """默认只清管理面必删项，协议认证和业务能力继续保留。"""
-        policy = WashingPolicy()
-
         cisco_document = CiscoDocument(washing_config("iosxr.cfg"))
         cisco_cleanup = cisco_document.clean_management_access()
         cisco_document.add_lab_account()
@@ -79,12 +68,34 @@ class WashingTest(unittest.TestCase):
         self.assertEqual(junos_cleanup.removed["snmp"], 1)
         self.assertGreaterEqual(junos_cleanup.removed["remote-access"], 3)
 
-    def test_optional_washing_switches_remove_expanded_categories(self):
-        """五个可选开关显式开启后才删除协议和兼容性配置。"""
-        policy = load_washing_policy(FIXTURES / "washing_configs" / "all_optional.yaml")
+    def test_enabled_rules_remove_optional_categories(self):
+        """启用 YAML 规则后删除协议认证和镜像不需要的可选能力。"""
+        optional_categories = {
+            "protocol-auth-definition",
+            "protocol-auth-reference",
+            "pki",
+            "hardware",
+            "nat",
+            "flow-statistics",
+        }
+        rules = tuple(
+            replace(rule, enable=True)
+            for rule in load_rules()
+            if rule.category in optional_categories
+        )
+
+        def apply(document, vendor: str) -> None:
+            for rule in rules:
+                if rule.vendor == vendor:
+                    document.apply_cleaning_rule(
+                        rule.path,
+                        rule.match,
+                        rule.action,
+                        rule.value,
+                    )
 
         cisco_document = CiscoDocument(washing_config("iosxr.cfg"))
-        cisco_document.clean_optional_features(policy)
+        apply(cisco_document, "cisco_iosxr")
         cisco = cisco_document.render()
         self.assertIn("username old-user", cisco)
         self.assertIn("tacacs-server", cisco)
@@ -96,7 +107,7 @@ class WashingTest(unittest.TestCase):
         self.assertNotIn("flow monitor", cisco)
 
         junos_document = JunosDocument(washing_config("junos.cfg"))
-        junos_document.clean_optional_features(policy)
+        apply(junos_document, "juniper_junos")
         junos = junos_document.render()
         self.assertIn("old-user", junos)
         self.assertIn("radius-server", junos)
@@ -109,30 +120,10 @@ class WashingTest(unittest.TestCase):
         self.assertNotIn("flow-monitoring", junos)
         self.assertNotIn("sampling {", junos)
 
-        topology, config_dir = conversion_fixture("cross_vendor")
-        with tempfile.TemporaryDirectory() as directory:
-            context = convert(
-                topology,
-                config_dir,
-                Path(directory) / "output",
-                washing_policy_path=FIXTURES / "washing_configs" / "all_optional.yaml",
-            )
-            self.assertFalse(context.has_errors)
-            self.assertTrue(context.washing_policy.protocol_authentication)
-            self.assertTrue(context.washing_policy.flow_statistics)
-            optional_events = [
-                event for event in context.events if event["kind"] == "optional-washing"
-            ]
-            self.assertTrue(optional_events)
-            self.assertIn("protocol_authentication", optional_events[0]["enabled"])
-            authentication_events = [
-                event for event in context.events if event["kind"] == "authentication"
-            ]
-            self.assertTrue(authentication_events)
-            self.assertNotIn("pki", authentication_events[0]["removed_by_type"])
-
         combined = CiscoDocument(washing_config("iosxr.cfg"))
-        combined.clean_authentication(policy)
+        apply(combined, "cisco_iosxr")
+        combined.clean_management_access()
+        combined.add_lab_account()
         combined_rendered = combined.render()
         self.assertNotIn("username old-user", combined_rendered)
         self.assertNotIn("crypto pki", combined_rendered)

@@ -94,18 +94,18 @@
 - `report.json` 按账号、AAA、TACACS、RADIUS、usergroup、taskgroup 和 line 引用等类别记录删除数量。
 - 转换报告不得回显被删除的秘密值。
 
-协议认证、PKI、硬件、NAT 和流量统计属于默认关闭的扩展清洗。用户通过独立 YAML 开关显式启用；未提供策略文件时必须保留这些配置。协议认证启用后，密钥定义和协议引用必须同时清理。
+协议认证、PKI、硬件、NAT 和流量统计属于默认关闭的扩展清洗。它们与 PTP 和镜像扩展规则按厂商定义在目标镜像目录的 `cleaning.yaml`；转换入口不接受外部规则文件。每条规则由布尔字段 `enable` 独立控制，协议认证启用时，密钥定义和协议引用规则应同时开启。
 
 ### 4.5 保守清洗和扩展规则
 
-除认证外，系统默认保留未知配置。可确认不兼容的配置通过外部 YAML 规则扩展。规则动作至少支持：
+除认证外，系统默认保留未知配置。可确认不兼容的配置通过统一 YAML 规则定义。每条规则必须声明厂商、启用状态、报告类别、完整父级路径、节点匹配表达式、动作和原因。`path` 使用 `[]` 表示顶层、`*` 表示一级、`**` 表示零级或多级。规则动作至少支持：
 
 - `delete`：删除匹配配置。
 - `replace`：替换匹配值。
 - `mask`：清除秘密值但保留结构。
 - `warn`：不修改，仅报告。
 
-首版允许规则框架存在而只内置少量安全规则；任何规则命中均记录规则 ID 和原因。
+任何规则命中均记录规则 ID、类别、数量和原因。
 
 ### 4.6 全局接口映射
 
@@ -116,16 +116,16 @@
 转换核心使用责任链模式。配置 group 必须在接口分类前展开，处理顺序为：
 
 ```text
-TopologyPreflightHandler -> GroupExpansionHandler -> InterfaceClassificationHandler
--> NNIHandler -> UNIHandler -> ReferenceRewriteHandler -> OptionalFeatureWashingHandler
--> AuthWashingHandler -> SimulationAdaptationHandler
+TopologyPreflightHandler -> GroupExpansionHandler -> PreconfiguredInterfaceCleanupHandler
+-> InterfaceClassificationHandler -> NNIHandler -> UNIHandler -> ReferenceRewriteHandler
+-> CleaningRulesHandler -> AuthWashingHandler -> SimulationAdaptationHandler
 ```
 
 每个处理器只负责其领域的识别、映射、配置变更和报告，并将上下文传递给下一个处理器。后续处理器可插入链中而不修改已有处理器调用方式。
 
 - `TopologyPreflightHandler` 在配置改写前校验端点，标记无效或暂不支持的链路；跳过链路的本端接口仍以 `action=skip` 保留 NNI 角色，不得被 UNI 重新分类。
 - `InterfaceClassificationHandler` 只允许厂商白名单中的物理接口参与物理端口映射；未识别接口保留原配置并告警，若被链接表用作端点则转换失败。
-- `OptionalFeatureWashingHandler` 只处理显式开启的协议认证、PKI、硬件、NAT 和流量统计清洗。
+- `CleaningRulesHandler` 在接口及引用迁移完成后执行所有 `enable: true` 的声明式规则。
 - `AuthWashingHandler` 只负责强制管理面认证清理和实验账号写入；两步视为同一原子阶段。
 
 ### 4.8 模拟参数适配
