@@ -75,6 +75,15 @@ class JunosGroupExpander:
         """绑定待处理的 Junos 文档；构造阶段不解析或修改配置树。"""
         self._document = document
 
+    def _iter_source_nodes(self) -> Iterable[JunosNode]:
+        """迭代原树，用于进入事务式展开前的廉价筛选。"""
+        stack = [self.root]
+        while stack:
+            node = stack.pop()
+            yield node
+            if node.children:
+                stack.extend(node.children)
+
     @property
     def root(self) -> JunosNode:
         """读取底层文档当前的 Junos 配置根节点。"""
@@ -128,6 +137,8 @@ class JunosGroupExpander:
         同时支持单个名称、方括号列表和带引号名称，并忽略 inactive/protect
         前缀；语句不匹配指定关键字时返回空列表。
         """
+        if control_keyword not in statement:
+            return []
         base = cls._base_header(statement).rstrip(";").strip()
         match = re.match(rf"{re.escape(control_keyword)}\s+(.+)$", base)
         if not match:
@@ -558,6 +569,13 @@ class JunosGroupExpander:
         """
         outcome = GroupExpansionOutcome()
         washing_policy = policy or WashingPolicy()
+        # 没有 group 控制语句、定义和 inactive 节点时，不必为事务边界
+        # 深拷贝整份配置。宽松的字符串筛选只会产生多余的慢路径，不会漏处理。
+        if not any(
+            "groups" in node.header.lower() or "inactive:" in node.header.lower()
+            for node in self._iter_source_nodes()
+        ):
+            return outcome
         prepared = self._prepare_expansion(outcome, washing_policy)
         working_root = prepared.working_root
         state = prepared.state

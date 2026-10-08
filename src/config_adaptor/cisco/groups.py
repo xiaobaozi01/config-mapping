@@ -104,9 +104,12 @@ class CiscoGroupExpander:
         同时接受关键字单复数、单个名称、方括号列表及带引号名称；命令不
         匹配时返回空列表，供调用方把它当作普通配置处理。
         """
+        stripped = command.strip()
+        if not stripped.lower().startswith(control_keyword):
+            return []
         match = re.match(
             rf"{re.escape(control_keyword)}s?\s+(.+?)\s*$",
-            command.strip(),
+            stripped,
             re.IGNORECASE,
         )
         if not match:
@@ -496,6 +499,16 @@ class CiscoGroupExpander:
         """
         outcome = GroupExpansionOutcome()
         washing_policy = policy or WashingPolicy()
+
+        # 大配置通常没有活动的 apply-group。先在原树上廉价探测，避免为
+        # 不需要展开的配置克隆整棵 AST（尤其是大型 prefix-set/route-policy）。
+        if not any(
+            "apply-group" in node.header.lower()
+            for top in self.top_level_nodes
+            if top.active and not re.match(r"group\s+\S+", top.header.strip(), re.IGNORECASE)
+            for node in top.walk(include_self=True)
+        ):
+            return outcome
 
         # 定义解析和工作树构建均不修改原根节点，便于任何失败直接回滚。
         group_definitions = self._load_group_definitions()
