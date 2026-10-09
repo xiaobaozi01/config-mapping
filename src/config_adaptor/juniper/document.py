@@ -748,8 +748,8 @@ class JunosDocument(VendorConfiguration):
     def _render_node(self, node: JunosNode, depth: int) -> str:
         """按深度递归渲染一个活动 Junos 节点及其子树。
 
-        叶子直接输出 header，块节点补齐缩进和大括号，逻辑停用节点返回空文本；
-        将渲染集中在一处可保证克隆、清洗和迁移后的所有节点使用一致格式。
+        叶子直接输出 header，块节点补齐缩进和大括号；逻辑停用节点及没有
+        实际子语句的空块返回空文本。递归判断可一并省略因此变空的上层容器。
         """
         if not node.active:
             return ""
@@ -757,10 +757,15 @@ class JunosDocument(VendorConfiguration):
         if node.children is None:
             return indent + self._output_header(node.header)
         lines = [indent + self._output_header(node.header) + " {"]
+        has_content = False
         for child in node.children:
             rendered = self._render_node(child, depth + 1)
             if rendered:
                 lines.append(rendered)
+                if child.children is not None or child.header.strip():
+                    has_content = True
+        if not has_content:
+            return ""
         lines.append(indent + "}")
         return "\n".join(lines)
 

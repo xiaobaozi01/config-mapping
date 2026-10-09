@@ -58,6 +58,40 @@ class JunosAstTest(unittest.TestCase):
 
         self.assertIsNone(document.hostname())
 
+    def test_render_omits_original_and_deleted_empty_blocks(self):
+        document = JunosDocument(
+            "system {\n"
+            "    host-name lab;\n"
+            "    services {\n\n    }\n"
+            "    login {\n        user old;\n    }\n"
+            "}\n"
+            "interfaces {\n    ge-0/0/0 {\n    }\n}\n"
+        )
+        system = document.root.children[0]
+        system.children[2].children[0].active = False
+
+        self.assertEqual(document.render(), "system {\n    host-name lab;\n}\n")
+
+    def test_render_omits_recursively_emptied_blocks_but_keeps_other_children(self):
+        document = JunosDocument(
+            "protocols {\n"
+            "    ospf {\n"
+            "        area 0.0.0.0 {\n"
+            "            interface ae0.0;\n"
+            "        }\n"
+            "    }\n"
+            "    bgp {\n        group CORE {\n            type internal;\n        }\n    }\n"
+            "}\n"
+        )
+        document.root.children[0].children[0].children[0].children[0].active = False
+
+        self.assertEqual(
+            document.render(),
+            "protocols {\n"
+            "    bgp {\n        group CORE {\n            type internal;\n        }\n    }\n"
+            "}\n",
+        )
+
     def test_junos_inline_parser_still_rejects_unbalanced_braces(self):
         with self.assertRaisesRegex(ValueError, "出现多余右大括号"):
             JunosDocument("system { host-name lab; } }")
