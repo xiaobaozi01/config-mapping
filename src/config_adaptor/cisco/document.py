@@ -153,12 +153,23 @@ def _render_cisco_nodes(nodes: Iterable[CiscoNode], depth: int = 1) -> list[str]
     """按 AST 深度递归渲染节点，并保留格式节点的位置。
 
     语义节点使用每层一个空格的 IOS XR 规范缩进；``!`` 同样按所属父层输出，空行则
-    输出为空字符串。由树结构统一生成缩进，避免节点移动后沿用旧文本的错误层级。
+    输出为空字符串。停用节点夹在两个同层级 ``!`` 之间时只保留一个分隔符。
+    由树结构统一生成缩进，避免节点移动后沿用旧文本的错误层级。
     """
     lines: list[str] = []
+    skipped_node = False
     for node in nodes:
         if not node.active:
+            skipped_node = True
             continue
+        if node.header == "!":
+            separator = " " * depth + "!"
+            if skipped_node and lines and lines[-1] == separator:
+                continue
+            lines.append(separator)
+            skipped_node = False
+            continue
+        skipped_node = False
         if not node.header:
             lines.append("")
             continue

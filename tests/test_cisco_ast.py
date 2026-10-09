@@ -84,6 +84,36 @@ class CiscoAstTest(unittest.TestCase):
         self.assertEqual(block.children[1].header, "!")
         self.assertEqual(document.render(), source)
 
+    def test_render_collapses_separators_left_by_inactive_blocks(self):
+        source = (
+            "hostname XR\n!\nusername old\n!\ntaskgroup old\n!\n"
+            "interface Loopback0\n ipv4 address 192.0.2.1 255.255.255.255\n!\nend\n"
+        )
+        document = CiscoDocument(source)
+        document.root.children[2].active = False
+        document.root.children[4].active = False
+
+        self.assertEqual(
+            document.render(),
+            "hostname XR\n!\ninterface Loopback0\n"
+            " ipv4 address 192.0.2.1 255.255.255.255\n!\nend\n",
+        )
+
+    def test_render_keeps_original_and_differently_indented_separators(self):
+        source = (
+            "router ospf CORE\n area 0\n  interface Loopback0\n  !\n"
+            "  interface Loopback1\n  !\n !\n!\n!\nend\n"
+        )
+        document = CiscoDocument(source)
+
+        self.assertEqual(document.render(), source)
+
+        document.root.children[0].children[0].children[2].active = False
+        self.assertEqual(
+            document.render(),
+            "router ospf CORE\n area 0\n  interface Loopback0\n  !\n !\n!\n!\nend\n",
+        )
+
     def test_nested_cleanup_removes_complete_subtree(self):
         """清理嵌套认证模式时应连同秘钥子树删除，不影响同级业务命令。"""
         document = CiscoDocument(cisco_config("nested_cleanup_subtree.cfg"))
