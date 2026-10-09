@@ -182,14 +182,14 @@ class JunosDocument(VendorConfiguration):
         return value
 
     @staticmethod
-    def _expand_inline_fragments(text: str) -> list[tuple[str, str | None]]:
-        """拆分行内块，同时把独立或行尾注释留在所属片段上。"""
-        expanded: list[tuple[str, str | None]] = []
+    def _expand_inline_fragments(text: str) -> list[tuple[str, str | None, int]]:
+        """拆分行内块，同时保留注释和原始配置的行号。"""
+        expanded: list[tuple[str, str | None, int]] = []
         quote: str | None = None
         escaped = False
         block_comment = False
 
-        for raw in text.splitlines():
+        for line_number, raw in enumerate(text.splitlines(), start=1):
             fragments: list[tuple[str, str | None]] = []
             buffer: list[str] = []
             index = 0
@@ -288,7 +288,10 @@ class JunosDocument(VendorConfiguration):
                 index += 1
 
             flush()
-            expanded.extend(fragments or [("", None)])
+            expanded.extend(
+                (header, comment, line_number)
+                for header, comment in (fragments or [("", None)])
+            )
 
         return expanded
 
@@ -296,7 +299,7 @@ class JunosDocument(VendorConfiguration):
     def _expand_inline_blocks(text: str) -> str:
         """供旧入口查看行内块展开后的文本；解析器使用带注释的片段。"""
         lines: list[str] = []
-        for header, comment in JunosDocument._expand_inline_fragments(text):
+        for header, comment, _ in JunosDocument._expand_inline_fragments(text):
             lines.append(f"{header} {comment}" if header and comment else header or comment or "")
         return "\n".join(lines)
 
@@ -308,9 +311,7 @@ class JunosDocument(VendorConfiguration):
         因为在不可靠树上继续迁移可能把配置写入错误层级。
         """
         stack = [self.root]
-        for number, (header, comment) in enumerate(
-            self._expand_inline_fragments(text), start=1
-        ):
+        for header, comment, number in self._expand_inline_fragments(text):
             if not header:
                 stack[-1].children.append(JunosNode("", comment=comment))
                 continue

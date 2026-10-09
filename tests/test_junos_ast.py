@@ -163,10 +163,21 @@ class JunosAstTest(unittest.TestCase):
         self.assertIn("host-name lab;\n", rendered)
 
     def test_junos_inline_parser_still_rejects_unbalanced_braces(self):
-        with self.assertRaisesRegex(ValueError, "出现多余右大括号"):
+        with self.assertRaisesRegex(ValueError, "第 1 行出现多余右大括号"):
             JunosDocument("system { host-name lab; } }")
         with self.assertRaisesRegex(ValueError, "大括号不平衡"):
             JunosDocument("system { host-name lab;")
+
+    def test_extra_closing_brace_reports_original_line_after_inline_expansion(self):
+        source = (
+            "system { host-name lab; services { ssh; } }\n"
+            "# 注释中的 } 不参与配对\n"
+            "interfaces { ge-0/0/0 { mtu 9000; } }\n"
+            "};\n"
+        )
+
+        with self.assertRaisesRegex(ValueError, "Junos 配置第 4 行出现多余右大括号"):
+            JunosDocument(source)
 
 
 if __name__ == "__main__":
