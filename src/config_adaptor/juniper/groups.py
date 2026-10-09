@@ -105,13 +105,13 @@ class JunosGroupExpander:
 
     @classmethod
     def _selector_matches(cls, selector_header: str, target_header: str) -> bool:
-        """判断 group 节点选择器是否匹配目标配置节点。
+        """判断 group 选择器是否匹配配置节点，兼容叶子和块节点。
 
         普通头部使用基础文本精确匹配；尖括号内的 Junos 通配表达式通过
         ``fnmatch`` 转换后参与整串匹配。表达式非法时返回 ``False``。
         """
-        pattern = cls._base_header(selector_header)
-        target = cls._base_header(target_header)
+        pattern = cls._base_header(selector_header).rstrip(";").strip()
+        target = cls._base_header(target_header).rstrip(";").strip()
         if "<" not in pattern:
             return pattern == target
         pieces: list[str] = []
@@ -345,23 +345,32 @@ class JunosGroupExpander:
         group_name: str,
         precedence: tuple[int, ...],
     ) -> None:
-        """做什么：在目标不存在同类块时物化一个非通配 group 块。
+        """合并 group 块，并让匹配的叶子节点承接继承子配置。
 
-        为什么：普通块需要先建立结构，才能在后续递归中承接其子配置；
-        通配块只用来选择已有节点，不能以字面形式写入最终配置。
+        普通块需要先建立结构，通配块只选择已有节点；已有叶子可升级为块，
+        再由后续递归合并其子配置。
         """
         require_invariant(
             target_node.children is not None,
             "Junos group 块合并目标必须是块节点",
         )
-        has_match = any(
-            item.effective
-            and item.is_block
-            and self._selector_matches(inherited_node.header, item.header)
-            for item in target_node.children
+        matched = False
+        has_payload = any(
+            child.effective and child.header for child in inherited_node.children or []
         )
+        for child in target_node.children:
+            if not child.effective or not self._selector_matches(
+                inherited_node.header, child.header
+            ):
+                continue
+            matched = True
+            if not child.is_block and has_payload:
+                child.header = child.header.rstrip().rstrip(";").rstrip()
+                child.children = []
+                child.preserve_when_empty = True
+
         # 通配选择器只匹配已有具体节点，不生成 ``<ge-*>`` 块。
-        if has_match or "<" in inherited_node.header:
+        if matched or "<" in inherited_node.header:
             return
         target_node.children.append(
             JunosNode(

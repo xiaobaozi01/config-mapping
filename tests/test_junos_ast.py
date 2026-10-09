@@ -5,7 +5,7 @@ from __future__ import annotations
 import unittest
 from pathlib import Path
 
-from config_adaptor.juniper.document import JunosDocument
+from config_adaptor.juniper.document import JunosDocument, JunosNode
 
 
 FIXTURES = Path(__file__).parent / "fixtures" / "junos_ast"
@@ -58,7 +58,7 @@ class JunosAstTest(unittest.TestCase):
 
         self.assertIsNone(document.hostname())
 
-    def test_render_omits_original_and_deleted_empty_blocks(self):
+    def test_render_preserves_declared_empty_levels_and_deleted_children(self):
         document = JunosDocument(
             "system {\n"
             "    host-name lab;\n"
@@ -70,9 +70,19 @@ class JunosAstTest(unittest.TestCase):
         system = document.root.children[0]
         system.children[2].children[0].active = False
 
-        self.assertEqual(document.render(), "system {\n    host-name lab;\n}\n")
+        self.assertEqual(
+            document.render(),
+            "system {\n"
+            "    host-name lab;\n"
+            "    services;\n"
+            "    login;\n"
+            "}\n"
+            "interfaces {\n"
+            "    ge-0/0/0;\n"
+            "}\n",
+        )
 
-    def test_render_omits_recursively_emptied_blocks_but_keeps_other_children(self):
+    def test_render_preserves_active_ancestors_of_deleted_leaf(self):
         document = JunosDocument(
             "protocols {\n"
             "    ospf {\n"
@@ -88,8 +98,22 @@ class JunosAstTest(unittest.TestCase):
         self.assertEqual(
             document.render(),
             "protocols {\n"
+            "    ospf {\n        area 0.0.0.0;\n    }\n"
             "    bgp {\n        group CORE {\n            type internal;\n        }\n    }\n"
             "}\n",
+        )
+
+    def test_render_omits_deleted_blocks_and_generated_empty_containers(self):
+        document = JunosDocument(
+            "system { host-name lab; services { ssh; } }\n"
+        )
+        system = document.root.children[0]
+        system.children[1].active = False
+        system.children.append(JunosNode("generated", []))
+
+        self.assertEqual(
+            document.render(),
+            "system {\n    host-name lab;\n}\n",
         )
 
     def test_comment_does_not_activate_or_rewrite_interface(self):
@@ -117,7 +141,7 @@ class JunosAstTest(unittest.TestCase):
         self.assertIn('host-name "lab#1"; # host note\n', document.render())
         system.children[1].children[0].active = False
         self.assertNotIn("access note", document.render())
-        self.assertNotIn("services {", document.render())
+        self.assertIn("services;\n", document.render())
 
     def test_standalone_comment_keeps_its_parent_block(self):
         document = JunosDocument("system {\n services {\n  # note\n }\n}\n")

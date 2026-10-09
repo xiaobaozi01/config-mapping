@@ -29,6 +29,73 @@ class JunosGroupExpansionTest(unittest.TestCase):
         self.assertNotIn("groups {", rendered)
         self.assertNotIn("apply-groups COMMON", rendered)
 
+    def test_group_payload_upgrades_matching_leaf_interfaces_to_blocks(self):
+        document = JunosDocument(
+            "groups { RSVP { protocols { rsvp { interface <*> { "
+            "aggregate; link-protection; } } } } }\n"
+            "protocols { rsvp { apply-groups RSVP; "
+            "interface xe-9/0/0.0; interface ae1.0; } }\n"
+        )
+
+        outcome = document.expand_groups([])
+
+        self.assertTrue(outcome.success)
+        self.assertEqual(outcome.identity_fallbacks, 4)
+        self.assertEqual(
+            document.render(),
+            "protocols {\n"
+            "    rsvp {\n"
+            "        interface xe-9/0/0.0 {\n"
+            "            aggregate;\n"
+            "            link-protection;\n"
+            "        }\n"
+            "        interface ae1.0 {\n"
+            "            aggregate;\n"
+            "            link-protection;\n"
+            "        }\n"
+            "    }\n"
+            "}\n",
+        )
+
+    def test_group_block_matches_existing_block_and_only_matching_leaf(self):
+        document = JunosDocument(
+            "groups { G { protocols { rsvp { interface <xe-*> { aggregate; } } } } }\n"
+            "protocols { rsvp { apply-groups G; "
+            "interface xe-9/0/0.0 { link-protection; } "
+            "interface xe-9/0/1.0; interface ae1.0; } }\n"
+        )
+
+        self.assertTrue(document.expand_groups([]).success)
+        rendered = document.render()
+        self.assertEqual(rendered.count("aggregate;"), 2)
+        self.assertIn("interface xe-9/0/0.0 {\n", rendered)
+        self.assertIn("link-protection;\n", rendered)
+        self.assertIn("interface xe-9/0/1.0 {\n", rendered)
+        self.assertIn("interface ae1.0;\n", rendered)
+
+    def test_comment_only_group_block_does_not_erase_matching_leaf(self):
+        document = JunosDocument(
+            "groups { G { protocols { rsvp { interface <*> { # note\n"
+            "} } } } }\n"
+            "protocols { rsvp { apply-groups G; interface xe-9/0/0.0; } }\n"
+        )
+
+        self.assertTrue(document.expand_groups([]).success)
+        self.assertIn("interface xe-9/0/0.0;\n", document.render())
+
+    def test_group_without_matching_descendant_keeps_original_leaf(self):
+        document = JunosDocument(
+            "groups { G { protocols { rsvp { interface <*> { "
+            "apply-groups H; } } } } H { system { host-name lab; } } }\n"
+            "protocols { rsvp { apply-groups G; interface xe-9/0/0.0; } }\n"
+        )
+
+        self.assertTrue(document.expand_groups([]).success)
+        self.assertEqual(
+            document.render(),
+            "protocols {\n    rsvp {\n        interface xe-9/0/0.0;\n    }\n}\n",
+        )
+
     def test_junos_multiple_group_containers_share_dependency_index(self):
         document = JunosDocument(group_config("junos_multiple_containers_shared_index.cfg"))
         outcome = document.expand_groups([])

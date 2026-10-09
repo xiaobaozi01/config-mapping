@@ -81,6 +81,7 @@ class JunosNode:
     ``children=None`` 表示叶子，列表表示块；``active`` 仅表示转换过程中的逻辑
     删除，Junos 文本里的 ``inactive:`` 由 ``effective`` 单独识别。``origin`` 和
     ``rank`` 为 group 继承保留来源及优先级；``comment`` 保存独立或行尾注释。
+    ``preserve_when_empty`` 表示该节点原本就是配置语句，空层级仍应输出为分号语句。
     统一节点模型可递归修改任意层级，同时保留解析器暂时不理解的语句文本。
     """
     header: str
@@ -89,6 +90,7 @@ class JunosNode:
     origin: str = "explicit"
     rank: tuple[int, ...] = (1_000_000, 0)
     comment: str | None = None
+    preserve_when_empty: bool = False
 
     @property
     def is_block(self) -> bool:
@@ -320,7 +322,12 @@ class JunosDocument(VendorConfiguration):
                     stack[-1].children.append(JunosNode("", comment=comment))
                 continue
             if header.endswith("{"):
-                node = JunosNode(header[:-1].strip(), [], comment=comment)
+                node = JunosNode(
+                    header[:-1].strip(),
+                    [],
+                    comment=comment,
+                    preserve_when_empty=True,
+                )
                 stack[-1].children.append(node)
                 stack.append(node)
                 continue
@@ -782,8 +789,8 @@ class JunosDocument(VendorConfiguration):
     def _render_node(self, node: JunosNode, depth: int) -> str:
         """按深度递归渲染一个活动 Junos 节点及其子树。
 
-        叶子直接输出 header，块节点补齐缩进和大括号；逻辑停用节点及没有
-        实际子语句的空块返回空文本。递归判断可一并省略因此变空的上层容器。
+        叶子直接输出 header，块节点补齐缩进和大括号；原配置中的空层级和
+        由叶子升级的空块输出为分号语句，新建的空容器不输出。逻辑停用节点跳过。
         """
         if not node.active:
             return ""
@@ -805,6 +812,11 @@ class JunosDocument(VendorConfiguration):
                 if child.children is not None or child.header.strip() or child.comment:
                     has_content = True
         if not has_content:
+            if node.preserve_when_empty:
+                statement = indent + self._output_header(node.header) + ";"
+                if node.comment:
+                    statement += " " + node.comment
+                return statement
             return ""
         lines.append(indent + "}")
         return "\n".join(lines)
