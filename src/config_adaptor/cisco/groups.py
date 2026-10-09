@@ -332,6 +332,7 @@ class CiscoGroupExpander:
                 is_block=True,
                 origin=f"group:{group_name}",
                 rank=precedence,
+                comment=inherited_node.comment,
             )
         )
 
@@ -359,6 +360,7 @@ class CiscoGroupExpander:
             header=inherited_node.header,
             origin=f"group:{group_name}",
             rank=precedence,
+            comment=inherited_node.comment,
         )
         existing_statement_decisions = [
             (
@@ -366,7 +368,7 @@ class CiscoGroupExpander:
                 resolve_cisco_identity(child.header, path=target_path),
             )
             for child in target_node.children
-            if not child.is_block
+            if not child.is_block and not child.is_formatting
         ]
         existing_statement = next(
             (
@@ -475,6 +477,7 @@ class CiscoGroupExpander:
                 existing_statement,
             )
             existing_statement.header = inherited_statement.header
+            existing_statement.comment = inherited_statement.comment
             existing_statement.origin = inherited_statement.origin
             existing_statement.rank = inherited_statement.rank
             return
@@ -603,7 +606,8 @@ class CiscoGroupExpander:
             header = source_node.header.strip()
             if (
                 not source_node.active
-                or header in {"", "!", "end-group"}
+                or (header in {"", "!"} and not source_node.comment)
+                or header == "end-group"
                 or re.match(r"group\s+\S+", header, re.IGNORECASE)
             ):
                 continue
@@ -613,8 +617,9 @@ class CiscoGroupExpander:
             working_root.children.append(
                 CiscoNode(
                     source_node.header,
-                    _clone_cisco_nodes(source_node.children),
+                    _clone_cisco_nodes(source_node.children, include_comments=True),
                     is_block=source_node.is_block,
+                    comment=source_node.comment,
                 )
             )
 
@@ -860,10 +865,15 @@ class CiscoGroupExpander:
             rebuilt_nodes.append(
                 CiscoNode(
                     header=top_level_node.header,
-                    children=_clone_cisco_nodes(top_level_node.children),
+                    children=_clone_cisco_nodes(
+                        top_level_node.children,
+                        include_comments=True,
+                    ),
+                    comment=top_level_node.comment,
                 )
             )
-            rebuilt_nodes.append(CiscoNode(header="!"))
+            if not top_level_node.comment or top_level_node.header:
+                rebuilt_nodes.append(CiscoNode(header="!"))
         for command in terminal_commands or ["end"]:
             rebuilt_nodes.append(CiscoNode(header=command))
         return rebuilt_nodes

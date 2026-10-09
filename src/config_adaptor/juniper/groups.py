@@ -369,6 +369,7 @@ class JunosGroupExpander:
                 [],
                 origin=f"group:{group_name}",
                 rank=precedence,
+                comment=inherited_node.comment,
             )
         )
 
@@ -416,6 +417,7 @@ class JunosGroupExpander:
             inherited_node.header,
             origin=f"group:{group_name}",
             rank=precedence,
+            comment=inherited_node.comment,
         )
         if existing_statement is None:
             if self._handle_unknown_identity_ambiguity(
@@ -545,6 +547,7 @@ class JunosGroupExpander:
                 existing_statement,
             )
             existing_statement.header = inherited_statement.header
+            existing_statement.comment = inherited_statement.comment
             existing_statement.origin = inherited_statement.origin
             existing_statement.rank = inherited_statement.rank
             return

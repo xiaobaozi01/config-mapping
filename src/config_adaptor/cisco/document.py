@@ -24,8 +24,9 @@ from ..common.interface import normalized_command as _normalized_command
 class CiscoNode:
     """表示 IOS XR 配置树中的顶层或嵌套节点。
 
-    ``header`` 保存去除缩进后的命令或 ``!``/空行格式节点，``children``
-    保存由缩进确定的直接子命令。顶层配置和嵌套配置使用同一类型，
+    ``header`` 保存去除缩进后的命令或 ``!``/空行格式节点，``comment`` 保存
+    单独的注释文本，``children`` 保存由缩进确定的直接子命令。顶层配置和嵌套配置
+    使用同一类型，
     与 JunosNode 的整棵树模式一致；``origin`` 和 ``rank`` 供 group 继承合并使用。
     """
     header: str
@@ -34,10 +35,11 @@ class CiscoNode:
     is_block: bool = False
     origin: str = "explicit"
     rank: tuple[int, int] = (1_000_000, 0)
+    comment: str | None = None
 
     @property
     def is_formatting(self) -> bool:
-        """返回节点是否仅表示 ``!`` 分隔符或空行。
+        """返回节点是否仅表示 ``!`` 分隔符、空行或独立注释。
 
         格式节点需要保留以便未改写文档可稳定渲染，但不应参与接口识别、group
         语义合并或清洗规则匹配，因此由统一属性供各模块过滤。
@@ -126,16 +128,21 @@ def _clone_cisco_nodes(
     nodes: Iterable[CiscoNode],
     *,
     include_formatting: bool = False,
+    include_comments: bool = False,
     origin: str | None = None,
 ) -> list[CiscoNode]:
     """深拷贝节点列表，并可过滤格式节点或统一重设来源。
 
-    文档保真渲染需要 ``!`` 和空行，但 group 语义合并只需要命令节点；集中克隆可以
+    文档保真渲染需要格式行，但 group 语义合并只需要命令节点；集中克隆可以
     在两个场景间安全转换，同时确保对工作树的修改不会污染持久化文档 AST。
     """
     result: list[CiscoNode] = []
     for node in nodes:
-        if node.is_formatting and not include_formatting:
+        if (
+            node.is_formatting
+            and not include_formatting
+            and not (include_comments and node.comment)
+        ):
             continue
         clone = copy.copy(node)
         if origin is not None:
@@ -143,6 +150,7 @@ def _clone_cisco_nodes(
         clone.children = _clone_cisco_nodes(
             node.children,
             include_formatting=include_formatting,
+            include_comments=include_comments,
             origin=origin,
         )
         result.append(clone)
@@ -170,10 +178,16 @@ def _render_cisco_nodes(nodes: Iterable[CiscoNode], depth: int = 1) -> list[str]
             skipped_node = False
             continue
         skipped_node = False
+        if node.comment is not None and not node.header:
+            lines.append(" " * depth + node.comment)
+            continue
         if not node.header:
             lines.append("")
             continue
-        lines.append(" " * depth + node.header)
+        line = " " * depth + node.header
+        if node.comment is not None:
+            line += " " + node.comment
+        lines.append(line)
         lines.extend(_render_cisco_nodes(node.children, depth + 1))
     return lines
 
@@ -357,6 +371,14 @@ class CiscoDocument(VendorConfiguration):
         return bool(re.match(r"group\s+\S+", node.header, re.IGNORECASE))
 
     @staticmethod
+    def _comment_parts(value: str) -> tuple[str, str | None]:
+        """把单独的 IOS XR 注释行与配置命令分开；裸 ``!`` 是分隔符。"""
+        stripped = value.strip()
+        if stripped.startswith("!") and stripped != "!":
+            return "", stripped
+        return stripped, None
+
+    @staticmethod
     def _parse(text: str) -> list[CiscoNode]:
         """把 IOS XR 文本解析成有序顶层块及持久化缩进 AST。
 
@@ -388,11 +410,14 @@ class CiscoDocument(VendorConfiguration):
             # 普通状态下，无缩进命令开启一个新的顶层块。感叹号单独处理，
             # 因为它是否缩进决定了是顶层分隔符还是块内子模式结束符。
             if stripped and not is_indented and stripped != "!":
-                current = CiscoNode(
-                    header=line,
-                    is_block=_is_cisco_block_header(line),
+                header, comment = CiscoDocument._comment_parts(line)
+                node = CiscoNode(
+                    header=header,
+                    is_block=_is_cisco_block_header(header),
+                    comment=comment,
                 )
-                nodes.append(current)
+                nodes.append(node)
+                current = node if comment is None else None
                 stack = []
                 continue
 
@@ -420,7 +445,7 @@ class CiscoDocument(VendorConfiguration):
 
         普通命令缩进更深时成为栈顶节点的 child，相同或更浅时先退出已结束层级；
         ``!`` 使用同样的退栈规则但自身不入栈，因此既能关闭对应配置模式，又不会
-        接管后续命令。空行作为根级格式节点保留，但不改变当前语义层级。
+        接管后续命令。注释只按缩进定位，不改变命令栈；空行作为根级格式节点保留。
         """
         stripped = line.strip()
         if not stripped:
@@ -429,11 +454,19 @@ class CiscoDocument(VendorConfiguration):
 
         expanded = line.expandtabs(8)
         indent = len(expanded) - len(expanded.lstrip())
+        header, comment = CiscoDocument._comment_parts(stripped)
+        if comment is not None:
+            parent = next(
+                (node for level, node in reversed(stack) if level < indent),
+                parent_node,
+            )
+            parent.children.append(CiscoNode("", origin=origin, comment=comment))
+            return
         while stack and indent <= stack[-1][0]:
             stack.pop()
 
         parent = stack[-1][1] if stack else None
-        node = CiscoNode(stripped, origin=origin)
+        node = CiscoNode(header, origin=origin, comment=comment)
         if parent is None:
             parent_node.children.append(node)
             parent_node.is_block = True

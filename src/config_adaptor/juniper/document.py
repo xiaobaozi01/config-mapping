@@ -80,14 +80,15 @@ class JunosNode:
 
     ``children=None`` 表示叶子，列表表示块；``active`` 仅表示转换过程中的逻辑
     删除，Junos 文本里的 ``inactive:`` 由 ``effective`` 单独识别。``origin`` 和
-    ``rank`` 为 group 继承保留来源及优先级。统一节点模型可递归修改任意层级，
-    同时保留解析器暂时不理解的语句文本。
+    ``rank`` 为 group 继承保留来源及优先级；``comment`` 保存独立或行尾注释。
+    统一节点模型可递归修改任意层级，同时保留解析器暂时不理解的语句文本。
     """
     header: str
     children: list["JunosNode"] | None = None
     active: bool = True
     origin: str = "explicit"
     rank: tuple[int, ...] = (1_000_000, 0)
+    comment: str | None = None
 
     @property
     def is_block(self) -> bool:
@@ -119,9 +120,14 @@ class JunosNode:
                 return inactive
 
     @property
+    def is_comment_only(self) -> bool:
+        """注释独占一行时不参与业务语义，但仍由最终渲染器输出。"""
+        return self.comment is not None and not self.header
+
+    @property
     def effective(self) -> bool:
         """返回节点是否应参与当前生效配置的语义处理。"""
-        return self.active and not self.configured_inactive
+        return self.active and not self.configured_inactive and not self.is_comment_only
 
     def clone(self) -> "JunosNode":
         """深拷贝当前节点及其完整子树。
@@ -174,19 +180,15 @@ class JunosDocument(VendorConfiguration):
         return value
 
     @staticmethod
-    def _expand_inline_blocks(text: str) -> str:
-        """把单行块预展开为原逐行解析器可识别的标准多行文本。
-
-        只在引号和注释之外按 ``{``、``}``、``;`` 切行；本方法不建立语法树，
-        后续结构识别、括号校验和节点创建仍全部由原有 ``_parse`` 栈逻辑完成。
-        """
-        expanded: list[str] = []
+    def _expand_inline_fragments(text: str) -> list[tuple[str, str | None]]:
+        """拆分行内块，同时把独立或行尾注释留在所属片段上。"""
+        expanded: list[tuple[str, str | None]] = []
         quote: str | None = None
         escaped = False
         block_comment = False
 
         for raw in text.splitlines():
-            fragments: list[str] = []
+            fragments: list[tuple[str, str | None]] = []
             buffer: list[str] = []
             index = 0
 
@@ -194,7 +196,18 @@ class JunosDocument(VendorConfiguration):
                 value = "".join(buffer).strip()
                 buffer.clear()
                 if value:
-                    fragments.append(value)
+                    fragments.append((value, None))
+
+            def attach_comment(comment: str) -> None:
+                flush()
+                if fragments and fragments[-1][0] not in {"}", "};"}:
+                    header, previous = fragments[-1]
+                    fragments[-1] = (
+                        header,
+                        f"{previous} {comment}" if previous else comment,
+                    )
+                else:
+                    fragments.append(("", comment))
 
             while index < len(raw):
                 character = raw[index]
@@ -227,10 +240,21 @@ class JunosDocument(VendorConfiguration):
                     continue
 
                 if character == "#":
-                    buffer.append(raw[index:])
+                    attach_comment(raw[index:].strip())
                     break
 
                 if character == "/" and index + 1 < len(raw) and raw[index + 1] == "*":
+                    closing = raw.find("*/", index + 2)
+                    if closing != -1:
+                        comment = raw[index : closing + 2]
+                        before = "".join(buffer).strip()
+                        after = raw[closing + 2 :].strip()
+                        if not before or not after:
+                            attach_comment(comment)
+                        else:
+                            buffer.append(comment)
+                        index = closing + 2
+                        continue
                     block_comment = True
                     buffer.extend(("/", "*"))
                     index += 2
@@ -254,7 +278,7 @@ class JunosDocument(VendorConfiguration):
                     if index + 1 < len(raw) and raw[index + 1] == ";":
                         closing = "};"
                         index += 1
-                    fragments.append(closing)
+                    fragments.append((closing, None))
                     index += 1
                     continue
 
@@ -262,9 +286,17 @@ class JunosDocument(VendorConfiguration):
                 index += 1
 
             flush()
-            expanded.extend(fragments or [""])
+            expanded.extend(fragments or [("", None)])
 
-        return "\n".join(expanded)
+        return expanded
+
+    @staticmethod
+    def _expand_inline_blocks(text: str) -> str:
+        """供旧入口查看行内块展开后的文本；解析器使用带注释的片段。"""
+        lines: list[str] = []
+        for header, comment in JunosDocument._expand_inline_fragments(text):
+            lines.append(f"{header} {comment}" if header and comment else header or comment or "")
+        return "\n".join(lines)
 
     def _parse(self, text: str) -> None:
         """使用栈把 Junos 大括号文本解析成节点树，并校验括号平衡。
@@ -274,27 +306,29 @@ class JunosDocument(VendorConfiguration):
         因为在不可靠树上继续迁移可能把配置写入错误层级。
         """
         stack = [self.root]
-        expanded = self._expand_inline_blocks(text)
-        for number, raw in enumerate(expanded.splitlines(), start=1):
-            stripped = raw.strip()
-            if not stripped:
-                stack[-1].children.append(JunosNode(""))
+        for number, (header, comment) in enumerate(
+            self._expand_inline_fragments(text), start=1
+        ):
+            if not header:
+                stack[-1].children.append(JunosNode("", comment=comment))
                 continue
-            if stripped in {"}", "};"}:
+            if header in {"}", "};"}:
                 if len(stack) == 1:
                     raise ValueError(f"Junos 配置第 {number} 行出现多余右大括号")
                 stack.pop()
+                if comment:
+                    stack[-1].children.append(JunosNode("", comment=comment))
                 continue
-            if stripped.endswith("{"):
-                node = JunosNode(stripped[:-1].strip(), [])
+            if header.endswith("{"):
+                node = JunosNode(header[:-1].strip(), [], comment=comment)
                 stack[-1].children.append(node)
                 stack.append(node)
                 continue
-            if "{" in stripped or "}" in stripped:
+            if "{" in header or "}" in header:
                 # 预处理未拆分的未知写法继续按原策略作为叶子保留。
-                stack[-1].children.append(JunosNode(stripped))
+                stack[-1].children.append(JunosNode(header, comment=comment))
                 continue
-            stack[-1].children.append(JunosNode(stripped))
+            stack[-1].children.append(JunosNode(header, comment=comment))
         if len(stack) != 1:
             raise ValueError("Junos 配置大括号不平衡")
 
@@ -755,14 +789,20 @@ class JunosDocument(VendorConfiguration):
             return ""
         indent = "    " * depth
         if node.children is None:
-            return indent + self._output_header(node.header)
-        lines = [indent + self._output_header(node.header) + " {"]
+            header = self._output_header(node.header)
+            if node.comment:
+                header = f"{header} {node.comment}" if header else node.comment
+            return indent + header
+        opening = indent + self._output_header(node.header) + " {"
+        if node.comment:
+            opening += " " + node.comment
+        lines = [opening]
         has_content = False
         for child in node.children:
             rendered = self._render_node(child, depth + 1)
             if rendered:
                 lines.append(rendered)
-                if child.children is not None or child.header.strip():
+                if child.children is not None or child.header.strip() or child.comment:
                     has_content = True
         if not has_content:
             return ""

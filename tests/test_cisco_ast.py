@@ -114,6 +114,48 @@ class CiscoAstTest(unittest.TestCase):
             "router ospf CORE\n area 0\n  interface Loopback0\n  !\n !\n!\n!\nend\n",
         )
 
+    def test_comment_does_not_activate_or_rewrite_interface(self):
+        source = (
+            "interface GigabitEthernet0/0/0/1\n description UNUSED\n!\n"
+            "!! GigabitEthernet0/0/0/1\n"
+        )
+        document = CiscoDocument(source)
+
+        self.assertEqual(document.root.children[2].comment, "!! GigabitEthernet0/0/0/1")
+        self.assertEqual(document.business_interface_names(), set())
+        self.assertEqual(
+            document.apply_cleaning_rule((), "^!!", "delete", None),
+            0,
+        )
+        document.replace_references(
+            {"GigabitEthernet0/0/0/1": ["GigabitEthernet0/0/0/2"]}
+        )
+        self.assertEqual(document.render(), source)
+
+    def test_group_expansion_preserves_standalone_and_nested_comments(self):
+        document = CiscoDocument(
+            "group G\n interface GigabitEthernet0/0/0/1\n  mtu 9000\n!\n"
+            "end-group\n!\n!! top note\napply-group G\n!\n"
+            "interface GigabitEthernet0/0/0/1\n ! nested note\n!\nend\n"
+        )
+
+        self.assertTrue(document.expand_groups(["GigabitEthernet0/0/0/1"]).success)
+        rendered = document.render()
+        self.assertIn("!! top note\n", rendered)
+        self.assertIn(" ! nested note\n", rendered)
+        self.assertIn(" mtu 9000\n", rendered)
+
+    def test_indented_comment_does_not_change_command_parent(self):
+        document = CiscoDocument(
+            "router ospf CORE\n area 0\n  interface Loopback0\n"
+            "   cost 10\n  ! note\n   hello-interval 5\n"
+            "  !\n !\n!\n"
+        )
+        interface = document.root.children[0].children[0].children[0]
+
+        self.assertEqual(interface.children[-1].header, "hello-interval 5")
+        self.assertIn("  ! note\n", document.render())
+
     def test_nested_cleanup_removes_complete_subtree(self):
         """清理嵌套认证模式时应连同秘钥子树删除，不影响同级业务命令。"""
         document = CiscoDocument(cisco_config("nested_cleanup_subtree.cfg"))

@@ -92,6 +92,52 @@ class JunosAstTest(unittest.TestCase):
             "}\n",
         )
 
+    def test_comment_does_not_activate_or_rewrite_interface(self):
+        source = (
+            "interfaces {\n ge-0/0/1 {\n  description UNUSED;\n }\n}\n"
+            "# ge-0/0/1\n/* ge-0/0/1 */\n"
+        )
+        document = JunosDocument(source)
+
+        self.assertEqual(document.root.children[1].comment, "# ge-0/0/1")
+        self.assertEqual(document.business_interface_names(), set())
+        self.assertEqual(document.apply_cleaning_rule((), "^#|^/\\*", "delete", None), 0)
+        document.replace_references({"ge-0/0/1": ["ge-0/0/2"]})
+        self.assertIn("# ge-0/0/1\n/* ge-0/0/1 */\n", document.render())
+
+    def test_inline_comment_stays_with_statement_and_quoted_hash_is_literal(self):
+        document = JunosDocument(
+            'system {\n host-name "lab#1"; # host note\n'
+            ' services {\n  ssh; # access note\n }\n}\n'
+        )
+        system = document.root.children[0]
+
+        self.assertEqual(system.children[0].header, 'host-name "lab#1";')
+        self.assertEqual(system.children[0].comment, "# host note")
+        self.assertIn('host-name "lab#1"; # host note\n', document.render())
+        system.children[1].children[0].active = False
+        self.assertNotIn("access note", document.render())
+        self.assertNotIn("services {", document.render())
+
+    def test_standalone_comment_keeps_its_parent_block(self):
+        document = JunosDocument("system {\n services {\n  # note\n }\n}\n")
+
+        self.assertIn("services {\n        # note\n", document.render())
+
+    def test_group_expansion_keeps_comments_outside_group_definition(self):
+        document = JunosDocument(
+            "groups { G { system { host-name lab; } } }\n"
+            "apply-groups G;\n# top note\n"
+            "system { # block note\n    services {\n        # nested note\n        ssh;\n    }\n}\n"
+        )
+
+        self.assertTrue(document.expand_groups([]).success)
+        rendered = document.render()
+        self.assertIn("# top note\n", rendered)
+        self.assertIn("system { # block note\n", rendered)
+        self.assertIn("# nested note\n", rendered)
+        self.assertIn("host-name lab;\n", rendered)
+
     def test_junos_inline_parser_still_rejects_unbalanced_braces(self):
         with self.assertRaisesRegex(ValueError, "出现多余右大括号"):
             JunosDocument("system { host-name lab; } }")
