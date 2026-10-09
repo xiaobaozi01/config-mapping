@@ -5,7 +5,7 @@ from __future__ import annotations
 import unittest
 from pathlib import Path
 
-from config_adaptor.adaptation.cleaning_rules import load_rules
+from config_adaptor.adaptation.cleaning_rules import CleaningRulesHandler
 from config_adaptor.cisco.document import CiscoDocument, CiscoNode
 
 
@@ -90,7 +90,7 @@ class CiscoAstTest(unittest.TestCase):
 
         rule = next(
             item
-            for item in load_rules()
+            for item in CleaningRulesHandler._configured_rules()
             if item.rule_id == "cisco.remove.routing.protocol.auth.reference"
         )
         hits = document.apply_cleaning_rule(

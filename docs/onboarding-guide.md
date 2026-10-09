@@ -264,7 +264,6 @@ flowchart TB
     subgraph IO[基础设施]
         Excel[adaptation/topology.py]
         Profiles[adaptation/profiles.py]
-        Washing[adaptation/washing.py]
         Rules[adaptation/cleaning_rules.py]
     end
 
@@ -296,7 +295,7 @@ flowchart TB
 | --- | --- | --- |
 | `adaptation/cli.py` | 参数解析、退出码 | 是 |
 | `adaptation/service.py` | 准备上下文、执行流程、写输出 | 是 |
-| `adaptation/topology.py`、`groups.py`、`interfaces.py`、`nni.py`、`uni.py`、`cleaning_rules.py`、`washing.py`、`simulation.py` | 十个业务阶段 | 是，核心 |
+| `adaptation/topology.py`、`groups.py`、`interfaces.py`、`nni.py`、`uni.py`、`cleaning_rules.py`、`simulation.py` | 十个业务阶段 | 是，核心 |
 | `adaptation/models.py` | 设备、链路、映射、Profile、上下文 | 是 |
 | `adaptation/pipeline.py` | Stage 协议和停止规则 | 是 |
 | `adaptation/nni.py` | 聚合链路分组的纯计算 | NNI 业务时读 |
@@ -308,7 +307,7 @@ flowchart TB
 | `cisco/cleaning.py、juniper/cleaning.py` | 强制管理面清洗 | 专项阅读 |
 | `cisco/simulation.py、juniper/simulation.py` | 镜像运行参数适配 | 专项阅读 |
 | `adaptation/topology.py` | Excel 读写和列别名处理 | 输入问题时读 |
-| `adaptation/profiles.py` / `adaptation/washing.py` | YAML 配置加载与校验 | 策略问题时读 |
+| `adaptation/profiles.py` | 镜像 Profile 加载与校验 | Profile 问题时读 |
 | `adaptation/cleaning_rules.py` | 统一清洗规则加载与调度 | 修改清洗框架时读 |
 | `cisco/rules/xrv9000/cleaning.yaml`、`juniper/rules/vmx/cleaning.yaml` | 各厂商的 PTP、可选能力及扩展清洗规则 | 增删清洗项时读 |
 
@@ -435,15 +434,15 @@ classDiagram
 
 | 顺序 | Stage | 输入关注点 | 主要副作用 | 关键失败条件 |
 | --- | --- | --- | --- | --- |
-| 1 | `TopologyPreflightHandler` | 拓扑设备和链路端点 | 标记跳过链路，保留 NNI 角色 | 端点设备不存在 |
-| 2 | `GroupExpansionHandler` | 活动 Group 引用、已知接口 | 事务式展开 Group，记录冲突 | 引用缺失、循环或无法静态求值 |
-| 3 | `PreconfiguredInterfaceCleanupHandler` | IOS XR 预配置接口 | 忽略未实例化接口候选块 | 本阶段一般不失败 |
-| 4 | `InterfaceClassificationHandler` | 厂商接口类型 | 未知接口告警并保留 | 本阶段一般不失败 |
-| 5 | `NNIHandler` | 活跃链路、聚合成员 | 分组、扁平化、M-LAG 拆分、端口分配 | 类型错误、成员歧义、端口不足 |
-| 6 | `UNIHandler` | 剩余业务接口 | 删除裸口、QinQ 迁移、VLAN 分配 | VLAN 空间耗尽 |
-| 7 | `ReferenceRewriteHandler` | 完整接口映射 | 更新全局接口引用 | 由厂商实现保证安全 |
-| 8 | `CleaningRulesHandler` | 已启用 YAML 规则 | 按路径删除、替换、脱敏或告警 | 规则文件先期校验 |
-| 9 | `AuthWashingHandler` | 管理面配置 | 删除旧认证并增加实验账号 | 与清洗和写入视为同一阶段 |
+| 1 | `CleaningRulesHandler(pre_analysis)` | 早期代码规则 | 删除可能干扰分析的完整 banner | 缺少结束分隔符 |
+| 2 | `TopologyPreflightHandler` | 拓扑设备和链路端点 | 标记跳过链路，保留 NNI 角色 | 端点设备不存在 |
+| 3 | `GroupExpansionHandler` | 活动 Group 引用、已知接口 | 事务式展开 Group，记录冲突 | 引用缺失、循环或无法静态求值 |
+| 4 | `PreconfiguredInterfaceCleanupHandler` | IOS XR 预配置接口 | 忽略未实例化接口候选块 | 本阶段一般不失败 |
+| 5 | `InterfaceClassificationHandler` | 厂商接口类型 | 未知接口告警并保留 | 本阶段一般不失败 |
+| 6 | `NNIHandler` | 活跃链路、聚合成员 | 分组、扁平化、M-LAG 拆分、端口分配 | 类型错误、成员歧义、端口不足 |
+| 7 | `UNIHandler` | 剩余业务接口 | 删除裸口、QinQ 迁移、VLAN 分配 | VLAN 空间耗尽 |
+| 8 | `ReferenceRewriteHandler` | 完整接口映射 | 更新全局接口引用 | 由厂商实现保证安全 |
+| 9 | `CleaningRulesHandler(post_rewrite)` | 已启用 YAML 规则和认证代码规则 | 先按路径清洗，再删除旧认证并增加实验账号 | 规则文件先期校验；认证两步作为一次规则执行 |
 | 10 | `SimulationAdaptationHandler` | Profile 与已映射数据口 | 启用接口、去硬件参数、提高过低 BFD 值 | 非法 Profile 先期校验 |
 
 `ConversionPipeline` 每执行完一个 Stage 就检查 `context.has_errors`。一旦为真，后续 Stage 不再运行。
@@ -704,7 +703,7 @@ interfaces {
 
 ### 12.2 统一清洗规则
 
-PTP、协议认证、PKI、硬件、NAT、流量统计和镜像扩展清洗按厂商位于各目标镜像目录的 `cleaning.yaml`。两份文件由同一加载器和 Handler 执行，不通过 CLI 接收外部规则。每条规则通过 `enable` 独立控制，通过 `category` 汇总报告；`path` 描述完整父级路径，支持 `[]`、`*` 和 `**`。协议认证等可能改变业务能力的规则默认关闭。
+清洗规则分为两类：简单规则按厂商位于目标镜像目录的 `cleaning.yaml`，复杂规则实现 `ExecutableCleaningRule` 并在 `cleaning_rules.py` 的内置注册表中注册。两类规则由同一 Handler 执行，不通过 CLI 接收外部规则。YAML 规则通过 `enable` 控制并固定在 `post_rewrite`；代码规则声明 `pre_analysis` 或 `post_rewrite`。所有命中均通过 `category` 汇总报告。
 
 规则在接口迁移和引用改写之后运行，支持：
 

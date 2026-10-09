@@ -44,6 +44,10 @@ class ConversionTest(unittest.TestCase):
                 " description RESERVED\n!\n"
                 "interface PTP0/RP0/CPU0/0\n"
                 " ipv4 address 203.0.113.1/31\n!\n"
+                "banner exec ^\n"
+                "interface FutureBanner0\n"
+                "= production warning =\n"
+                "^\n"
                 "ptp\n clock\n!\nend\n",
             )
             config_path.write_text(source, encoding="utf-8")
@@ -54,6 +58,8 @@ class ConversionTest(unittest.TestCase):
             converted = (output / "configs" / "R1.cfg").read_text(encoding="utf-8")
             self.assertNotIn("interface preconfigure", converted)
             self.assertNotIn("interface PTP", converted)
+            self.assertNotIn("banner exec", converted)
+            self.assertNotIn("production warning", converted)
             self.assertNotIn("description RESERVED", converted)
             self.assertIn("ptp\n clock", converted)
             self.assertNotIn("ipv4 address 198.51.100.1/31", converted)
@@ -66,6 +72,10 @@ class ConversionTest(unittest.TestCase):
             ))
             self.assertFalse(any(
                 "PTP0/RP0/CPU0/0 类型无法识别" in warning
+                for warning in context.devices["R1"].warnings
+            ))
+            self.assertFalse(any(
+                "FutureBanner0" in warning
                 for warning in context.devices["R1"].warnings
             ))
             report = json.loads((output / "report.json").read_text(encoding="utf-8"))
@@ -83,6 +93,13 @@ class ConversionTest(unittest.TestCase):
                 and event["rule_id"] == "cisco.remove.ptp.interface"
                 for event in report["events"]
             ))
+            banner_event = next(
+                event
+                for event in report["events"]
+                if event.get("rule_id") == "cisco.remove.banner"
+            )
+            self.assertEqual(banner_event["point"], "pre_analysis")
+            self.assertEqual(banner_event["removed_by_type"], {"banner": 1})
             self.assertEqual(
                 report["summary"]["cleaning_rule_hits_by_category"]["ptp-interface"],
                 1,
@@ -126,7 +143,13 @@ class ConversionTest(unittest.TestCase):
             report = json.loads((output / "report.json").read_text(encoding="utf-8"))
             self.assertEqual(report["status"], "success")
             self.assertEqual(report["summary"]["skipped_links"], 1)
-            authentication = next(event for event in report["events"] if event["kind"] == "authentication")
+            authentication = next(
+                event
+                for event in report["events"]
+                if event.get("rule_id") == "cisco.replace.authentication"
+            )
+            self.assertEqual(authentication["point"], "post_rewrite")
+            self.assertEqual(authentication["added_by_type"], {"lab-account": 1})
             self.assertEqual(authentication["removed_by_type"]["taskgroup"], 1)
             self.assertEqual(authentication["removed_by_type"]["usergroup"], 1)
             self.assertEqual(authentication["removed_by_type"]["line-auth-reference"], 5)

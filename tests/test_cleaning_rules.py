@@ -5,9 +5,11 @@ from __future__ import annotations
 import unittest
 
 from config_adaptor.adaptation.cleaning_rules import (
-    _RULE_SOURCES,
-    _parse_rule,
-    load_rules,
+    AuthenticationCleaningRule,
+    CiscoBannerCleaningRule,
+    CleaningPoint,
+    CleaningRuleError,
+    CleaningRulesHandler,
 )
 from config_adaptor.cisco.document import CiscoDocument
 from config_adaptor.common.cleaning import matches_cleaning_path
@@ -73,12 +75,14 @@ class CleaningPathTest(unittest.TestCase):
 
 class CleaningRuleLoadingTest(unittest.TestCase):
     def test_default_rules_are_split_by_target_vendor(self):
-        (cisco_path, cisco_vendor), (juniper_path, juniper_vendor) = _RULE_SOURCES
+        (cisco_path, cisco_vendor), (juniper_path, juniper_vendor) = (
+            CleaningRulesHandler._RULE_SOURCES
+        )
         self.assertEqual(cisco_vendor.value, "cisco_iosxr")
         self.assertEqual(juniper_vendor.value, "juniper_junos")
         self.assertEqual(cisco_path.parts[-4:], ("cisco", "rules", "xrv9000", "cleaning.yaml"))
         self.assertEqual(juniper_path.parts[-4:], ("juniper", "rules", "vmx", "cleaning.yaml"))
-        rules = load_rules()
+        rules = CleaningRulesHandler._configured_rules()
         self.assertTrue(
             all(rule.vendor == "cisco_iosxr" for rule in rules if rule.rule_id.startswith("cisco."))
         )
@@ -87,13 +91,13 @@ class CleaningRuleLoadingTest(unittest.TestCase):
         )
 
     def test_default_rules_include_enabled_ptp_and_disabled_optional_rules(self):
-        rules = load_rules()
+        rules = CleaningRulesHandler._configured_rules()
         self.assertTrue(next(rule for rule in rules if rule.rule_id == "cisco.remove.ptp.interface").enable)
         self.assertFalse(next(rule for rule in rules if rule.rule_id == "cisco.remove.pki").enable)
         self.assertIn("juniper.remove.hardware", {rule.rule_id for rule in rules})
 
     def test_vendor_prefix_is_added_to_dotted_local_id(self):
-        rule = _parse_rule(
+        rule = CleaningRulesHandler._parse_rule(
             {
                 "id": "remove.phone.home",
                 "vendor": "juniper_junos",
@@ -110,7 +114,7 @@ class CleaningRuleLoadingTest(unittest.TestCase):
 
     def test_enable_and_path_are_required_and_validated(self):
         with self.assertRaisesRegex(ValueError, "enable 必须是布尔值"):
-            _parse_rule(
+            CleaningRulesHandler._parse_rule(
                 {
                     "id": "invalid",
                     "vendor": "cisco_iosxr",
@@ -122,6 +126,47 @@ class CleaningRuleLoadingTest(unittest.TestCase):
                 },
                 set(),
             )
+
+
+class ProgrammaticCleaningRuleTest(unittest.TestCase):
+    def test_banner_rule_deactivates_complete_ranges(self):
+        document = CiscoDocument(
+            "banner exec ^\n"
+            "interface FutureBanner0\n"
+            "= warning =\n"
+            "^\n"
+            "banner login ^C\n"
+            "second warning\n"
+            "^C\n"
+            "hostname XR\n"
+        )
+
+        rule = CiscoBannerCleaningRule()
+        result = rule.apply(document)
+
+        self.assertEqual(rule.point, CleaningPoint.PRE_ANALYSIS)
+        self.assertEqual(result.changed, 2)
+        self.assertEqual(result.removed_by_type, {"banner": 2})
+        self.assertEqual(document.render(), "hostname XR\n")
+
+    def test_banner_rule_rejects_missing_terminator(self):
+        document = CiscoDocument("banner exec ^\nunterminated\nhostname XR\n")
+        with self.assertRaisesRegex(CleaningRuleError, "缺少结束分隔符"):
+            CiscoBannerCleaningRule().apply(document)
+
+    def test_authentication_rule_uses_post_rewrite_point(self):
+        rule = AuthenticationCleaningRule(
+            rule_id="cisco.replace.authentication",
+            vendor="cisco_iosxr",
+        )
+        document = CiscoDocument("username old\n secret 0 old\n!\nend\n")
+
+        result = rule.apply(document)
+
+        self.assertEqual(rule.point, CleaningPoint.POST_REWRITE)
+        self.assertEqual(result.added_by_type, {"lab-account": 1})
+        self.assertNotIn("username old", document.render())
+        self.assertIn("username labadmin", document.render())
 
 
 if __name__ == "__main__":

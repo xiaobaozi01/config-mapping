@@ -5,7 +5,7 @@ from __future__ import annotations
 import unittest
 from pathlib import Path
 
-from config_adaptor.adaptation.cleaning_rules import load_rules
+from config_adaptor.adaptation.cleaning_rules import CleaningRulesHandler
 from config_adaptor.cisco.document import CiscoDocument
 from config_adaptor.common.interface import referenced_interface_names
 from config_adaptor.juniper.document import JunosDocument
@@ -53,7 +53,7 @@ class CiscoInterfaceBusinessTest(unittest.TestCase):
         ptp_block = document.root.children[2]
         self.assertEqual(document.interface_kind("PTP0/RP0/CPU0/0"), "virtual")
         rule = next(
-            item for item in load_rules()
+            item for item in CleaningRulesHandler._configured_rules()
             if item.rule_id == "cisco.remove.ptp.interface"
         )
         hits = document.apply_cleaning_rule(

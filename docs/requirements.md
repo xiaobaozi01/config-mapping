@@ -116,17 +116,19 @@
 转换核心使用责任链模式。配置 group 必须在接口分类前展开，处理顺序为：
 
 ```text
-TopologyPreflightHandler -> GroupExpansionHandler -> PreconfiguredInterfaceCleanupHandler
--> InterfaceClassificationHandler -> NNIHandler -> UNIHandler -> ReferenceRewriteHandler
--> CleaningRulesHandler -> AuthWashingHandler -> SimulationAdaptationHandler
+CleaningRulesHandler(pre_analysis) -> TopologyPreflightHandler -> GroupExpansionHandler
+-> PreconfiguredInterfaceCleanupHandler -> InterfaceClassificationHandler -> NNIHandler
+-> UNIHandler -> ReferenceRewriteHandler -> CleaningRulesHandler(post_rewrite)
+-> SimulationAdaptationHandler
 ```
 
 每个处理器只负责其领域的识别、映射、配置变更和报告，并将上下文传递给下一个处理器。后续处理器可插入链中而不修改已有处理器调用方式。
 
 - `TopologyPreflightHandler` 在配置改写前校验端点，标记无效或暂不支持的链路；跳过链路的本端接口仍以 `action=skip` 保留 NNI 角色，不得被 UNI 重新分类。
 - `InterfaceClassificationHandler` 只允许厂商白名单中的物理接口参与物理端口映射；未识别接口保留原配置并告警，若被链接表用作端点则转换失败。
-- `CleaningRulesHandler` 在接口及引用迁移完成后执行所有 `enable: true` 的声明式规则。
-- `AuthWashingHandler` 只负责强制管理面认证清理和实验账号写入；两步视为同一原子阶段。
+- `CleaningRulesHandler` 只在 `pre_analysis`、`post_rewrite` 两个固定执行点运行。
+- YAML 规则固定在 `post_rewrite` 执行；复杂规则通过统一接口声明执行点。
+- banner 在 `pre_analysis` 整段停用；认证替换在 `post_rewrite` 的 YAML 规则之后，原子地清理旧认证并写入实验账号。
 
 ### 4.8 模拟参数适配
 

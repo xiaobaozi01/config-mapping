@@ -11,6 +11,8 @@ identity 规则按 `interfaces.yaml`、`routing.yaml`、`policy.yaml` 和 `syste
 
 同目录下的 `cleaning.yaml` 是配置清洗规则，由 `CleaningRulesHandler` 单独加载，不属于 identity 规则，也不加入 `manifest.yaml.rule_files`。
 
+需要跨节点扫描、条件判断或创建配置树的复杂清洗规则实现 `ExecutableCleaningRule`，并在 `adaptation/cleaning_rules.py` 的内置注册表中显式注册；YAML 规则固定在 `post_rewrite` 执行。
+
 ## 完整示例
 
 Junos 物理接口可以同时配置 up/down hold time：

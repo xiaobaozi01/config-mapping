@@ -17,7 +17,8 @@ group 展开是事务式的，并遵循显式配置、嵌套层级和 group 列�
 - `adaptation/interfaces.py`：接口分类及最终引用改写。
 - `adaptation/nni.py`：NNI 聚合规划、M-LAG 边界、端口分配和配置迁移。
 - `adaptation/uni.py`：UNI 候选识别、VLAN 分配和 QinQ 汇聚。
-- `adaptation/washing.py`、`adaptation/simulation.py`：清洗与模拟适配的业务调度。
+- `adaptation/cleaning_rules.py`：声明式与代码型清洗规则、内置注册表及固定执行点调度。
+- `adaptation/simulation.py`：模拟参数适配调度。
 - `adaptation/pipeline.py`：显式组合转换阶段，并在首次错误后停止。
 - `adaptation/service.py`：组织输入加载、完整转换和最终输出。
 
@@ -59,7 +60,7 @@ config-adaptor convert \
 
 每个镜像 Profile 的 `simulation_adaptation.mode` 支持 `off`、`compatible` 和 `stable`。默认 `stable` 仅保证已映射数据口启用、删除这些目标口上的物理硬件属性，并将配置中已经存在且低于安全下限的 BFD interval/multiplier 调高；不会自动开启 BFD，也不会修改 OSPF、IS-IS 或 BGP 的业务定时器。全部修改写入 `report.json` 的 `simulation-adaptation` 事件。旧 `param_adjustment` YAML 节点仍兼容读取，但不能与新节点同时配置。
 
-管理账号、AAA/TACACS/RADIUS、SSH/Telnet 网络管理服务、SSH 信任、SNMP 以及聚合扁平化后的 LACP/门限属性始终清理。PTP、协议认证、PKI、硬件、NAT、流量统计和镜像扩展规则统一由 `CleaningRulesHandler` 执行；每条规则用 `enable` 独立控制，命中结果按 `category` 写入报告。协议认证等可能改变业务能力的规则默认关闭。
+管理账号、AAA/TACACS/RADIUS、SSH/Telnet 网络管理服务、SSH 信任、SNMP 以及聚合扁平化后的 LACP/门限属性始终清理。简单清洗由 YAML 描述，banner、认证替换等复杂清洗由代码规则实现，两类规则统一由 `CleaningRulesHandler` 在固定执行点调度并按 `category` 报告。协议认证等可能改变业务能力的 YAML 规则默认关闭。
 
 group 统一采用全量处理：静态展开并校验所有活动的 group 引用及其依赖，成功后移除 group 定义和控制语句。未被活动配置引用的模板不参与求值；缺失引用、循环依赖或无法安全静态解释的活动 group 会使转换整体回滚。Junos 中所有 `inactive:` 节点及其完整子树都会删除；重复的顶层 `groups {}` 容器及同名定义会先合并再求值。
 
@@ -77,7 +78,7 @@ PYTHONPATH=src python3 -m config_adaptor convert --topology topology.xlsx --conf
 
 固定实验账号为 `labadmin / Gns3Lab@2026`，仅用于隔离的 GNS3 实验环境。
 
-IOS XR 认证清洗同时删除自定义 `usergroup`、`taskgroup` 以及 `line` 下对旧认证、授权、计费和用户组的引用；`exec-timeout` 等非认证终端参数保留。删除结果按类别写入 `report.json` 认证事件的 `removed_by_type`。
+IOS XR 认证清洗同时删除自定义 `usergroup`、`taskgroup` 以及 `line` 下对旧认证、授权、计费和用户组的引用；`exec-timeout` 等非认证终端参数保留。删除结果写入 `cisco.replace.authentication` 清洗事件的 `removed_by_type`。
 
 XRv9000 7.11.1 的默认适配会识别 IOS XR `interface preconfigure`，并在接口分类前通过 `active=False` 忽略这些尚未实例化的接口候选配置。默认启用的 `cisco.remove.ptp.interface` 规则会在接口迁移和引用改写完成后停用实验不需要的 `interface PTP...` 虚拟接口块。
 

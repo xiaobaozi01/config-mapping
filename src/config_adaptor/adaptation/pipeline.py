@@ -5,7 +5,7 @@ from __future__ import annotations
 from collections.abc import Iterable
 from typing import Protocol
 
-from .cleaning_rules import CleaningRulesHandler, load_rules
+from .cleaning_rules import CleaningPoint, CleaningRulesHandler
 from .groups import GroupExpansionHandler
 from .interfaces import (
     InterfaceClassificationHandler,
@@ -17,7 +17,6 @@ from .nni import NNIHandler
 from .simulation import SimulationAdaptationHandler
 from .topology import TopologyPreflightHandler
 from .uni import UNIHandler
-from .washing import AuthWashingHandler
 
 
 class ConversionStage(Protocol):
@@ -53,13 +52,13 @@ class ConversionPipeline:
 def build_default_pipeline() -> ConversionPipeline:
     """按依赖顺序组装一次完整配置转换所需的默认处理器流水线。
 
-    顺序体现数据依赖：先预检、展开继承配置并忽略未实例化接口，再分类和迁移
-    NNI/UNI，随后改写外部引用，再统一执行声明式清洗规则、认证替换和模拟适配。
-    流水线会在首次错误后停止，因此集中定义顺序可以防止调用方漏掉阶段，或在前置
-    校验失败后继续产生部分输出。
+    顺序体现数据依赖：先执行分析前代码规则，再预检、展开继承配置并忽略未实例化
+    接口，然后分类和迁移 NNI/UNI、改写外部引用；普通 YAML 清洗和认证替换在同一
+    清洗阶段依次执行，最后进行模拟适配。流水线会在首次错误后停止。
     """
     return ConversionPipeline(
         [
+            CleaningRulesHandler(CleaningPoint.PRE_ANALYSIS),
             TopologyPreflightHandler(),
             GroupExpansionHandler(),
             PreconfiguredInterfaceCleanupHandler(),
@@ -67,8 +66,7 @@ def build_default_pipeline() -> ConversionPipeline:
             NNIHandler(),
             UNIHandler(),
             ReferenceRewriteHandler(),
-            CleaningRulesHandler(load_rules()),
-            AuthWashingHandler(),
+            CleaningRulesHandler(CleaningPoint.POST_REWRITE),
             SimulationAdaptationHandler(),
         ]
     )
