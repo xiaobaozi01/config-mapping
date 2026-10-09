@@ -96,10 +96,10 @@ class CleaningRuleLoadingTest(unittest.TestCase):
         self.assertFalse(next(rule for rule in rules if rule.rule_id == "cisco.remove.pki").enable)
         self.assertIn("juniper.remove.hardware", {rule.rule_id for rule in rules})
 
-    def test_vendor_prefix_is_added_to_dotted_local_id(self):
+    def test_vendor_prefix_is_added_to_local_id_with_supported_separators(self):
         rule = CleaningRulesHandler._parse_rule(
             {
-                "id": "remove.phone.home",
+                "id": "remove_phone-home.rule_2-test",
                 "vendor": "juniper_junos",
                 "enable": True,
                 "category": "phone-home",
@@ -110,7 +110,7 @@ class CleaningRuleLoadingTest(unittest.TestCase):
             },
             set(),
         )
-        self.assertEqual(rule.rule_id, "juniper.remove.phone.home")
+        self.assertEqual(rule.rule_id, "juniper.remove_phone-home.rule_2-test")
 
     def test_enable_and_path_are_required_and_validated(self):
         with self.assertRaisesRegex(ValueError, "enable 必须是布尔值"):
@@ -137,7 +137,7 @@ class ProgrammaticCleaningRuleTest(unittest.TestCase):
             "^\n"
             "banner login ^C\n"
             "second warning\n"
-            "^C\n"
+            "^C trailing text\n"
             "hostname XR\n"
         )
 

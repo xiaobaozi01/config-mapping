@@ -705,6 +705,8 @@ interfaces {
 
 清洗规则分为两类：简单规则按厂商位于目标镜像目录的 `cleaning.yaml`，复杂规则实现 `ExecutableCleaningRule` 并在 `cleaning_rules.py` 的内置注册表中注册。两类规则由同一 Handler 执行，不通过 CLI 接收外部规则。YAML 规则通过 `enable` 控制并固定在 `post_rewrite`；代码规则声明 `pre_analysis` 或 `post_rewrite`。所有命中均通过 `category` 汇总报告。
 
+YAML 规则的本地 `id` 使用点号划分命名层级，每一段可由小写字母、数字、下划线和中划线组成；加载后系统自动添加 `cisco.` 或 `juniper.` 前缀。
+
 规则在接口迁移和引用改写之后运行，支持：
 
 | 动作 | 语义 |

@@ -202,7 +202,7 @@ class CiscoBannerCleaningRule:
                     candidate_index
                     for candidate_index in range(index + 1, len(nodes))
                     if nodes[candidate_index].active
-                    and nodes[candidate_index].header.strip() == delimiter
+                    and nodes[candidate_index].header.strip().startswith(delimiter)
                 ),
                 None,
             )
@@ -276,7 +276,8 @@ class CleaningRulesHandler:
     }
     # 声明式规则仅开放厂商文档已经实现且可统一审计的动作。
     _ACTIONS = {"delete", "replace", "mask", "warn"}
-    _LOCAL_ID_PATTERN = re.compile(r"^[a-z0-9]+(?:\.[a-z0-9]+)*$")
+    # 点号分隔命名层级；每段允许小写字母、数字、下划线和中划线。
+    _LOCAL_ID_PATTERN = re.compile(r"^[a-z0-9_-]+(?:\.[a-z0-9_-]+)*$")
 
     def __init__(self, point: CleaningPoint):
         """绑定一个固定执行点，并创建该处理器使用的默认规则列表。
@@ -382,7 +383,7 @@ class CleaningRulesHandler:
             raise ValueError(f"清洗规则 {local_id} 使用不支持的厂商: {vendor}")
         if not cls._LOCAL_ID_PATTERN.fullmatch(local_id):
             raise ValueError(
-                f"清洗规则 {local_id} 的 id 必须由小写字母、数字和点号组成"
+                f"清洗规则 {local_id} 的 id 必须由小写字母、数字、点号、下划线和中划线组成"
             )
         rule_id = f"{cls._VENDOR_PREFIX[vendor]}.{local_id}"
         if rule_id in seen:
