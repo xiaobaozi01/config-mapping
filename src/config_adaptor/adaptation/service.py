@@ -6,7 +6,6 @@ import json
 import re
 from pathlib import Path
 
-from ..common.lab_account import LAB_PASSWORD, LAB_USERNAME
 from .factory import parse_document
 from .input_normalization import normalize_input
 from .models import ConversionContext, DeviceContext, Vendor
@@ -262,11 +261,9 @@ def write_outputs(context: ConversionContext, output_dir: Path) -> None:
         output_dir / "topology-adapted.xlsx",
         config_files=adapted_config_files,
     )
-    readme = f"""GNS3 配置自适应输出
+    readme = """GNS3 配置自适应输出
 
-固定实验账号（仅限隔离实验环境）：
-  用户名：{LAB_USERNAME}
-  密码：{LAB_PASSWORD}
+输出配置不自动创建管理账号，请按目标镜像要求另行准备登录方式。
 
 文件说明：
   topology-adapted.xlsx     已更新接口并移除冗余聚合成员的拓扑

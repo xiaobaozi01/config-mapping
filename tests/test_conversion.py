@@ -124,8 +124,6 @@ class ConversionTest(unittest.TestCase):
             self.assertNotIn("accounting commands OLD-ACCT", converted)
             self.assertNotIn("users group OLD-USERS", converted)
             self.assertNotIn("ACCESS-UNI", converted)
-            self.assertIn("username labadmin", converted)
-            self.assertIn("group root-system", converted)
             self.assertIn("line template vty", converted)
             self.assertIn("exec-timeout 10 0", converted)
             self.assertIn("interface GigabitEthernet0/0/0/0", converted)
@@ -133,8 +131,6 @@ class ConversionTest(unittest.TestCase):
             self.assertIn("encapsulation dot1q 2 second-dot1q 2", converted)
             self.assertNotIn("UNUSED-BARE-PORT", converted)
             self.assertIn("interface Loopback0", converted)
-            self.assertLess(converted.index("username labadmin"), converted.index("end"))
-
             adapted = load_workbook(output / "topology-adapted.xlsx")
             adapted_links = adapted["链接表"]
             self.assertEqual(adapted_links.max_row, 2)
@@ -146,10 +142,10 @@ class ConversionTest(unittest.TestCase):
             authentication = next(
                 event
                 for event in report["events"]
-                if event.get("rule_id") == "cisco.replace.authentication"
+                if event.get("rule_id") == "cisco.remove.authentication"
             )
             self.assertEqual(authentication["point"], "post_rewrite")
-            self.assertEqual(authentication["added_by_type"], {"lab-account": 1})
+            self.assertEqual(authentication["action"], "delete")
             self.assertEqual(authentication["removed_by_type"]["taskgroup"], 1)
             self.assertEqual(authentication["removed_by_type"]["usergroup"], 1)
             self.assertEqual(authentication["removed_by_type"]["line-auth-reference"], 5)
@@ -253,7 +249,6 @@ class ConversionTest(unittest.TestCase):
             self.assertNotIn("old-user", converted)
             self.assertNotIn("radius-server", converted)
             self.assertNotIn("ACCESS-UNI", converted)
-            self.assertIn("user labadmin", converted)
             self.assertIn("ge-0/0/0.0", converted)
             self.assertIn("ge-0/0/7", converted)
             self.assertIn("unit 100", converted)

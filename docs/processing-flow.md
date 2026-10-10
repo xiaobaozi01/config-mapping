@@ -66,7 +66,7 @@ output/
 - `configs/*.cfg`：适配后的设备配置。
 - `interface-mapping.json`：源接口到目标接口的结构化映射。
 - `report.json`：错误、告警、Group 冲突、清洗和转换事件。
-- `README.txt`：实验账号和输出文件说明。
+- `README.txt`：输出文件说明和登录方式提示。
 
 ## 3. 总体处理流程
 
@@ -91,7 +91,7 @@ output/
         ↓
 更新协议和策略中的接口引用
         ↓
-执行 post_rewrite YAML 清洗和认证替换
+执行 post_rewrite YAML 清洗和管理认证清理
         ↓
 按镜像 Profile 适配模拟参数
         ↓
@@ -134,7 +134,7 @@ NNI 中的聚合链路识别先由纯函数 `plan_nni_components()` 生成不可
 
 `interface preconfigure` 表示源设备硬件尚未插入时保存的物理接口候选配置。系统按“当前设备已经实例化并生效的配置”生成 GNS3 实验，因此 Group 展开后，`PreconfiguredInterfaceCleanupHandler` 在接口分类前通过 `active=False` 忽略整个候选块。预配置接口不会进入 NNI/UNI、接口引用改写或目标端口分配，输出中也不会出现 `interface preconfigure`。
 
-`CleaningRulesHandler` 在两个固定点运行。`pre_analysis` 的 `cisco.remove.banner` 在任何业务分析前按分隔符停用完整 exec/login banner；`post_rewrite` 先执行两家目标镜像目录下 `cleaning.yaml` 中 `enable: true` 的规则，再原子执行管理认证替换。默认启用的 `cisco.remove.ptp.interface` 只将 `interface PTP...` 虚拟接口块标记为非活动；全局 `ptp`、普通数据口下的 `ptp` 及频率同步配置不命中该规则。
+`CleaningRulesHandler` 在两个固定点运行。`pre_analysis` 的 `cisco.remove.banner` 在任何业务分析前按分隔符停用完整 exec/login banner；`post_rewrite` 先执行两家目标镜像目录下 `cleaning.yaml` 中 `enable: true` 的规则，再清理生产管理认证配置，不创建替代账号。默认启用的 `cisco.remove.ptp.interface` 只将 `interface PTP...` 虚拟接口块标记为非活动；全局 `ptp`、普通数据口下的 `ptp` 及频率同步配置不命中该规则。
 
 ## 4. 输入准备
 
@@ -231,7 +231,7 @@ NNI 阶段还负责确定：
 Group → NNI → UNI
 ```
 
-完整责任链还会在它们之前执行拓扑预检，并在之后执行引用更新、统一规则清洗、认证替换和模拟参数适配。
+完整责任链还会在它们之前执行拓扑预检，并在之后执行引用更新、统一规则清洗、管理认证清理和模拟参数适配。
 
 如果未来需要交换 NNI/UNI 执行顺序，必须先增加独立的“接口分析与规划阶段”，一次性计算完整 NNI 闭包、UNI 集合和目标端口，不能简单交换两个处理器。
 
@@ -564,15 +564,7 @@ session-timeout
 transport
 ```
 
-最后添加实验账号：
-
-```text
-username labadmin
- secret 0 Gns3Lab@2026
- group root-system
-```
-
-`root-system` 是 IOS XR 内置权限组，不需要重新创建 taskgroup 或 usergroup。
+转换不自动添加实验账号；导入后需按目标镜像要求另行准备登录方式。
 
 Bundle/聚合 UNI 扁平化到普通物理口时，`bundle minimum-active links/bandwidth`、LACP 和其他聚合专属属性由 NNI/UNI 阶段清理，不进入认证处理器。
 
@@ -809,25 +801,7 @@ accounting
 - 用户密码和 SSH key。
 - allow/deny commands 权限限制。
 
-随后重新生成：
-
-```text
-system {
-    root-authentication encrypted-password "...";
-    login {
-        user labadmin {
-            class super-user;
-            authentication {
-                encrypted-password "...";
-            }
-        }
-    }
-}
-```
-
-- `super-user` 是 Junos 内置 class。
-- 密码使用 SHA-512 crypt 哈希。
-- root authentication 用于保证配置可以正常提交。
+转换不重新生成 `system login` 或 `root-authentication`；导入前需确认目标镜像的登录与配置提交方式。
 
 ### 8.6 统一配置清洗规则
 
@@ -922,7 +896,7 @@ Junos 会跳过 `interfaces` 定义本身，只递归更新其他层级中的引
 
 ## 10. 统一清洗规则
 
-`CleaningRulesHandler` 同时执行 YAML 规则和实现 `ExecutableCleaningRule` 的代码规则。YAML 规则固定在 `post_rewrite`，代码规则只能选择 `pre_analysis` 或 `post_rewrite`；同一执行点按内置注册顺序运行，因此认证替换晚于 YAML 清洗：
+`CleaningRulesHandler` 同时执行 YAML 规则和实现 `ExecutableCleaningRule` 的代码规则。YAML 规则固定在 `post_rewrite`，代码规则只能选择 `pre_analysis` 或 `post_rewrite`；同一执行点按内置注册顺序运行，因此管理认证清理晚于 YAML 清洗：
 
 ```text
 delete  → 删除匹配配置

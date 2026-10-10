@@ -28,7 +28,7 @@ class CleaningPoint(StrEnum):
 
     # 解析已完成，但拓扑、Group 和接口业务分析尚未开始。
     PRE_ANALYSIS = "pre_analysis"
-    # 接口迁移及引用改写已完成；依次执行 YAML 清洗和认证替换。
+    # 接口迁移及引用改写已完成；依次执行 YAML 清洗和管理认证清理。
     POST_REWRITE = "post_rewrite"
 
 
@@ -44,7 +44,7 @@ class CleaningResult:
     changed: int = 0
     # 按删除对象类型统计数量，例如 username、snmp 或 banner。
     removed_by_type: dict[str, int] = field(default_factory=dict)
-    # 按新增对象类型统计数量，例如统一实验账号。
+    # 按新增对象类型统计数量，供需要创建节点的代码规则使用。
     added_by_type: dict[str, int] = field(default_factory=dict)
 
 
@@ -224,35 +224,26 @@ class CiscoBannerCleaningRule:
 
 @dataclass(slots=True, frozen=True)
 class AuthenticationCleaningRule:
-    """原子地删除生产认证配置并创建厂商对应的实验账号。
-
-    认证替换包含删除和新增两种动作，无法用单条节点正则安全表达；把两步保留在同一
-    代码规则中，可避免输出只删除旧账号却没有建立实验登录入口的中间状态。
-    """
+    """按厂商配置树删除生产环境的管理认证和远程管理配置。"""
 
     rule_id: str
     vendor: str
     category: str = "authentication"
-    action: str = "transform"
-    reason: str = "替换生产认证并创建统一实验账号"
+    action: str = "delete"
+    reason: str = "删除生产环境的管理认证和远程管理配置"
     point: CleaningPoint = CleaningPoint.POST_REWRITE
 
     @property
     def enabled(self) -> bool:
-        """始终执行认证替换，这是实验配置可接管性的固定要求。"""
+        """始终清理生产环境的管理认证配置。"""
         return True
 
     def apply(self, document: VendorConfiguration) -> CleaningResult:
-        """调用厂商能力清除管理认证，并立即写入统一实验账号。
-
-        返回值只包含删除类别和新增账号数量，用于审计范围而不泄露原密码或密钥。
-        """
+        """只清除管理认证，并按类别统计删除量，不记录秘密值。"""
         cleanup = document.clean_management_access()
-        document.add_lab_account()
         return CleaningResult(
-            changed=cleanup.total + 1,
+            changed=cleanup.total,
             removed_by_type=dict(cleanup.removed),
-            added_by_type={"lab-account": 1},
         )
 
 
@@ -478,13 +469,13 @@ class CleaningRulesHandler:
         rules.append(CiscoBannerCleaningRule())
         rules.append(
             AuthenticationCleaningRule(
-                rule_id="cisco.replace.authentication",
+                rule_id="cisco.remove.authentication",
                 vendor=Vendor.CISCO_IOSXR.value,
             )
         )
         rules.append(
             AuthenticationCleaningRule(
-                rule_id="juniper.replace.authentication",
+                rule_id="juniper.remove.authentication",
                 vendor=Vendor.JUNIPER_JUNOS.value,
             )
         )

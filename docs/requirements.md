@@ -82,15 +82,10 @@
 
 ### 4.4 认证清洗
 
-系统删除原配置中的本地账号、TACACS+、RADIUS、外部 AAA、SSH/Telnet 网络管理服务、SSH 信任和 SNMP 信息，并生成固定实验账号：
+系统删除原配置中的本地账号、TACACS+、RADIUS、外部 AAA、SSH/Telnet 网络管理服务、SSH 信任和 SNMP 信息，不自动创建替代账号。导入后需按目标镜像要求另行准备登录方式。
 
-```text
-用户名：labadmin
-密码：Gns3Lab@2026
-```
-
-- IOS XR 删除自定义 `usergroup`、`taskgroup`、`snmp-server`、SSH/Telnet server/client，以及 `line` 配置中对旧密码、认证方法、授权方法、计费方法和用户组的引用；保留与认证无关的 console 参数。新用户直接加入内置 `root-system`。
-- Junos 删除原 `system login`、RADIUS/TACACS server/options、accounting、`system services` 下的 SSH/Telnet、`security ssh-known-hosts` 和顶层 `snmp`。新用户使用内置 `super-user`，输出配置使用密码哈希；同时配置 root authentication 以保证配置可提交。
+- IOS XR 删除自定义 `usergroup`、`taskgroup`、`snmp-server`、SSH/Telnet server/client，以及 `line` 配置中对旧密码、认证方法、授权方法、计费方法和用户组的引用；保留与认证无关的 console 参数。
+- Junos 删除原 `system login`、`root-authentication`、RADIUS/TACACS server/options、accounting、`system services` 下的 SSH/Telnet、`security ssh-known-hosts` 和顶层 `snmp`。
 - `report.json` 按账号、AAA、TACACS、RADIUS、usergroup、taskgroup 和 line 引用等类别记录删除数量。
 - 转换报告不得回显被删除的秘密值。
 
@@ -128,7 +123,7 @@ CleaningRulesHandler(pre_analysis) -> TopologyPreflightHandler -> GroupExpansion
 - `InterfaceClassificationHandler` 只允许厂商白名单中的物理接口参与物理端口映射；未识别接口保留原配置并告警，若被链接表用作端点则转换失败。
 - `CleaningRulesHandler` 只在 `pre_analysis`、`post_rewrite` 两个固定执行点运行。
 - YAML 规则固定在 `post_rewrite` 执行；复杂规则通过统一接口声明执行点。
-- banner 在 `pre_analysis` 整段停用；认证替换在 `post_rewrite` 的 YAML 规则之后，原子地清理旧认证并写入实验账号。
+- banner 在 `pre_analysis` 整段停用；管理认证清理在 `post_rewrite` 的 YAML 规则之后执行。
 
 ### 4.8 模拟参数适配
 
@@ -181,7 +176,7 @@ CleaningRulesHandler(pre_analysis) -> TopologyPreflightHandler -> GroupExpansion
 - `configs/<设备名>.cfg`：转换后的设备配置。
 - `interface-mapping.json`：完整接口映射。
 - `report.json`：错误、警告、删除和处理摘要。
-- `README.txt`：导入说明和固定实验账号。
+- `README.txt`：导入说明和登录方式提示。
 
 涉及华为的设备及其链路不转换，并在报告中标记为跳过。
 

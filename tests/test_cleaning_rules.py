@@ -156,17 +156,20 @@ class ProgrammaticCleaningRuleTest(unittest.TestCase):
 
     def test_authentication_rule_uses_post_rewrite_point(self):
         rule = AuthenticationCleaningRule(
-            rule_id="cisco.replace.authentication",
+            rule_id="cisco.remove.authentication",
             vendor="cisco_iosxr",
         )
-        document = CiscoDocument("username old\n secret 0 old\n!\nend\n")
+        document = CiscoDocument("hostname XR\nusername old\n secret 0 old\n!\nend\n")
 
         result = rule.apply(document)
 
         self.assertEqual(rule.point, CleaningPoint.POST_REWRITE)
-        self.assertEqual(result.added_by_type, {"lab-account": 1})
+        self.assertEqual(rule.action, "delete")
+        self.assertEqual(result.changed, 1)
+        self.assertEqual(result.removed_by_type, {"username": 1})
         self.assertNotIn("username old", document.render())
-        self.assertIn("username labadmin", document.render())
+        self.assertIn("hostname XR", document.render())
+        self.assertIn("end", document.render())
 
 
 if __name__ == "__main__":
