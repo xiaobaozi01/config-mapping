@@ -5,6 +5,7 @@ from __future__ import annotations
 import unittest
 from pathlib import Path
 
+from config_adaptor.common.policies import WashingPolicy
 from config_adaptor.juniper.document import JunosDocument
 
 
@@ -18,6 +19,80 @@ def group_config(name: str) -> str:
 
 class JunosGroupExpansionTest(unittest.TestCase):
     """覆盖 Junos group 的静态展开、冲突与失败回滚。"""
+
+    def test_vmx_prunes_re1_before_expanding_other_groups(self):
+        document = JunosDocument(
+            "groups { re0 { system { host-name primary; } } "
+            "re1 { system { host-name standby; } } "
+            "re10 { system { domain-name example.net; } } }\n"
+            "apply-groups [ re0 re1 re10 ];\n"
+        )
+
+        outcome = document.expand_groups([])
+        rendered = document.render()
+
+        self.assertTrue(outcome.success)
+        self.assertIn("host-name primary;", rendered)
+        self.assertIn("domain-name example.net;", rendered)
+        self.assertNotIn("host-name standby;", rendered)
+        self.assertNotIn("re1", rendered)
+        self.assertIn("已裁剪 Junos 配置组 re1 及其引用", outcome.events)
+
+    def test_vmx_prunes_re1_only_and_nested_references(self):
+        document = JunosDocument(
+            "groups { re0 { system { host-name primary; apply-groups re1; } } "
+            "re1 { system { host-name standby; } } }\n"
+            "system { apply-groups-except re1; }\n"
+            "apply-groups re0;\n"
+        )
+
+        outcome = document.expand_groups([])
+
+        self.assertTrue(outcome.success)
+        self.assertIn("host-name primary;", document.render())
+        self.assertNotIn("standby", document.render())
+        self.assertNotIn("apply-groups", document.render())
+        self.assertNotIn("re1", document.render())
+
+        only_re1 = JunosDocument(
+            "groups { re1 { system { host-name standby; } } }\n"
+            "apply-groups re1;\n"
+        )
+        self.assertTrue(only_re1.expand_groups([]).success)
+        self.assertEqual(only_re1.render().strip(), "")
+
+        unused_re1 = JunosDocument(
+            "groups { re1 { system { host-name standby; } } }\n"
+        )
+        self.assertTrue(unused_re1.expand_groups([]).success)
+        self.assertEqual(unused_re1.render().strip(), "")
+
+    def test_vmx_re1_pruning_rolls_back_if_other_group_is_invalid(self):
+        source = (
+            "groups { re1 { system { host-name standby; } } }\n"
+            "apply-groups [ re1 MISSING ];\n"
+        )
+        document = JunosDocument(source)
+        original_rendered = document.render()
+
+        outcome = document.expand_groups([])
+
+        self.assertFalse(outcome.success)
+        self.assertEqual(document.render(), original_rendered)
+        self.assertNotIn("已裁剪 Junos 配置组 re1 及其引用", outcome.events)
+
+    def test_junos_re1_pruning_can_be_disabled_by_policy(self):
+        document = JunosDocument(
+            "groups { re1 { system { host-name standby; } } }\n"
+            "apply-groups re1;\n"
+        )
+
+        outcome = document.expand_groups(
+            [], policy=WashingPolicy(junos_excluded_groups=())
+        )
+
+        self.assertTrue(outcome.success)
+        self.assertIn("host-name standby;", document.render())
 
     def test_junos_wildcard_group_expansion(self):
         document = JunosDocument(group_config("junos_group_wildcard.cfg"))

@@ -21,6 +21,7 @@ ParamAdjustmentPolicy = SimulationAdaptationPolicy
 
 @dataclass(slots=True, frozen=True)
 class WashingPolicy:
-    """Group 未知语义处理策略。"""
+    """Group 未知语义及目标镜像不支持的 Junos group 处理策略。"""
 
     group_unknown_identity: str = "warn"
+    junos_excluded_groups: tuple[str, ...] = ("re1",)

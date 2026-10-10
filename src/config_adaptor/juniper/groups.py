@@ -63,6 +63,7 @@ class _PreparedExpansion:
     working_root: JunosNode
     state: _ExpansionState
     preprocessing_changed: bool
+    pruned_group_names: tuple[str, ...]
 
 
 _ResolvedStatement = tuple[JunosNode, SemanticDecision]
@@ -607,6 +608,7 @@ class JunosGroupExpander:
         if not root_group_names:
             if prepared.preprocessing_changed:
                 self.root = working_root
+            self._record_pruned_groups(outcome, prepared.pruned_group_names)
             return outcome
 
         # 在改写工作树前先校验整个依赖闭包，循环或缺失定义都整体回滚。
@@ -635,7 +637,9 @@ class JunosGroupExpander:
         if not state.encountered_group_names:
             return outcome
 
-        return self._commit_expansion(working_root, state)
+        result = self._commit_expansion(working_root, state)
+        self._record_pruned_groups(result, prepared.pruned_group_names)
+        return result
 
     def _prepare_expansion(
         self,
@@ -654,6 +658,9 @@ class JunosGroupExpander:
             "Junos 工作树根节点必须可包含子节点",
         )
         removed_inactive = self._remove_inactive_nodes(working_root)
+        pruned_group_names = self._prune_excluded_groups(
+            working_root, set(washing_policy.junos_excluded_groups)
+        )
         groups_container, group_definitions, normalized_groups = (
             self._normalize_group_containers(working_root)
         )
@@ -670,8 +677,76 @@ class JunosGroupExpander:
         return _PreparedExpansion(
             working_root=working_root,
             state=state,
-            preprocessing_changed=removed_inactive or normalized_groups,
+            preprocessing_changed=(
+                bool(pruned_group_names) or removed_inactive or normalized_groups
+            ),
+            pruned_group_names=tuple(sorted(pruned_group_names)),
         )
+
+    @staticmethod
+    def _record_pruned_groups(
+        outcome: GroupExpansionOutcome,
+        group_names: tuple[str, ...],
+    ) -> None:
+        """只在工作树成功提交后报告 group 裁剪，避免回滚时误报。"""
+        outcome.events.extend(
+            f"已裁剪 Junos 配置组 {name} 及其引用" for name in group_names
+        )
+
+    def _prune_excluded_groups(
+        self,
+        root_node: JunosNode,
+        excluded_names: set[str],
+    ) -> set[str]:
+        """做什么：在工作树中按完整名称停用指定 group 定义，并从所有活动的
+        apply-groups 和 apply-groups-except 语句中移除对应名称；列表为空时
+        停用整条语句，最后返回实际裁剪的 group 名称。
+
+        为什么：单 RE 镜像不应继承 re1 的配置；若只删除定义，剩余引用会在后续
+        依赖校验时报未定义。建立索引前同步裁剪定义和引用，才能阻止其内容展开，
+        并使这次修改随 group 展开的工作树一起提交或回滚。
+        """
+        if not excluded_names:
+            return set()
+
+        pruned_names: set[str] = set()
+        for container in self._group_containers(root_node):
+            for definition in container.children or []:
+                if not definition.effective or not definition.is_block:
+                    continue
+                name = self._group_definition_name(definition.header)
+                if name in excluded_names:
+                    definition.active = False
+                    pruned_names.add(name)
+            if not any(child.active for child in container.children or []):
+                container.active = False
+
+        def walk(node: JunosNode) -> None:
+            if not node.effective:
+                return
+            if node.is_block:
+                for child in node.children or []:
+                    walk(child)
+                return
+            for keyword in ("apply-groups", "apply-groups-except"):
+                names = self._parse_group_names(node.header, keyword)
+                removed = excluded_names.intersection(names)
+                if not removed:
+                    continue
+                rewritten = self._rewrite_group_control(
+                    node.header,
+                    keyword,
+                    [name for name in names if name not in excluded_names],
+                )
+                if rewritten is None:
+                    node.active = False
+                else:
+                    node.header = rewritten
+                pruned_names.update(removed)
+                break
+
+        walk(root_node)
+        return pruned_names
 
     def _validate_root_exclusions(
         self,
