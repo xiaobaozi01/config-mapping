@@ -417,6 +417,17 @@ class NNIHandler:
                     {item.target for item in plans_by_logical[logical]}
                 )
                 is_bundle = logical in plan.bundles
+                # 计算M-LAG的所有目标口（用于元数据）
+                mlag_peers = (
+                    sorted({item.target for item in plans_by_logical[logical]})
+                    if split_count > 1
+                    else []
+                )
+                mlag_group_id = (
+                    f"{logical}:mlag-{'-'.join(sorted(mlag_peers))}"
+                    if split_count > 1
+                    else None
+                )
                 # 父口和子接口都需审计；suffix 保留原有子接口编号。
                 for source_name in logical_names:
                     suffix = source_name[len(logical) :]
@@ -439,6 +450,9 @@ class NNIHandler:
                                 if is_bundle
                                 else "NNI 物理接口映射"
                             ),
+                            is_mlag_clone=split_count > 1,
+                            mlag_group_id=mlag_group_id,
+                            mlag_peers=mlag_peers,
                         )
                     )
                 if logical not in logical_names:
@@ -455,6 +469,9 @@ class NNIHandler:
                             target_interface=plan.target,
                             link_rows=plan.link_rows,
                             reason="NNI 父接口引用映射",
+                            is_mlag_clone=split_count > 1,
+                            mlag_group_id=mlag_group_id,
+                            mlag_peers=mlag_peers,
                         )
                     )
         return staged_targets

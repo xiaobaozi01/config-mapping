@@ -86,6 +86,10 @@ class InterfaceMapping:
     target_interface: str | None
     link_rows: list[int] = field(default_factory=list)
     reason: str = ""
+    # M-LAG 克隆关系元数据
+    is_mlag_clone: bool = False
+    mlag_group_id: str | None = None
+    mlag_peers: list[str] = field(default_factory=list)
 
     def to_dict(self) -> dict[str, Any]:
         """转换成可直接写入 JSON 的字典。"""
