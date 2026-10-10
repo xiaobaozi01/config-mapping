@@ -18,6 +18,7 @@ group 展开是事务式的，并遵循显式配置、嵌套层级和 group 列�
 - `adaptation/nni.py`：NNI 聚合规划、M-LAG 边界、端口分配和配置迁移。
 - `adaptation/uni.py`：UNI 候选识别、VLAN 分配和 QinQ 汇聚。
 - `adaptation/cleaning_rules.py`：声明式与代码型清洗规则、内置注册表及固定执行点调度。
+- `adaptation/input_normalization.py`：按厂商规则删除原始配置两端的采集回显，再交给语法解析器。
 - `adaptation/simulation.py`：模拟参数适配调度。
 - `adaptation/pipeline.py`：显式组合转换阶段，并在首次错误后停止。
 - `adaptation/service.py`：组织输入加载、完整转换和最终输出。
@@ -57,6 +58,8 @@ config-adaptor convert \
 ```
 
 `--profiles` 可配置镜像名称/版本、数据接口列表和模拟参数适配策略；列表最后一个接口用于 UNI，其余接口可分配给 NNI。清洗规则随程序发布，按厂商分别位于 `config_adaptor/cisco/rules/xrv9000/cleaning.yaml` 和 `config_adaptor/juniper/rules/vmx/cleaning.yaml`，转换时不接受外部规则文件。
+
+原始采集文本的输入整理规则分别位于两家厂商镜像目录的 `input_normalization.yaml`。每条规则的 `match` 都是逐行正则列表；单项匹配一行，多项匹配连续多行。`region` 只能是 `leading` 或 `trailing`，匹配后的动作固定为删除。规则 `id` 可只写局部名称，加载时自动补上 `cisco.` 或 `juniper.` 前缀；已带本厂商前缀的 ID 原样使用。规则只从文件两端向内删除完整匹配的行序列；正文中的匹配内容原样保留，清理后只剩空白也直接返回。Juniper 默认规则识别 `show configuration` 回显、`Last commit`、常见尾部提示符、采集分隔符和三行 `{ / master / }` 尾块；Cisco 规则文件默认留空，待确认具体采集格式后添加。输入整理命中情况写入 `report.json` 的 `input-normalization` 事件，不记录被删除的原文。
 
 每个镜像 Profile 的 `simulation_adaptation.mode` 支持 `off`、`compatible` 和 `stable`。默认 `stable` 仅保证已映射数据口启用、删除这些目标口上的物理硬件属性，并将配置中已经存在且低于安全下限的 BFD interval/multiplier 调高；不会自动开启 BFD，也不会修改 OSPF、IS-IS 或 BGP 的业务定时器。全部修改写入 `report.json` 的 `simulation-adaptation` 事件。旧 `param_adjustment` YAML 节点仍兼容读取，但不能与新节点同时配置。
 

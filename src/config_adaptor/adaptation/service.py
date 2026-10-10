@@ -8,6 +8,7 @@ from pathlib import Path
 
 from ..common.lab_account import LAB_PASSWORD, LAB_USERNAME
 from .factory import parse_document
+from .input_normalization import normalize_input
 from .models import ConversionContext, DeviceContext, Vendor
 from .pipeline import build_default_pipeline
 from .profiles import load_profiles
@@ -62,6 +63,7 @@ def prepare_context(
     device_contexts: dict[str, DeviceContext] = {}
     warnings: list[str] = []
     errors: list[str] = []
+    input_events: list[dict[str, object]] = []
 
     # 华为首版跳过；未知厂商属于输入错误，不能静默忽略。
     for device in topology.devices:
@@ -74,7 +76,18 @@ def prepare_context(
         try:
             config_path = _safe_config_path(config_dir, device.config_file, device.name)
             text = config_path.read_text(encoding="utf-8-sig")
-            document = parse_document(device.vendor.value, text)
+            normalized = normalize_input(device.vendor, text)
+            document = parse_document(device.vendor.value, normalized.text)
+            for removal in normalized.removed:
+                input_events.append({
+                    "kind": "input-normalization",
+                    "message": f"设备 {device.name} 命中输入整理规则 {removal.rule_id}",
+                    "device": device.name,
+                    "rule_id": removal.rule_id,
+                    "start_line": removal.start_line,
+                    "end_line": removal.end_line,
+                    "removed_lines": removal.removed_lines,
+                })
             device_contexts[device.name] = DeviceContext(
                 device=device,
                 config_path=config_path,
@@ -90,6 +103,7 @@ def prepare_context(
         washing_policy=washing_policy,
         warnings=warnings,
         errors=errors,
+        events=input_events,
     )
 
 

@@ -1,0 +1,34 @@
+version: 1
+vendor: juniper_junos
+rules:
+  - id: command_echo
+    region: leading
+    match:
+      - '^\s*<[^<>]+>\s*show configuration\s*$'
+
+  - id: last_commit
+    region: leading
+    match:
+      - '^\s*## Last commit:.*$'
+
+  - id: cli_prompt
+    region: trailing
+    match:
+      - '^\s*[\w.-]+@[\w.-]+>\s*$'
+
+  - id: angle_prompt
+    region: trailing
+    match:
+      - '^\s*<[^<>]+>\s*$'
+
+  - id: capture_separator
+    region: trailing
+    match:
+      - '^\s*={3,}\s*#{3,}[A-Za-z]+#{3,}\s*={3,}\s*$'
+
+  - id: master_tail
+    region: trailing
+    match:
+      - '^\s*\{\s*$'
+      - '^\s*master\s*$'
+      - '^\s*\}\s*$'
