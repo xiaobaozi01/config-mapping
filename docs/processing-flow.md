@@ -473,11 +473,11 @@ UNI 候选必须满足：
 - 不属于 NNI。
 - 不是 Loopback。
 - 不是管理接口。
-- 不是最后一个 UNI 目标父接口。
+- 不是倒数第二个 UNI 目标父接口。
 - 不是聚合物理成员。
 - 自身配置 IP/L2VC/L2 transport，或被 L2VPN、bridge-domain、路由协议等全局业务引用。
 
-所有 UNI 映射到最后一个镜像接口的子接口。
+所有 UNI 映射到倒数第二个镜像接口的子接口，最后一个镜像接口预留不用。
 只有描述、MTU 等非业务属性的裸口会被删除，不消耗模拟器资源。
 
 BVI 不会因为自身存在 IP 地址，或接口编号恰好落在 VLAN 范围内就自动迁移。
@@ -510,7 +510,7 @@ VLAN，只有同一广播域存在唯一明确的接入口标签时，才将该�
 ```text
 GigabitEthernet0/0/0/3.100
 →
-GigabitEthernet0/0/0/7.100
+GigabitEthernet0/0/0/6.100
 ```
 
 系统会：
@@ -525,7 +525,7 @@ GigabitEthernet0/0/0/7.100
 如果目标父接口不存在，自动创建：
 
 ```text
-interface GigabitEthernet0/0/0/7
+interface GigabitEthernet0/0/0/6
  no shutdown
 ```
 
@@ -757,7 +757,7 @@ ge-0/0/0 {
 
 ### 8.4 Junos UNI 处理
 
-所有 UNI 汇聚到最后一个 vMX 接口。
+所有 UNI 汇聚到倒数第二个 vMX 接口，最后一个接口预留不用。
 
 系统从活跃 unit 的 `vlan-id`、`vlan-id-list`、`vlan members` 收集业务
 VLAN，并沿 `bridge-domains`/`vlans` 的接口、VLAN ID或名称查找 IRB。

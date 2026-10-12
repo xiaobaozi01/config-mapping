@@ -114,22 +114,15 @@ class ImageProfile:
 
     @property
     def nni_interfaces(self) -> list[str]:
-        """除最后一个 UNI 专用口之外，其余接口均可分配给 NNI。"""
-        if len(self.interfaces) < 1:
-            return []
-        return self.interfaces[:-1]
+        """除 UNI 专用口和最后一个预留口外，其余接口可分配给 NNI。"""
+        return self.interfaces[:-2]
 
     @property
     def uni_parent(self) -> str:
-        """最后一个接口统一承载所有 UNI 子接口。"""
-        if not self.interfaces:
-            raise ValueError(f"{self.vendor}: 镜像没有数据接口")
-        return self.interfaces[-1]
-
-    @property
-    def reserved_interface(self) -> None:
-        """兼容旧调用；当前方案不再额外保留数据接口。"""
-        return None
+        """倒数第二个接口统一承载所有 UNI 子接口。"""
+        if len(self.interfaces) < 2:
+            raise ValueError(f"{self.vendor}: 镜像没有 UNI 数据接口")
+        return self.interfaces[-2]
 
 
 @dataclass(slots=True)

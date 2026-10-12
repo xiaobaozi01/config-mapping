@@ -43,7 +43,7 @@ def allocate_uni_vlans(interfaces: Iterable[InterfaceSpec]) -> dict[str, int]:
         result[interface.name] = vlan
     return result
 class UNIHandler:
-    """把剩余的有效 UNI 业务汇聚到最后一个接口的 QinQ 子接口。
+    """把剩余的有效 UNI 业务汇聚到倒数第二个接口的 QinQ 子接口。
 
     NNI 阶段完成后，未被 NNI 占用且确有业务绑定的物理口、聚合口和网关
     接口才是 UNI 源。每个业务逻辑单元获得唯一外层运输 VLAN，原业务 VLAN

@@ -102,6 +102,26 @@ class SimulationAdaptationTest(unittest.TestCase):
             legacy = load_profiles(legacy_profile)
             self.assertEqual(legacy[Vendor.CISCO_IOSXR].simulation_adaptation.mode, "off")
 
+    def test_profile_requires_nni_uni_and_reserved_interfaces(self):
+        with tempfile.TemporaryDirectory() as directory:
+            profile_path = Path(directory) / "profile.yaml"
+            profile_path.write_text(
+                "profiles:\n  cisco_iosxr:\n    interfaces: [NNI, UNI, RESERVED]\n",
+                encoding="utf-8",
+            )
+            profile = load_profiles(profile_path)[Vendor.CISCO_IOSXR]
+            self.assertEqual(profile.nni_interfaces, ["NNI"])
+            self.assertEqual(profile.uni_parent, "UNI")
+            self.assertNotIn("RESERVED", profile.nni_interfaces)
+            self.assertNotEqual(profile.uni_parent, "RESERVED")
+
+            profile_path.write_text(
+                "profiles:\n  cisco_iosxr:\n    interfaces: [NNI, UNI]\n",
+                encoding="utf-8",
+            )
+            with self.assertRaisesRegex(ValueError, "至少需要三个接口"):
+                load_profiles(profile_path)
+
 
 if __name__ == "__main__":
     unittest.main()

@@ -119,11 +119,12 @@ Excel 至少包含两个工作表：
 镜像接口列表有一个容易忽略的约定：
 
 ```text
-interfaces[:-1]  = 按顺序分配给 NNI
-interfaces[-1]   = 专门承载所有 UNI 子接口
+interfaces[:-2]  = 按顺序分配给 NNI
+interfaces[-2]   = 专门承载所有 UNI 子接口
+interfaces[-1]   = 预留，不参与目标端口分配
 ```
 
-例如默认 Cisco Profile 有 8 个接口，前 7 个可分配给 NNI，最后 1 个作为 UNI 父接口。
+例如默认 Cisco Profile 有 8 个接口，前 6 个可分配给 NNI，倒数第二个作为 UNI 父接口，最后一个预留。
 
 ### 3.3 输出与失败语义
 
@@ -613,7 +614,7 @@ VLAN 分配范围是 `2..4094`，并在每台设备内保证唯一：
 
 ### 10.4 QinQ 改写
 
-所有有效 UNI 汇聚到 Profile 的最后一个物理接口：
+所有有效 UNI 汇聚到 Profile 的倒数第二个物理接口：
 
 ```text
 多个源物理口 / Bundle / ae
