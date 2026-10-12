@@ -74,6 +74,8 @@ class VendorConfiguration(Protocol):
 
     def clean_management_access(self) -> CleanupOutcome: ...
 
+    def add_lab_account(self) -> None: ...
+
     def adapt_to_simulation(
         self,
         policy: SimulationAdaptationPolicy,
