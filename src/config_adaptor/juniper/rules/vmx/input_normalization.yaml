@@ -4,12 +4,12 @@ rules:
   - id: command_echo
     region: leading
     match:
-      - '^\s*<[^<>]+>\s*show configuration\s*$'
+      - '^\s*<[^<>]+>\s*show\s+configuration\s*$'
 
   - id: last_commit
     region: leading
     match:
-      - '^\s*## Last commit:.*$'
+      - '^\s*##\s+Last\s+commit:.*$'
 
   - id: cli_prompt
     region: trailing
@@ -32,3 +32,8 @@ rules:
       - '^\s*\{\s*$'
       - '^\s*master\s*$'
       - '^\s*\}\s*$'
+
+  - id: master_tail_inline
+    region: trailing
+    match:
+      - '^\s*\{\s*master\s*\}\s*$'

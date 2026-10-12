@@ -62,6 +62,17 @@ class InputNormalizationTest(unittest.TestCase):
                 self.assertEqual(result.text, source)
                 self.assertEqual(result.removed, ())
 
+    def test_junos_inline_master_tail_is_removed(self):
+        source = "system { host-name J1; }\n{ master }\n"
+
+        result = normalize_input(Vendor.JUNIPER_JUNOS, source)
+
+        self.assertEqual(result.text, "system { host-name J1; }\n")
+        self.assertEqual(
+            [(item.rule_id, item.start_line, item.end_line) for item in result.removed],
+            [("juniper.master_tail_inline", 2, 2)],
+        )
+
     def test_known_pattern_inside_configuration_is_left_untouched(self):
         source = "system { host-name J1; }\n{\n master\n}\nprotocols { ospf; }\n"
         result = normalize_input(Vendor.JUNIPER_JUNOS, source)
