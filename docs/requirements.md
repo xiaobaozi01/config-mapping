@@ -160,7 +160,7 @@ CleaningRulesHandler(pre_analysis) -> TopologyPreflightHandler -> GroupExpansion
    - 显式配置优先于 group 继承配置；
    - 无法安全解析的已应用 group 触发转换失败，不输出不完整的自适应配置。
    - 显式配置高于 group；嵌套层级的 group 高于外层；同一 `apply-groups` 列表中靠前的 group 优先。
-   - 所有 `inactive:` 节点及其完整子树必须从自适应配置中删除，不得激活或保留其后代配置。
+   - `inactive:` 节点及其完整子树不参与生效配置求值；父节点保留时，输出保留原有停用状态，父节点被删除时随之删除。
 4. 展开后的配置进入后续 NNI、UNI、Auth 处理器。成功展开后从输出中移除 group 定义及其应用语句，避免接口改名后再次引用旧接口。
 5. group 展开必须采用事务模式：所有活动引用及其依赖均可安全解析时才提交展开结果；任一活动 group 无法解析时整体回滚并将本次转换标记为失败。
 6. 配置冲突使用完整层级和语义键判断，不能只比较命令首关键字：

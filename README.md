@@ -65,7 +65,7 @@ config-adaptor convert \
 
 管理账号、AAA/TACACS/RADIUS、SSH/Telnet 网络管理服务、SSH 信任、SNMP 以及聚合扁平化后的 LACP/门限属性始终清理。简单清洗由 YAML 描述，banner、认证替换等复杂清洗由代码规则实现，两类规则统一由 `CleaningRulesHandler` 在固定执行点调度并按 `category` 报告。协议认证等可能改变业务能力的 YAML 规则默认关闭。
 
-group 统一采用全量处理：静态展开并校验所有活动的 group 引用及其依赖，成功后移除 group 定义和控制语句。未被活动配置引用的模板不参与求值；缺失引用、循环依赖或无法安全静态解释的活动 group 会使转换整体回滚。Junos 中所有 `inactive:` 节点及其完整子树都会删除；重复的顶层 `groups {}` 容器及同名定义会先合并再求值。
+group 统一采用全量处理：静态展开并校验所有活动的 group 引用及其依赖，成功后移除 group 定义和控制语句。未被活动配置引用的模板不参与求值；缺失引用、循环依赖或无法安全静态解释的活动 group 会使转换整体回滚。Junos 的 `inactive:` 配置不参与求值，若父节点保留则随之保留；重复的顶层 `groups {}` 容器及同名定义会先合并再求值。
 
 group 叶子语句使用 XRv9000/vMX 路径感知规则判定语义冲突。未匹配规则且同路径同命令族出现不同值时，固定按 `warn` 处理：保留语句并报告潜在歧义。报告中的 `group-identity-coverage` 事件和 summary 字段给出规则命中数、降级数及实际覆盖率。
 

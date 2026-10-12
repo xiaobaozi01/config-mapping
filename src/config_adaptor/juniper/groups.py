@@ -582,10 +582,10 @@ class JunosGroupExpander:
         """
         outcome = GroupExpansionOutcome()
         washing_policy = policy or WashingPolicy()
-        # 没有 group 控制语句、定义和 inactive 节点时，不必为事务边界
+        # 没有 group 控制语句或定义时，不必为事务边界
         # 深拷贝整份配置。宽松的字符串筛选只会产生多余的慢路径，不会漏处理。
         if not any(
-            "groups" in node.header.lower() or "inactive:" in node.header.lower()
+            "groups" in node.header.lower()
             for node in self._iter_source_nodes()
         ):
             return outcome
@@ -649,7 +649,7 @@ class JunosGroupExpander:
         """做什么：深拷贝原配置，规范化工作树并建立展开状态。
 
         为什么：所有展开必须在工作副本上进行，才能在校验失败时整体回滚；
-        同时提前清理 inactive 节点、归并容器和建立依赖索引，使后续阶段共享统一视图。
+        同时归并容器和建立依赖索引，使后续阶段共享统一视图。
         """
         # 事务边界：本方法以后的所有变更都只发生在 working_root 上。
         working_root = copy.deepcopy(self.root)
@@ -657,7 +657,6 @@ class JunosGroupExpander:
             working_root.children is not None,
             "Junos 工作树根节点必须可包含子节点",
         )
-        removed_inactive = self._remove_inactive_nodes(working_root)
         pruned_group_names = self._prune_excluded_groups(
             working_root, set(washing_policy.junos_excluded_groups)
         )
@@ -677,9 +676,7 @@ class JunosGroupExpander:
         return _PreparedExpansion(
             working_root=working_root,
             state=state,
-            preprocessing_changed=(
-                bool(pruned_group_names) or removed_inactive or normalized_groups
-            ),
+            preprocessing_changed=bool(pruned_group_names) or normalized_groups,
             pruned_group_names=tuple(sorted(pruned_group_names)),
         )
 
@@ -931,40 +928,6 @@ class JunosGroupExpander:
             for node in root_node.children
             if id(node) not in extra_container_ids
         ]
-
-    def _remove_inactive_nodes(self, root: JunosNode) -> bool:
-        """做什么：递归删除所有 configured inactive 节点及其完整子树。
-
-        为什么：inactive 配置不会影响设备当前运行状态，自适应输出也不需要保留
-        将来手工激活它的能力。统一删除可以减少无效配置、悬空引用及 GNS3 镜像的
-        兼容风险；原始输入文档仍由事务边界保留，失败时不会被部分清理。
-        """
-        changed = False
-
-        def clean(node: JunosNode) -> None:
-            nonlocal changed
-            if node.children is None:
-                return
-            retained: list[JunosNode] = []
-            for child in node.children:
-                # 父节点 inactive 时整棵子树都无效，直接丢弃可避免误激活其后代。
-                if child.configured_inactive:
-                    changed = True
-                    continue
-                clean(child)
-                # 全部定义都被清理后不保留空的 groups 容器。
-                if (
-                    child.is_block
-                    and self._base_header(child.header) == "groups"
-                    and not child.children
-                ):
-                    changed = True
-                    continue
-                retained.append(child)
-            node.children = retained
-
-        clean(root)
-        return changed
 
     def _add_known_interfaces(
         self,

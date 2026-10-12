@@ -467,7 +467,8 @@ classDiagram
 系统展开并校验所有活动的 Group 引用及其完整依赖，不再提供按相关性筛选或
 原样保留模式。未被活动配置引用的模板不会参与求值；活动引用存在缺失、循环、
 运行时变量或其他无法安全静态解释的语义时，本次转换整体回滚。
-Junos 的所有 `inactive:` 节点及其完整子树都会直接删除。
+Junos 的 `inactive:` 节点及其完整子树不参与 group 求值；父节点保留时，输出仍保留 `inactive:` 前缀和子树。若父节点因 group 展开或接口迁移被删除，其 inactive 子节点随之删除。
+这对应 Junos 普通配置中保留停用语句、继承后生效视图中排除停用语句的区别；参见 [Juniper 的停用配置说明](https://www.juniper.net/documentation/us/en/software/junos/cli/topics/topic-map/modifying-configuration.html) 和 [继承后配置说明](https://www.juniper.net/documentation/us/en/software/junos/automation-scripting/topics/concept/junos-script-automation-commit-script-works.html)。
 多个顶层 `groups {}` 会先规范化成一个容器，同名 Group 的配置片段按出现顺序合并。
 
 ### 8.3 统一优先级

@@ -264,6 +264,32 @@ class ConversionTest(unittest.TestCase):
             self.assertNotIn("UNUSED-BARE-PORT", converted)
             self.assertIn("lo0", converted)
 
+    def test_junos_inactive_children_follow_interface_migration_and_removal(self):
+        topology, source_config_dir = conversion_fixture("junos_bundle")
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            config_dir = root / "configs"
+            shutil.copytree(source_config_dir, config_dir)
+            config_path = config_dir / "J1.cfg"
+            source = config_path.read_text(encoding="utf-8")
+            source = source.replace(
+                "    ae0 {\n        unit 0 {",
+                "    ae0 {\n        inactive: description KEEP-WITH-NNI;\n        unit 0 {",
+            ).replace(
+                "    ge-0/0/4 {\n        description UNUSED-BARE-PORT;",
+                "    ge-0/0/4 {\n        inactive: description DROP-WITH-BARE;\n"
+                "        description UNUSED-BARE-PORT;",
+            )
+            config_path.write_text(source, encoding="utf-8")
+
+            output = root / "output"
+            context = convert(topology, config_dir, output)
+            self.assertFalse(context.has_errors, context.errors)
+            converted = (output / "configs" / "J1.cfg").read_text(encoding="utf-8")
+            self.assertIn("inactive: description KEEP-WITH-NNI;", converted)
+            self.assertNotIn("DROP-WITH-BARE", converted)
+            self.assertNotIn("ae0", converted)
+
     def test_cross_vendor_iosxr_to_junos_nni_and_aggregate(self):
         """Cisco 与 Juniper 端点独立适配，并共同删除冗余聚合成员行。"""
         topology, config_dir = conversion_fixture("cross_vendor")
