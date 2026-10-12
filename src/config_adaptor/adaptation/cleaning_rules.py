@@ -234,7 +234,7 @@ class AuthenticationCleaningRule:
     vendor: str
     category: str = "authentication"
     action: str = "transform"
-    reason: str = "替换生产认证并创建统一实验账号"
+    reason: str = "替换生产认证并配置实验登录凭据"
     point: CleaningPoint = CleaningPoint.POST_REWRITE
 
     @property

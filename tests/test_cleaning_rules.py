@@ -166,7 +166,7 @@ class ProgrammaticCleaningRuleTest(unittest.TestCase):
         self.assertEqual(rule.point, CleaningPoint.POST_REWRITE)
         self.assertEqual(result.added_by_type, {"lab-account": 1})
         self.assertNotIn("username old", document.render())
-        self.assertIn("username labadmin", document.render())
+        self.assertIn("username root", document.render())
 
 
 if __name__ == "__main__":

@@ -82,15 +82,16 @@
 
 ### 4.4 认证清洗
 
-系统删除原配置中的本地账号、TACACS+、RADIUS、外部 AAA、SSH/Telnet 网络管理服务、SSH 信任和 SNMP 信息，并生成固定实验账号：
+系统删除原配置中的本地账号、TACACS+、RADIUS、外部 AAA、SSH/Telnet 网络管理服务、SSH 信任和 SNMP 信息，并配置实验登录凭据：
 
 ```text
-用户名：labadmin
-密码：Gns3Lab@2026
+IOS XR 用户名：root
+Junos 用户名：root
+密码：admin123
 ```
 
 - IOS XR 删除自定义 `usergroup`、`taskgroup`、`snmp-server`、SSH/Telnet server/client，以及 `line` 配置中对旧密码、认证方法、授权方法、计费方法和用户组的引用；保留与认证无关的 console 参数。新用户直接加入内置 `root-system`。
-- Junos 删除原 `system login`、RADIUS/TACACS server/options、accounting、`system services` 下的 SSH/Telnet、`security ssh-known-hosts` 和顶层 `snmp`。新用户使用内置 `super-user`，输出配置使用密码哈希；同时配置 root authentication 以保证配置可提交。
+- Junos 删除原 `system login`、RADIUS/TACACS server/options、accounting、`system services` 下的 SSH/Telnet、`security ssh-known-hosts` 和顶层 `snmp`。只配置 root authentication，不新增 `system login` 用户。
 - `report.json` 按账号、AAA、TACACS、RADIUS、usergroup、taskgroup 和 line 引用等类别记录删除数量。
 - 转换报告不得回显被删除的秘密值。
 

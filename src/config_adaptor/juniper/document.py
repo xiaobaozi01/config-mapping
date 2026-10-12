@@ -675,7 +675,7 @@ class JunosDocument(VendorConfiguration):
         return clean_management_access(self)
 
     def add_lab_account(self) -> None:
-        """向 Junos 文档添加统一实验账号及根认证信息。
+        """向 Junos 文档添加实验用 root 认证信息。
 
         清除生产认证后必须建立已知登录入口，防止输出设备无法接管；账号节点由厂商
         清洗模块生成，使凭据替换与旧认证删除使用同一实现边界。

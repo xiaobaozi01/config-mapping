@@ -35,7 +35,7 @@ class WashingTest(unittest.TestCase):
         self.assertNotIn("telnet vrf", cisco)
         self.assertNotIn("OLDPASSWORD", cisco)
         self.assertIn("exec-timeout 10 0", cisco)
-        self.assertIn("username labadmin", cisco)
+        self.assertIn("username root", cisco)
         self.assertIn("key chain OSPF_KEYS", cisco)
         self.assertIn("authentication message-digest keychain OSPF_KEYS", cisco)
         self.assertIn("crypto pki trustpoint PROD-CA", cisco)
@@ -59,7 +59,13 @@ class WashingTest(unittest.TestCase):
         self.assertNotIn("authentication-order tacplus", junos)
         self.assertNotIn("telnet;", junos)
         self.assertIn("ftp;", junos)
-        self.assertIn("user labadmin", junos)
+        self.assertNotIn("user root", junos)
+        self.assertIn("root-authentication encrypted-password", junos)
+        self.assertIn(
+            "$6$admin123$qkQUo1OlslMMLHPyx8kLQnBJKIZaPQsFkb7XxVevTdwU3L40"
+            "gq0yjvrD2XbU1uKkZN38GonwTiTZnZ1euaZYB.",
+            junos,
+        )
         self.assertIn("authentication-key-chains", junos)
         self.assertIn("simple-password OSPFSECRET", junos)
         self.assertIn("ca-profile PROD-CA", junos)

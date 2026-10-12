@@ -264,8 +264,9 @@ def write_outputs(context: ConversionContext, output_dir: Path) -> None:
     )
     readme = f"""GNS3 配置自适应输出
 
-固定实验账号（仅限隔离实验环境）：
-  用户名：{LAB_USERNAME}
+实验登录凭据（仅限隔离实验环境）：
+  IOS XR 用户名：{LAB_USERNAME}
+  Junos 用户名：root
   密码：{LAB_PASSWORD}
 
 文件说明：

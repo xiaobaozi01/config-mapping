@@ -567,8 +567,8 @@ transport
 最后添加实验账号：
 
 ```text
-username labadmin
- secret 0 Gns3Lab@2026
+username root
+ secret 0 admin123
  group root-system
 ```
 
@@ -818,19 +818,10 @@ accounting
 ```text
 system {
     root-authentication encrypted-password "...";
-    login {
-        user labadmin {
-            class super-user;
-            authentication {
-                encrypted-password "...";
-            }
-        }
-    }
 }
 ```
 
-- `super-user` 是 Junos 内置 class。
-- 密码使用 SHA-512 crypt 哈希。
+- 密码 `admin123` 使用 SHA-512 crypt 哈希，固定 salt 为 `admin123`。
 - root authentication 用于保证配置可以正常提交。
 
 ### 8.6 统一配置清洗规则

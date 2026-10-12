@@ -79,7 +79,7 @@ UNI 只迁移有 IP、L2VC/L2Circuit、L2 绑定或全局业务引用的接口�
 PYTHONPATH=src python3 -m config_adaptor convert --topology topology.xlsx --config-dir configs --output-dir output
 ```
 
-固定实验账号为 `labadmin / Gns3Lab@2026`，仅用于隔离的 GNS3 实验环境。
+实验密码为 `admin123`。IOS XR 使用 `root` 本地用户，Junos 仅设置 root 认证；仅用于隔离的 GNS3 实验环境。
 
 IOS XR 认证清洗同时删除自定义 `usergroup`、`taskgroup` 以及 `line` 下对旧认证、授权、计费和用户组的引用；`exec-timeout` 等非认证终端参数保留。删除结果写入 `cisco.replace.authentication` 清洗事件的 `removed_by_type`。
 

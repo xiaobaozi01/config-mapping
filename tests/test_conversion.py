@@ -124,7 +124,7 @@ class ConversionTest(unittest.TestCase):
             self.assertNotIn("accounting commands OLD-ACCT", converted)
             self.assertNotIn("users group OLD-USERS", converted)
             self.assertNotIn("ACCESS-UNI", converted)
-            self.assertIn("username labadmin", converted)
+            self.assertIn("username root", converted)
             self.assertIn("group root-system", converted)
             self.assertIn("line template vty", converted)
             self.assertIn("exec-timeout 10 0", converted)
@@ -133,7 +133,7 @@ class ConversionTest(unittest.TestCase):
             self.assertIn("encapsulation dot1q 2 second-dot1q 2", converted)
             self.assertNotIn("UNUSED-BARE-PORT", converted)
             self.assertIn("interface Loopback0", converted)
-            self.assertLess(converted.index("username labadmin"), converted.index("end"))
+            self.assertLess(converted.index("username root"), converted.index("end"))
 
             adapted = load_workbook(output / "topology-adapted.xlsx")
             adapted_links = adapted["链接表"]
@@ -253,7 +253,8 @@ class ConversionTest(unittest.TestCase):
             self.assertNotIn("old-user", converted)
             self.assertNotIn("radius-server", converted)
             self.assertNotIn("ACCESS-UNI", converted)
-            self.assertIn("user labadmin", converted)
+            self.assertNotIn("user root", converted)
+            self.assertIn("root-authentication encrypted-password", converted)
             self.assertIn("ge-0/0/0.0", converted)
             self.assertIn("ge-0/0/7", converted)
             self.assertIn("unit 100", converted)

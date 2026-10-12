@@ -1,9 +1,9 @@
-"""隔离实验环境使用的统一账号默认值。"""
+"""隔离实验环境使用的登录凭据。"""
 
-LAB_USERNAME = "labadmin"
-LAB_PASSWORD = "Gns3Lab@2026"
+LAB_USERNAME = "root"
+LAB_PASSWORD = "admin123"
 
-# Junos 保存哈希而非明文；该值与上面的实验密码对应。
+# Junos 保存 SHA-512 crypt 哈希；密码和固定 salt 均为 admin123。
 JUNOS_LAB_PASSWORD_HASH = (
-    "$6$Gns3Lab2026$9Er/3JwyekNoiNfTNyetLUTFy7QCUOSOj8yWjBCzKYHPeWVr5Dqkya8eGkkMNiW2u106aCysiC62jiv059ulr1"
+    "$6$admin123$qkQUo1OlslMMLHPyx8kLQnBJKIZaPQsFkb7XxVevTdwU3L40gq0yjvrD2XbU1uKkZN38GonwTiTZnZ1euaZYB."
 )

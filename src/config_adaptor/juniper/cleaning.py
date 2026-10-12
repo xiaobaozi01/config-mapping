@@ -2,7 +2,7 @@
 
 from __future__ import annotations
 
-from ..common.lab_account import JUNOS_LAB_PASSWORD_HASH, LAB_USERNAME
+from ..common.lab_account import JUNOS_LAB_PASSWORD_HASH
 from ..common.errors import require_invariant
 from ..common.outcomes import CleanupOutcome
 from .document import JunosDocument, JunosNode
@@ -140,37 +140,16 @@ def clean_management_access(document: JunosDocument) -> CleanupOutcome:
 
 
 def add_lab_account(document: JunosDocument) -> None:
-    """向 ``system`` 块追加实验账号与 root 认证。
+    """向 ``system`` 块追加实验用 root 认证。
 
-    清除生产认证后必须建立已知登录入口，否则输出设备无法接管；Junos 不接受
-    明文密码，因此 root 与用户都使用预生成的 SHA-512 crypt 哈希而非明文。
+    清除生产认证后建立已知的 root 登录入口；Junos 不接受明文密码，
+    因此使用预生成的 SHA-512 crypt 哈希。
     """
     system = document._top_block("system", create=True)
     require_invariant(
         system is not None and system.children is not None,
         "Junos system 块在 create=True 后必须存在且可包含子节点",
     )
-    system.children.extend(
-        [
-            JunosNode(f'root-authentication encrypted-password "{JUNOS_LAB_PASSWORD_HASH}";'),
-            JunosNode(
-                "login",
-                [
-                    JunosNode(
-                        f"user {LAB_USERNAME}",
-                        [
-                            JunosNode("class super-user;"),
-                            JunosNode(
-                                "authentication",
-                                [
-                                    JunosNode(
-                                        f'encrypted-password "{JUNOS_LAB_PASSWORD_HASH}";'
-                                    )
-                                ],
-                            ),
-                        ],
-                    )
-                ],
-            ),
-        ]
+    system.children.append(
+        JunosNode(f'root-authentication encrypted-password "{JUNOS_LAB_PASSWORD_HASH}";')
     )
