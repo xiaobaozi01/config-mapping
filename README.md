@@ -23,7 +23,7 @@ group 展开是事务式的，并遵循显式配置、嵌套层级和 group 列�
 - `adaptation/pipeline.py`：显式组合转换阶段，并在首次错误后停止。
 - `adaptation/service.py`：组织输入加载、完整转换和最终输出。
 
-生产代码只保留以上四个业务目录，不再维护旧目录或旧导入路径。
+配置转换只使用以上四个业务目录。独立的 `src/config_importer/` 负责把已转换的单台设备配置导入 GNS3，不依赖转换流程；接入契约见 [配置导入说明](docs/config-importer.md)。
 
 ## 测试数据
 
