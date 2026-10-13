@@ -67,6 +67,8 @@
    - 外层 VLAN 在设备内唯一，同时作为目标子接口/unit 编号；
    - 可识别原 VLAN 时，优先将其作为内层 VLAN；
    - 原 VLAN 无法识别时，内外层都使用自动分配值。
+   - Junos 的 `unit 0;` 与 `unit 0 { ... }` 都按逻辑接口迁移；物理口 `ethernet-ccc` 承载的业务在目标 QinQ unit 上使用 `vlan-ccc`，且不得把旧 `unit` 嵌套进新 unit。
+   - Junos 源物理口的介质 MTU 保留在共享目标父口；多个源口汇聚时取已配置值中的最大值，不将物理口 MTU 写入目标 unit。
 7. 外层 VLAN 分配策略：
    - 原 VLAN ID 合法且未冲突时保留；
    - 无 VLAN 或发生冲突时，从 `2..4094` 选择最小空闲 VLAN；

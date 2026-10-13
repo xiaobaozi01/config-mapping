@@ -94,6 +94,29 @@ class CiscoInterfaceBusinessTest(unittest.TestCase):
 
 
 class JunosInterfaceClassificationTest(unittest.TestCase):
+    def test_uni_shared_parent_uses_largest_source_media_mtu(self):
+        document = JunosDocument(
+            "interfaces {"
+            " et-0/0/1 { mtu 9192; encapsulation ethernet-ccc; unit 0; }"
+            " et-0/0/2 { mtu 1500; encapsulation ethernet-ccc; unit 0; }"
+            " }"
+        )
+        document.map_uni("et-0/0/1.0", "ge-0/0/6", 18, 18)
+        document.map_uni("et-0/0/2.0", "ge-0/0/6", 19, 19)
+
+        target = next(
+            node for node in document._interface_nodes()
+            if document._interface_name(node) == "ge-0/0/6"
+        )
+        self.assertEqual(
+            [child.header for child in target.children or [] if child.header.startswith("mtu ")],
+            ["mtu 9192;"],
+        )
+        for unit in document._unit_nodes(target):
+            self.assertFalse(any(
+                child.header.startswith("mtu ") for child in unit.children or []
+            ))
+
     def test_junos_virtual_and_unknown_interface_classification(self):
         """Junos 虚拟前缀与未知前缀不会落入 physical。"""
         document = JunosDocument(interface_config("junos_virtual_unknown_classification.cfg"))

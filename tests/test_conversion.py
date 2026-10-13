@@ -264,6 +264,90 @@ class ConversionTest(unittest.TestCase):
             self.assertNotIn("UNUSED-BARE-PORT", converted)
             self.assertIn("lo0", converted)
 
+    def test_junos_evpn_vpws_uni_rebuilds_units_and_references(self):
+        topology, source_config_dir = conversion_fixture("junos_bundle")
+        cases = {
+            "leaf": ("unit 0;", ("0",)),
+            "block": ("unit 0 { family ccc; }", ("0",)),
+            "multiple": (
+                "unit 0 { family ccc; } unit 1 { family ccc; }",
+                ("0", "1"),
+            ),
+        }
+        for case, (units, numbers) in cases.items():
+            with self.subTest(case=case), tempfile.TemporaryDirectory() as directory:
+                root = Path(directory)
+                config_dir = root / "configs"
+                shutil.copytree(source_config_dir, config_dir)
+                config_path = config_dir / "J1.cfg"
+                source = config_path.read_text(encoding="utf-8")
+                source = source.replace(
+                    "    lo0 {",
+                    "    et-12/0/3 {\n"
+                    "        enable;\n"
+                    "        mtu 9192;\n"
+                    "        encapsulation ethernet-ccc;\n"
+                    f"        {units}\n"
+                    "    }\n"
+                    "    lo0 {",
+                )
+                for number in numbers:
+                    source += (
+                        f"\nrouting-instances {{ VPWS_{number} {{\n"
+                        "    instance-type evpn-vpws;\n"
+                        "    protocols { evpn {\n"
+                        f"        interface et-12/0/3.{number} {{\n"
+                        "            vpws-service-id { local 999; remote 777; }\n"
+                        "        }\n"
+                        "    } }\n"
+                        f"    interface et-12/0/3.{number};\n"
+                        "    route-distinguisher 24208:210101;\n"
+                        "    vrf-target target:24208:210101;\n"
+                        "} }\n"
+                    )
+                config_path.write_text(source, encoding="utf-8")
+
+                context = convert(topology, config_dir, root / "output")
+                self.assertFalse(context.has_errors, context.errors)
+                converted = (root / "output" / "configs" / "J1.cfg").read_text(
+                    encoding="utf-8"
+                )
+                mappings = {
+                    item.source_interface: item.target_interface
+                    for item in context.devices["J1"].mappings
+                    if item.role == "UNI" and item.target_interface
+                }
+                self.assertEqual(mappings["et-12/0/3"], "ge-0/0/6")
+                document = context.devices["J1"].document
+                target_parent = next(
+                    node for node in document._interface_nodes()
+                    if document._interface_name(node) == "ge-0/0/6"
+                )
+                parent_headers = {child.header for child in target_parent.children or []}
+                self.assertIn("flexible-vlan-tagging;", parent_headers)
+                self.assertIn("encapsulation flexible-ethernet-services;", parent_headers)
+                self.assertIn("mtu 9192;", parent_headers)
+                for number in numbers:
+                    target = mappings[f"et-12/0/3.{number}"]
+                    unit_number = target.rsplit(".", 1)[1]
+                    unit = next(
+                        node for node in document._unit_nodes(target_parent)
+                        if document._unit_number(node) == unit_number
+                    )
+                    headers = {child.header for child in unit.children or []}
+                    self.assertIn(f"vlan-tags outer {unit_number} inner {unit_number};", headers)
+                    self.assertNotIn("mtu 9192;", headers)
+                    self.assertIn("encapsulation vlan-ccc;", headers)
+                    self.assertIn("family ccc;", headers)
+                    self.assertFalse(any(header.startswith("unit ") for header in headers))
+                    self.assertNotIn("encapsulation ethernet-ccc;", headers)
+                    self.assertEqual(converted.count(f"interface {target}"), 2)
+                self.assertNotIn("et-12/0/3", converted)
+                self.assertEqual(converted.count("local 999;"), len(numbers))
+                self.assertEqual(converted.count("remote 777;"), len(numbers))
+                self.assertEqual(converted.count("route-distinguisher 24208:210101;"), len(numbers))
+                self.assertEqual(converted.count("vrf-target target:24208:210101;"), len(numbers))
+
     def test_junos_inactive_children_follow_interface_migration_and_removal(self):
         topology, source_config_dir = conversion_fixture("junos_bundle")
         with tempfile.TemporaryDirectory() as directory:

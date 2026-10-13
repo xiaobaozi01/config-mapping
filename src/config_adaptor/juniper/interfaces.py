@@ -133,10 +133,18 @@ def business_interface_names(document: JunosDocument) -> set[str]:
             if _junos_interface_kind(parent) in mappable_kinds and business_pattern.search(rendered):
                 active.add(parent)
             continue
+        parent_business = any(
+            child.effective
+            and child not in units
+            and business_pattern.search(document._render_effective_node(child, 0))
+            for child in node.children or []
+        )
         for unit in units:
             rendered = document._render_effective_node(unit, 0)
             name = f"{parent}.{document._unit_number(unit)}"
-            if kinds.get(name) in mappable_kinds and business_pattern.search(rendered):
+            if kinds.get(name) in mappable_kinds and (
+                parent_business or business_pattern.search(rendered)
+            ):
                 active.add(name)
 
     external = "\n".join(
@@ -513,7 +521,7 @@ def _ensure_target_parent(document: JunosDocument, target_parent: str) -> JunosN
         for child in node.children
         if not child.effective
         or not re.match(
-            r"^encapsulation\s+(?:ethernet-bridge|vlan-bridge)\b",
+            r"^encapsulation\s+(?:ethernet-bridge|vlan-bridge|ethernet-ccc|vlan-ccc)\b",
             document._base_header(child.header),
         )
     ]
@@ -539,8 +547,8 @@ def map_uni(
     """复制源业务到目标父口，并生成以运输 VLAN 编号的 QinQ unit。
 
     指定 unit 时精确复制该 unit；源父口仅含一个 unit 时可自动选中，无 unit 时
-    则把父口业务包装为 unit。复制内容会移除旧 VLAN 终结语义，再前置新的
-    ``vlan-tags outer ... inner ...``，以保留地址、family 等业务而避免标签冲突。
+    则从父口业务构造 unit。源物理口的介质 MTU 汇总到共享目标父口，描述和
+    CCC 业务语义按目标逻辑口重建；源 ``unit`` 语句不嵌套复制到新 unit。
     源节点不会在此删除，因为同一父口的其他 unit 可能仍待迁移，统一清理由上层
     在全部映射完成后执行。
     """
@@ -552,6 +560,39 @@ def map_uni(
         target_node.children is not None,
         "Junos 目标接口节点必须是块节点",
     )
+    if source_node is not None:
+        source_mtu = next(
+            (
+                int(match.group(1))
+                for child in source_node.children or []
+                if child.effective
+                if (match := re.fullmatch(
+                    r"mtu\s+(\d+);?", document._base_header(child.header)
+                ))
+            ),
+            None,
+        )
+        if source_mtu is not None:
+            target_mtu = next(
+                (
+                    child
+                    for child in target_node.children
+                    if child.effective
+                    and re.fullmatch(
+                        r"mtu\s+\d+;?", document._base_header(child.header)
+                    )
+                ),
+                None,
+            )
+            current_mtu = (
+                int(document._base_header(target_mtu.header).rstrip(";").split()[1])
+                if target_mtu is not None else 0
+            )
+            if source_mtu > current_mtu:
+                if target_mtu is None:
+                    target_node.children.insert(0, JunosNode(f"mtu {source_mtu};"))
+                else:
+                    target_mtu.header = f"mtu {source_mtu};"
     unit_node = None
     if source_node:
         units = document._unit_nodes(source_node)
@@ -567,18 +608,56 @@ def map_uni(
         elif len(units) == 1:
             unit_node = units[0]
         elif not units:
-            payload = [child.clone() for child in (source_node.children or [])]
-            unit_node = JunosNode("unit 0", payload)
+            unit_node = JunosNode("unit 0", [])
     if unit_node is None:
         unit_node = JunosNode("unit 0", [])
     else:
         unit_node = unit_node.clone()
     unit_node.header = f"unit {vlan}"
-    require_invariant(
-        unit_node.children is not None,
-        "Junos unit 节点必须是块节点",
+    # 叶子形式的 ``unit 0;`` 没有 children；目标必须显式重建为块节点。
+    unit_node.children = _strip_vlan_termination(document, unit_node.children or [])
+    parent_payload: list[JunosNode] = []
+    if source_node is not None:
+        for child in source_node.children or []:
+            if not child.effective:
+                continue
+            statement = document._base_header(child.header).rstrip(";")
+            if re.match(r"^description\b", statement):
+                parent_payload.append(child.clone())
+            elif not units and re.match(r"^family\b", statement):
+                parent_payload.append(child.clone())
+    present = {
+        document._base_header(child.header).split(maxsplit=1)[0]
+        for child in unit_node.children
+        if child.effective
+    }
+    unit_node.children.extend(
+        child for child in parent_payload
+        if document._base_header(child.header).split(maxsplit=1)[0] not in present
     )
-    unit_node.children = _strip_vlan_termination(document, unit_node.children)
+    source_ccc = bool(source_node and any(
+        child.effective
+        and re.match(
+            r"^encapsulation\s+(?:ethernet-ccc|vlan-ccc);?$",
+            document._base_header(child.header),
+        )
+        for child in source_node.children or []
+    ))
+    retained: list[JunosNode] = []
+    for child in unit_node.children:
+        statement = document._base_header(child.header)
+        if child.effective and re.match(r"^encapsulation\s+(?:ethernet-ccc|vlan-ccc);?$", statement):
+            source_ccc = True
+            continue
+        retained.append(child)
+    unit_node.children = retained
+    if source_ccc:
+        unit_node.children.append(JunosNode("encapsulation vlan-ccc;"))
+        if not any(
+            child.effective and re.match(r"^family\b", document._base_header(child.header))
+            for child in unit_node.children
+        ):
+            unit_node.children.append(JunosNode("family ccc;"))
     unit_node.children.insert(
         0,
         JunosNode(f"vlan-tags outer {vlan} inner {inner_vlan};"),

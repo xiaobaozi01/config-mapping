@@ -423,10 +423,10 @@ class JunosDocument(VendorConfiguration):
         return canonical_junos_interface(self._base_header(node.header).split()[0])
 
     def _unit_nodes(self, interface: JunosNode) -> list[JunosNode]:
-        """列出接口节点下所有结构化的 ``unit`` 子块。
+        """列出接口节点下有效的 ``unit`` 子节点，包括空的叶子 unit。
 
         Junos 把逻辑接口嵌套在父口内；集中枚举 unit 可让规格提取和 UNI 复制使用
-        相同结构判定，同时忽略父口层面的普通叶子配置。
+        相同结构判定。``unit 0;`` 也是逻辑接口，不能被当作父口业务复制。
         """
         if interface.children is None:
             return []
@@ -434,8 +434,7 @@ class JunosDocument(VendorConfiguration):
             node
             for node in interface.children
             if node.effective
-            and node.is_block
-            and self._base_header(node.header).startswith("unit ")
+            and re.fullmatch(r"unit\s+\d+;?", self._base_header(node.header))
         ]
 
     def _unit_number(self, node: JunosNode) -> str:
@@ -444,7 +443,7 @@ class JunosDocument(VendorConfiguration):
         保留字符串形式可兼容解析阶段尚未限制的输入，并在拼接完整接口名及选择源
         unit 时保持原始编号表达。
         """
-        return self._base_header(node.header).split(maxsplit=1)[1]
+        return self._base_header(node.header).rstrip(";").split(maxsplit=1)[1]
 
     def _find_vlan(self, unit: JunosNode) -> int | None:
         """读取 unit 的单层 VLAN 或 QinQ 外层 VLAN，未配置时返回 ``None``。
