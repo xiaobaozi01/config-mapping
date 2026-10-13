@@ -1,4 +1,4 @@
-"""Independent, one-device-at-a-time GNS3 configuration importer."""
+"""独立的 GNS3 配置导入器，一次只处理一台设备。"""
 
 from .drivers import DRIVERS, Driver
 from .importer import ConfigImporter
