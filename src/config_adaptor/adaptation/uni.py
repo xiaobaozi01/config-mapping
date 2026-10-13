@@ -43,7 +43,7 @@ def allocate_uni_vlans(interfaces: Iterable[InterfaceSpec]) -> dict[str, int]:
         result[interface.name] = vlan
     return result
 class UNIHandler:
-    """把剩余的有效 UNI 业务汇聚到倒数第二个接口的 QinQ 子接口。
+    """把剩余的有效 UNI 业务汇聚到倒数第三个接口的 QinQ 子接口。
 
     NNI 阶段完成后，未被 NNI 占用且确有业务绑定的物理口、聚合口和网关
     接口才是 UNI 源。每个业务逻辑单元获得唯一外层运输 VLAN，原业务 VLAN
@@ -123,13 +123,14 @@ class UNIHandler:
         # 计算；不能简单地把所有配置中出现的接口都视为活跃 UNI。
         business_names = document.business_interface_names()
         # 聚合物理成员由聚合父口统一处理，不能作为独立 UNI 候选。
+        # 原始配置即使占用了目标 UNI 父口，也仍需作为源业务迁移；后续
+        # _migrate_sources 会先将所有源父口改为占位名，再构造目标父口。
         candidates = [
             spec
             for spec in specs
             if spec.kind
             in {InterfaceKind.PHYSICAL, InterfaceKind.BUNDLE, InterfaceKind.GATEWAY}
             and spec.parent not in nni_interfaces
-            and spec.parent != device.profile.uni_parent
             and spec.parent not in member_map
         ]
         sources = [spec for spec in candidates if spec.name in business_names]

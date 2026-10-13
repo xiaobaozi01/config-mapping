@@ -10,7 +10,7 @@ from ..common.policies import SimulationAdaptationPolicy
 from .models import ImageProfile, Vendor
 
 
-# 未提供 YAML 时使用的默认值；倒数第二个数据口专用于 UNI，最后一个预留。
+# 未提供 YAML 时使用的默认值；倒数第三个数据口专用于 UNI，最后两个预留。
 DEFAULT_INTERFACES = {
     Vendor.CISCO_IOSXR: [f"GigabitEthernet0/0/0/{index}" for index in range(8)],
     Vendor.JUNIPER_JUNOS: [f"ge-0/0/{index}" for index in range(8)],
@@ -86,8 +86,8 @@ def load_profiles(path: Path | None) -> dict[Vendor, ImageProfile]:
             raise ValueError(f"{vendor.value}: profile 必须是键值映射")
         configured = item.get("interfaces") if isinstance(item, dict) else None
         interfaces = list(configured) if configured else list(DEFAULT_INTERFACES[vendor])
-        if len(interfaces) < 3:
-            raise ValueError(f"{vendor.value} 镜像接口列表至少需要三个接口")
+        if len(interfaces) < 4:
+            raise ValueError(f"{vendor.value} 镜像接口列表至少需要四个接口")
         if len(set(interfaces)) != len(interfaces):
             raise ValueError(f"{vendor.value} 镜像接口列表存在重复项")
         image = item.get("image", DEFAULT_IMAGES[vendor])

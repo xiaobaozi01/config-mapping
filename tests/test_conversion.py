@@ -111,7 +111,8 @@ class ConversionTest(unittest.TestCase):
             output = Path(directory) / "output"
             context = convert(topology, config_dir, output)
             self.assertFalse(context.has_errors)
-            self.assertEqual(context.devices["R1"].profile.uni_parent, "GigabitEthernet0/0/0/6")
+            self.assertEqual(context.devices["R1"].profile.uni_parent, "GigabitEthernet0/0/0/5")
+            self.assertNotIn("GigabitEthernet0/0/0/6", context.devices["R1"].profile.nni_interfaces)
             self.assertNotIn("GigabitEthernet0/0/0/7", context.devices["R1"].profile.nni_interfaces)
             converted = (output / "configs" / "R1.cfg").read_text(encoding="utf-8")
             self.assertNotIn("Bundle-Ether10", converted)
@@ -129,7 +130,7 @@ class ConversionTest(unittest.TestCase):
             self.assertIn("line template vty", converted)
             self.assertIn("exec-timeout 10 0", converted)
             self.assertIn("interface GigabitEthernet0/0/0/0", converted)
-            self.assertIn("interface GigabitEthernet0/0/0/6.2", converted)
+            self.assertIn("interface GigabitEthernet0/0/0/5.2", converted)
             self.assertNotIn("interface GigabitEthernet0/0/0/7", converted)
             self.assertIn("encapsulation dot1q 2 second-dot1q 2", converted)
             self.assertNotIn("UNUSED-BARE-PORT", converted)
@@ -247,7 +248,8 @@ class ConversionTest(unittest.TestCase):
             output = Path(directory) / "output"
             context = convert(topology, config_dir, output)
             self.assertFalse(context.has_errors)
-            self.assertEqual(context.devices["J1"].profile.uni_parent, "ge-0/0/6")
+            self.assertEqual(context.devices["J1"].profile.uni_parent, "ge-0/0/5")
+            self.assertNotIn("ge-0/0/6", context.devices["J1"].profile.nni_interfaces)
             self.assertNotIn("ge-0/0/7", context.devices["J1"].profile.nni_interfaces)
             converted = (output / "configs" / "J1.cfg").read_text(encoding="utf-8")
             self.assertNotIn("ae0", converted)
@@ -257,7 +259,7 @@ class ConversionTest(unittest.TestCase):
             self.assertNotIn("user root", converted)
             self.assertIn("root-authentication encrypted-password", converted)
             self.assertIn("ge-0/0/0.0", converted)
-            self.assertIn("ge-0/0/6", converted)
+            self.assertIn("ge-0/0/5", converted)
             self.assertNotIn("ge-0/0/7", converted)
             self.assertIn("unit 100", converted)
             self.assertIn("vlan-tags outer 100 inner 100;", converted)
@@ -317,11 +319,11 @@ class ConversionTest(unittest.TestCase):
                     for item in context.devices["J1"].mappings
                     if item.role == "UNI" and item.target_interface
                 }
-                self.assertEqual(mappings["et-12/0/3"], "ge-0/0/6")
+                self.assertEqual(mappings["et-12/0/3"], "ge-0/0/5")
                 document = context.devices["J1"].document
                 target_parent = next(
                     node for node in document._interface_nodes()
-                    if document._interface_name(node) == "ge-0/0/6"
+                    if document._interface_name(node) == "ge-0/0/5"
                 )
                 parent_headers = {child.header for child in target_parent.children or []}
                 self.assertIn("flexible-vlan-tagging;", parent_headers)
@@ -480,13 +482,13 @@ class ConversionTest(unittest.TestCase):
             self.assertNotIn("Bundle-Ether10", converted)
             self.assertIn("interface GigabitEthernet0/0/0/0.100 l2transport", converted)
             self.assertIn("interface GigabitEthernet0/0/0/1.100 l2transport", converted)
-            self.assertIn("interface GigabitEthernet0/0/0/6.2 l2transport", converted)
+            self.assertIn("interface GigabitEthernet0/0/0/5.2 l2transport", converted)
             self.assertIn("encapsulation dot1q 2 second-dot1q 2", converted)
             self.assertNotIn("rewrite egress tag", converted)
             self.assertNotIn("UNUSED-BARE-PORT", converted)
             self.assertNotIn("interface BVI300", converted)
             self.assertNotIn("interface BVI400", converted)
-            self.assertIn("interface GigabitEthernet0/0/0/6.3", converted)
+            self.assertIn("interface GigabitEthernet0/0/0/5.3", converted)
             self.assertIn("encapsulation dot1q 3 second-dot1q 3", converted)
             self.assertIn("ipv4 address 198.51.100.1 255.255.255.0", converted)
             self.assertNotIn("203.0.113.1", converted)
@@ -518,7 +520,7 @@ class ConversionTest(unittest.TestCase):
             self.assertIn("ge-0/0/1", converted)
             self.assertIn("interface ge-0/0/0.0;", converted)
             self.assertIn("interface ge-0/0/1.0;", converted)
-            self.assertIn("ge-0/0/6", converted)
+            self.assertIn("ge-0/0/5", converted)
             self.assertNotIn("ge-0/0/7", converted)
             self.assertIn("vlan-tags outer 2 inner 2;", converted)
             self.assertNotIn("vlan-id-list", converted)
@@ -541,8 +543,8 @@ class ConversionTest(unittest.TestCase):
             context = convert(topology, config_dir, output)
             self.assertFalse(context.has_errors)
             converted = (output / "configs" / "R1.cfg").read_text(encoding="utf-8")
-            self.assertIn("interface GigabitEthernet0/0/0/6.100", converted)
-            self.assertIn("interface GigabitEthernet0/0/0/6.2", converted)
+            self.assertIn("interface GigabitEthernet0/0/0/5.100", converted)
+            self.assertIn("interface GigabitEthernet0/0/0/5.2", converted)
             self.assertEqual(converted.count("encapsulation dot1q 100"), 1)
             self.assertEqual(converted.count("encapsulation dot1q 2"), 1)
             self.assertIn("encapsulation dot1q 100 second-dot1q 201", converted)
@@ -561,8 +563,10 @@ class ConversionTest(unittest.TestCase):
             source = config_path.read_text(encoding="utf-8")
             source = source.replace(
                 "\nend\n",
-                "\ninterface GigabitEthernet0/0/0/7\n"
-                " ipv4 address 203.0.113.1 255.255.255.0\n!\nend\n",
+                "\ninterface GigabitEthernet0/0/0/6\n"
+                " ipv4 address 203.0.113.1 255.255.255.0\n!\n"
+                "interface GigabitEthernet0/0/0/7\n"
+                " ipv4 address 203.0.114.1 255.255.255.0\n!\nend\n",
             )
             config_path.write_text(source, encoding="utf-8")
 
@@ -570,24 +574,28 @@ class ConversionTest(unittest.TestCase):
             context = convert(topology, config_dir, output)
             self.assertFalse(context.has_errors, context.errors)
             converted = (output / "configs" / "R1.cfg").read_text(encoding="utf-8")
-            self.assertNotIn("interface GigabitEthernet0/0/0/7", converted)
+            self.assertNotIn("interface GigabitEthernet0/0/0/6\n", converted)
+            self.assertNotIn("interface GigabitEthernet0/0/0/7\n", converted)
             self.assertIn("203.0.113.1", converted)
-            self.assertTrue(any(
-                mapping.source_interface == "GigabitEthernet0/0/0/7"
-                and mapping.role == "UNI"
-                and mapping.target_interface.startswith("GigabitEthernet0/0/0/6.")
-                for mapping in context.devices["R1"].mappings
-            ))
-            self.assertFalse(any(
-                mapping.target_interface
-                and mapping.target_interface.startswith("GigabitEthernet0/0/0/7")
-                for mapping in context.devices["R1"].mappings
-            ))
+            self.assertIn("203.0.114.1", converted)
+            for number in (6, 7):
+                self.assertTrue(any(
+                    mapping.source_interface == f"GigabitEthernet0/0/0/{number}"
+                    and mapping.role == "UNI"
+                    and mapping.target_interface.startswith("GigabitEthernet0/0/0/5.")
+                    for mapping in context.devices["R1"].mappings
+                ))
+                self.assertFalse(any(
+                    mapping.target_interface
+                    and mapping.target_interface.startswith(f"GigabitEthernet0/0/0/{number}")
+                    for mapping in context.devices["R1"].mappings
+                ))
             report = json.loads((output / "report.json").read_text(encoding="utf-8"))
             adaptation = next(
                 event for event in report["events"]
                 if event["kind"] == "simulation-adaptation" and event["device"] == "R1"
             )
+            self.assertNotIn("GigabitEthernet0/0/0/6", adaptation["target_interfaces"])
             self.assertNotIn("GigabitEthernet0/0/0/7", adaptation["target_interfaces"])
 
     def test_nni_capacity_excludes_uni_and_reserved_interfaces(self):
@@ -598,6 +606,7 @@ class ConversionTest(unittest.TestCase):
             profile_path.write_text(
                 "profiles:\n  cisco_iosxr:\n    interfaces:\n"
                 "      - GigabitEthernet0/0/0/0\n"
+                "      - GigabitEthernet0/0/0/5\n"
                 "      - GigabitEthernet0/0/0/6\n"
                 "      - GigabitEthernet0/0/0/7\n",
                 encoding="utf-8",

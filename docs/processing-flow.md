@@ -41,8 +41,9 @@ Excel 至少包含两个工作表：
 镜像 Profile 定义 XRv9000 和 vMX 可以使用的数据接口，并按照列表位置划分用途：
 
 ```text
-interfaces[:-1]  → NNI 可分配接口
-interfaces[-1]   → UNI 统一父接口
+interfaces[:-3]  → NNI 可分配接口
+interfaces[-3]   → UNI 统一父接口
+interfaces[-2:]  → 预留接口
 ```
 
 ### 2.2 输出
@@ -473,11 +474,11 @@ UNI 候选必须满足：
 - 不属于 NNI。
 - 不是 Loopback。
 - 不是管理接口。
-- 不是倒数第二个 UNI 目标父接口。
+- 已由 NNI 阶段迁移的目标接口不再作为 UNI 源；原始业务即使占用倒数第三个目标父接口，仍先暂存再迁移。
 - 不是聚合物理成员。
 - 自身配置 IP/L2VC/L2 transport，或被 L2VPN、bridge-domain、路由协议等全局业务引用。
 
-所有 UNI 映射到倒数第二个镜像接口的子接口，最后一个镜像接口预留不用。
+所有 UNI 映射到倒数第三个镜像接口的子接口，最后两个镜像接口预留不用。
 只有描述、MTU 等非业务属性的裸口会被删除，不消耗模拟器资源。
 
 BVI 不会因为自身存在 IP 地址，或接口编号恰好落在 VLAN 范围内就自动迁移。
@@ -510,7 +511,7 @@ VLAN，只有同一广播域存在唯一明确的接入口标签时，才将该�
 ```text
 GigabitEthernet0/0/0/3.100
 →
-GigabitEthernet0/0/0/6.100
+GigabitEthernet0/0/0/5.100
 ```
 
 系统会：
@@ -525,7 +526,7 @@ GigabitEthernet0/0/0/6.100
 如果目标父接口不存在，自动创建：
 
 ```text
-interface GigabitEthernet0/0/0/6
+interface GigabitEthernet0/0/0/5
  no shutdown
 ```
 
@@ -757,7 +758,7 @@ ge-0/0/0 {
 
 ### 8.4 Junos UNI 处理
 
-所有 UNI 汇聚到倒数第二个 vMX 接口，最后一个接口预留不用。
+所有 UNI 汇聚到倒数第三个 vMX 接口，最后两个接口预留不用。
 
 系统从活跃 unit 的 `vlan-id`、`vlan-id-list`、`vlan members` 收集业务
 VLAN，并沿 `bridge-domains`/`vlans` 的接口、VLAN ID或名称查找 IRB。
@@ -783,7 +784,7 @@ encapsulation flexible-ethernet-services;
 例如：
 
 ```text
-ge-0/0/3.100 → ge-0/0/6.100
+ge-0/0/3.100 → ge-0/0/5.100
 ```
 
 如果源接口没有 unit，系统会把接口下配置包装成临时 `unit 0`，再迁移到新 VLAN unit。
