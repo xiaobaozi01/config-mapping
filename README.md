@@ -79,6 +79,38 @@ UNI 只迁移有 IP、L2VC/L2Circuit、L2 绑定或全局业务引用的接口�
 PYTHONPATH=src python3 -m config_adaptor convert --topology topology.xlsx --config-dir configs --output-dir output
 ```
 
+## 单设备入口
+
+集成到逐台设备处理的服务时，可以不经过 Excel 和输出目录，直接对单台设备做自适应，结果只在内存中返回：
+
+```python
+from config_adaptor.adaptation import DeviceLink, adapt_device
+
+result = adapt_device(
+    "R1",
+    "cisco_iosxr",            # 与 Excel 厂商列相同，支持中英文别名
+    config_text,
+    links=[
+        DeviceLink("GigabitEthernet0/0/0/1", "R2", "GigabitEthernet0/0/0/3", "cisco"),
+        DeviceLink("Bundle-Ether10", "J1", "ae0", "juniper"),
+    ],
+    profiles_path=None,       # 可选，同 --profiles
+)
+if result.success:
+    adapted = result.config   # 转换后的配置文本
+    # result.links 按输入顺序给出每条链路的 target_interface、active、skip_reason
+else:
+    raise RuntimeError(result.errors)
+```
+
+- `links` 是该设备参与的全部 NNI，顺序决定 NNI 目标口的分配顺序。要得到与全量 `convert` 相同的结果，应按 Excel 链接表的行顺序传入。
+- 链路两端各自调用一次，分别得到本端配置和目标接口；对端配置不需要提供。
+- 对端厂商为华为或无法识别时，该链路会被跳过，与全量转换的行为一致。
+- `result.physical_mappings` 是物理口级汇总：源设备每个物理口一条，`target_interface` 为对应的目标镜像物理口（子接口和 UNI 汇聚都折算到父口）。裸口删除、聚合中未被拓扑选中的成员、跳过链路的端口等没有目标口的情况，`target_interface` 为 `None`，`action` 说明原因。多个源口可能对应同一个目标口，例如同一聚合的成员都对应扁平化后的目标口。
+- `result.unused_source_interfaces` 是没有映射到目标口的源物理口；`result.unused_target_interfaces` 是镜像接口中未被占用的口，按 Profile 顺序给出。最后两个预留口不计入；本设备没有 UNI 业务时，倒数第三个 UNI 口计入未使用。
+- `result.mappings`、`warnings`、`errors`、`events`、`summary` 与 `report.json` 中的对应内容一致。可预期的失败通过 `status="failed"` 返回，此时 `config` 为 `None`；内部异常会直接抛出。
+- 已知限制：单设备模式看不到对端的聚合关系。如果两端聚合不一致（例如本端是两个独立物理口，对端是同一个 `ae`），全量转换会合并这两行并告警，单设备模式则会分配两个目标口。
+
 实验密码为 `admin123`。IOS XR 使用 `root` 本地用户，Junos 仅设置 root 认证；仅用于隔离的 GNS3 实验环境。
 
 IOS XR 认证清洗同时删除自定义 `usergroup`、`taskgroup` 以及 `line` 下对旧认证、授权、计费和用户组的引用；`exec-timeout` 等非认证终端参数保留。删除结果写入 `cisco.replace.authentication` 清洗事件的 `removed_by_type`。
