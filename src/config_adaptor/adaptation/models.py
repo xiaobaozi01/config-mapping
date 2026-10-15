@@ -135,6 +135,8 @@ class DeviceContext:
     mappings: list[InterfaceMapping] = field(default_factory=list)
     warnings: list[str] = field(default_factory=list)
     errors: list[str] = field(default_factory=list)
+    # 接口分类阶段记录的源物理口（配置顺序），早于 NNI/UNI 改写配置树。
+    source_physical_interfaces: list[str] = field(default_factory=list)
 
     @property
     def replacement_map(self) -> dict[str, list[str]]:
@@ -175,6 +177,8 @@ class ConversionContext:
     warnings: list[str] = field(default_factory=list)
     errors: list[str] = field(default_factory=list)
     events: list[dict[str, Any]] = field(default_factory=list)
+    # 单设备模式下拓扑中存在、厂商受支持但本次不转换的对端设备；全量转换为空。
+    external_devices: set[str] = field(default_factory=set)
 
     def add_event(self, kind: str, message: str, **details: Any) -> None:
         """追加结构化事件；details 中禁止放入认证秘密。"""
@@ -194,3 +198,48 @@ class ConversionContext:
     def has_errors(self) -> bool:
         """全局或任一设备有错误时，整次转换视为失败。"""
         return bool(self.errors or any(device.errors for device in self.devices.values()))
+
+
+@dataclass(slots=True)
+class DeviceLink:
+    """单设备入口的一条 NNI：本端接口及其对端信息。"""
+    local_interface: str
+    peer_device: str
+    peer_interface: str
+    # 对端厂商用于判断链路是否在首版范围内；华为/未知对端的链路会被跳过。
+    peer_vendor: str
+
+
+@dataclass(slots=True)
+class PhysicalPortMapping:
+    """源物理口到目标镜像物理口的汇总；没有目标口时 target_interface 为 None。"""
+    source_interface: str
+    target_interface: str | None
+    role: str
+    action: str
+    reason: str
+
+    def to_dict(self) -> dict[str, Any]:
+        return asdict(self)
+
+
+@dataclass(slots=True)
+class DeviceAdaptationResult:
+    """单设备自适应的内存结果；失败时 config 为 None，物理口汇总为空。"""
+    status: str
+    config: str | None
+    mappings: list[InterfaceMapping]
+    links: list[dict[str, Any]]
+    warnings: list[str]
+    errors: list[str]
+    events: list[dict[str, Any]]
+    summary: dict[str, Any]
+    physical_mappings: list[PhysicalPortMapping] = field(default_factory=list)
+    # 源设备上没有映射到任何目标口的物理口。
+    unused_source_interfaces: list[str] = field(default_factory=list)
+    # 镜像接口中未被占用的口；最后两个预留口不计入。
+    unused_target_interfaces: list[str] = field(default_factory=list)
+
+    @property
+    def success(self) -> bool:
+        return self.status == "success"

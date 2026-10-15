@@ -75,7 +75,8 @@ def plan_nni_components(
         sorted_pair = sorted((link.a_device, link.z_device))
         device_pair: tuple[str, str] = (sorted_pair[0], sorted_pair[1])
         for device_name, _ in link.endpoints():
-            bundle = bundles[(link.row, device_name)]
+            # 单设备模式下对端不在本次转换范围内，没有 bundle 条目。
+            bundle = bundles.get((link.row, device_name))
             if bundle:
                 rows_by_bundle[(device_pair, device_name, bundle)].append(link.row)
     for rows in rows_by_bundle.values():
@@ -122,7 +123,12 @@ def _validate_component_bundles(
     """
     row_links = [by_row[row] for row in ordered_rows]
     device_names = sorted(
-        {name for row_link in row_links for name, _ in row_link.endpoints()}
+        {
+            name
+            for row_link in row_links
+            for name, _ in row_link.endpoints()
+            if (row_link.row, name) in bundles
+        }
     )
     invalid_devices: list[str] = []
     for device_name in device_names:
@@ -211,6 +217,9 @@ class NNIHandler:
         bundles: dict[tuple[int, str], str | None] = {}
         for link in links:
             for device_name, raw_interface in link.endpoints():
+                # 单设备模式下的外部对端只占拓扑位置，不解析其配置。
+                if device_name not in context.devices:
+                    continue
                 device = context.devices[device_name]
                 # resolve_interface 处理厂商别名，interface_parent 再去掉 unit/
                 # 子接口后缀；NNI 的物理合法性必须在父接口层面判断。
@@ -277,6 +286,8 @@ class NNIHandler:
         # 按 Excel 行号稳定分配目标口，保证相同输入每次产生相同结果。
         for link in sorted((item for item in links if item.active), key=lambda item: item.row):
             for device_name, _ in link.endpoints():
+                if device_name not in context.devices:
+                    continue
                 device = context.devices[device_name]
                 index = allocated[device_name]
                 if index >= len(device.profile.nni_interfaces):

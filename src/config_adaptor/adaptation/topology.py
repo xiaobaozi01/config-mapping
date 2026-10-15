@@ -178,7 +178,11 @@ class TopologyPreflightHandler:
                 context.errors.append(f"链接表第 {link.row} 行：{link.skip_reason}")
                 self._record_skipped_endpoints(context, link, link.skip_reason)
                 continue
-            if all(device_name in context.devices for device_name, _ in link.endpoints()):
+            # 单设备模式下对端不转换，但厂商受支持时链路仍有效。
+            if all(
+                device_name in context.devices or device_name in context.external_devices
+                for device_name, _ in link.endpoints()
+            ):
                 continue
             link.active = False
             link.skip_reason = "端点包含不在首版范围内的设备（可能为华为或未知厂商）"
