@@ -1,8 +1,44 @@
 rules:
-  # Junos 可选清理项；修改 enable 即可控制单条规则。
+  # 管理面认证（root-authentication、login、tacplus/radius、远程访问服务）的删除与
+  # 实验账号写入由内置代码规则 juniper.replace.authentication 原子执行，无需在此配置。
+
+  # vMX 实验固定清理项。以下功能不参与路由协议验证；接口类型在 NNI/UNI
+  # 迁移后可能变化，残留在不支持的接口类型上会导致导入报错，因此统一删除。
+  - id: remove.protocols.link.discovery
+    vendor: juniper_junos
+    enable: true
+    category: link-discovery
+    path:
+      - '^protocols$'
+    match: '^(?:lldp|lldp-med)$'
+    action: delete
+    reason: '实验只验证路由协议，删除 LLDP 配置'
+
+  - id: remove.protocols.ethernet.oam
+    vendor: juniper_junos
+    enable: true
+    category: ethernet-oam
+    path:
+      - '^protocols$'
+    match: '^oam$'
+    action: delete
+    reason: '实验只验证路由协议，删除以太网 CFM/OAM 配置'
+
+  - id: remove.cos.interfaces
+    vendor: juniper_junos
+    enable: true
+    category: interface-qos
+    path:
+      - '^class-of-service$'
+    match: '^interfaces$'
+    action: delete
+    reason: '实验不验证 QoS，删除 class-of-service 接口挂载'
+
+  # Junos 扩展清理项；默认启用，修改 enable 可单独关闭。
+  # 同一 category 的定义与引用规则须同时开启或关闭，否则残留引用会指向已删除的对象。
   - id: remove.protocol.auth.definition
     vendor: juniper_junos
-    enable: false
+    enable: true
     category: protocol-auth-definition
     path:
       - '^security$'
@@ -12,18 +48,18 @@ rules:
 
   - id: remove.protocol.auth.reference
     vendor: juniper_junos
-    enable: false
+    enable: true
     category: protocol-auth-reference
     path:
       - '^(?:protocols|routing-instances|logical-systems|interfaces)$'
       - '**'
-    match: '^(?:authentication|authentication-key|authentication-key-chain|authentication-algorithm|authentication-type)\b'
+    match: '^(?:hello-)?authentication(?:-key(?:-chain)?|-algorithm|-type)?\b'
     action: delete
     reason: '删除协议和接口下的生产认证引用'
 
   - id: remove.security.pki
     vendor: juniper_junos
-    enable: false
+    enable: true
     category: pki
     path:
       - '^security$'
@@ -33,7 +69,7 @@ rules:
 
   - id: remove.system.certificates
     vendor: juniper_junos
-    enable: false
+    enable: true
     category: pki
     path:
       - '^system$'
@@ -43,16 +79,17 @@ rules:
 
   - id: remove.hardware
     vendor: juniper_junos
-    enable: false
+    enable: true
     category: hardware
-    path: []
-    match: '^chassis$'
+    path:
+      - '^chassis$'
+    match: '^(?:fpc|alarm|fabric)\b'
     action: delete
-    reason: '删除目标镜像不适用的物理硬件配置'
+    reason: '删除目标镜像不适用的物理硬件配置；保留 aggregated-devices 等 ae 口依赖项'
 
   - id: remove.security.nat
     vendor: juniper_junos
-    enable: false
+    enable: true
     category: nat
     path:
       - '^security$'
@@ -62,7 +99,7 @@ rules:
 
   - id: remove.services.nat
     vendor: juniper_junos
-    enable: false
+    enable: true
     category: nat
     path:
       - '^services$'
@@ -71,9 +108,43 @@ rules:
     action: delete
     reason: '实验环境不使用生产 NAT 服务配置'
 
+  # 删除 NAT 规则后 service-set 可能为空，且服务接口依赖 vMX 默认没有的服务卡；
+  # 因此整条服务链（service-set、接口挂载、服务接口）一并删除。
+  - id: remove.services.service-set
+    vendor: juniper_junos
+    enable: true
+    category: nat
+    path:
+      - '^services$'
+    match: '^service-set\b'
+    action: delete
+    reason: '删除依赖服务卡的 service-set'
+
+  - id: remove.interface.service-set.reference
+    vendor: juniper_junos
+    enable: true
+    category: nat
+    path:
+      - '^interfaces$'
+      - '**'
+      - '^family\s+inet6?$'
+    match: '^service$'
+    action: delete
+    reason: '删除接口 unit 下引用 service-set 的服务挂载'
+
+  - id: remove.service.interface
+    vendor: juniper_junos
+    enable: true
+    category: nat
+    path:
+      - '^interfaces$'
+    match: '^(?:ms|sp|vms|ams)-'
+    action: delete
+    reason: '删除依赖服务卡的服务接口'
+
   - id: remove.flow.monitoring
     vendor: juniper_junos
-    enable: false
+    enable: true
     category: flow-statistics
     path:
       - '^services$'
@@ -84,7 +155,7 @@ rules:
 
   - id: remove.forwarding.sampling
     vendor: juniper_junos
-    enable: false
+    enable: true
     category: flow-statistics
     path:
       - '^forwarding-options$'
@@ -93,9 +164,20 @@ rules:
     action: delete
     reason: '实验环境不使用生产转发采样配置'
 
+  - id: remove.chassis.sampling.instance
+    vendor: juniper_junos
+    enable: true
+    category: flow-statistics
+    path:
+      - '^chassis$'
+      - '**'
+    match: '^sampling-instance\b'
+    action: delete
+    reason: '删除引用转发采样实例的 chassis 配置'
+
   - id: remove.interface.sampling
     vendor: juniper_junos
-    enable: false
+    enable: true
     category: flow-statistics
     path:
       - '^interfaces$'
@@ -106,7 +188,7 @@ rules:
 
   - id: remove.phone.home
     vendor: juniper_junos
-    enable: false
+    enable: true
     category: phone-home
     path:
       - '^system$'

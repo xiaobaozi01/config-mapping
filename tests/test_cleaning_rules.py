@@ -90,10 +90,12 @@ class CleaningRuleLoadingTest(unittest.TestCase):
             all(rule.vendor == "juniper_junos" for rule in rules if rule.rule_id.startswith("juniper."))
         )
 
-    def test_default_rules_include_enabled_ptp_and_disabled_optional_rules(self):
+    def test_default_rules_include_all_categories(self):
+        """YAML 规则包含类型约束和可选清洗两大类；所有规则都默认启用。"""
         rules = CleaningRulesHandler._configured_rules()
         self.assertTrue(next(rule for rule in rules if rule.rule_id == "cisco.remove.ptp.interface").enable)
-        self.assertFalse(next(rule for rule in rules if rule.rule_id == "cisco.remove.pki").enable)
+        self.assertTrue(next(rule for rule in rules if rule.rule_id == "cisco.remove.interface.link.discovery").enable)
+        self.assertTrue(next(rule for rule in rules if rule.rule_id == "cisco.remove.pki").enable)
         self.assertIn("juniper.remove.hardware", {rule.rule_id for rule in rules})
 
     def test_vendor_prefix_is_added_to_local_id_with_supported_separators(self):

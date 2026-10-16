@@ -14,3 +14,16 @@ rules:
     action: omit
   - path: ['^system$', '^login$']
     action: omit
+  # 清洗规则删空后不应输出为分号语句的容器。
+  - path: ['^protocols$']
+    action: omit
+  - path: ['^class-of-service$']
+    action: omit
+  - path: ['^forwarding-options$']
+    action: omit
+  - path: ['^services$']
+    action: omit
+  - path: ['^chassis$']
+    action: omit
+  - path: ['^chassis$', '^fpc\b']
+    action: omit

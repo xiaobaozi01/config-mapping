@@ -98,7 +98,9 @@ Junos 用户名：root
 - `report.json` 按账号、AAA、TACACS、RADIUS、usergroup、taskgroup 和 line 引用等类别记录删除数量。
 - 转换报告不得回显被删除的秘密值。
 
-协议认证、PKI、硬件、NAT 和流量统计属于默认关闭的扩展清洗。它们与 PTP 和镜像扩展规则按厂商定义在目标镜像目录的 `cleaning.yaml`；转换入口不接受外部规则文件。每条规则由布尔字段 `enable` 独立控制，协议认证启用时，密钥定义和协议引用规则应同时开启。
+协议认证、PKI、硬件、NAT 和流量统计的清洗规则默认启用。它们与 PTP 和接口类型约束清理规则按厂商定义在目标镜像目录的 `cleaning.yaml`；转换入口不接受外部规则文件。每条规则由布尔字段 `enable` 独立控制。同一 `category` 的定义与引用规则（如协议认证、流量统计）应同时开启或关闭，避免残留引用指向已删除对象。
+
+GNS3 实验只验证路由协议。接口在 NNI/UNI 迁移后类型可能变化（聚合口变物理口、物理口变子接口），因此 LLDP/CDP、以太网 CFM/OAM、物理口残留的 BFD over Bundle、接口 QoS 挂载（IOS XR `service-policy`、Junos `class-of-service interfaces`）和 Junos 服务链（`service-set`、接口服务挂载、服务接口）默认删除；路由协议内的 BFD 不受影响。
 
 ### 4.5 保守清洗和扩展规则
 
