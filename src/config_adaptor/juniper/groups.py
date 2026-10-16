@@ -368,7 +368,7 @@ class JunosGroupExpander:
             if not child.is_block and has_payload:
                 child.header = child.header.rstrip().rstrip(";").rstrip()
                 child.children = []
-                child.preserve_when_empty = True
+                child.declared_in_source = True
 
         # 通配选择器只匹配已有具体节点，不生成 ``<ge-*>`` 块。
         if matched or "<" in inherited_node.header:

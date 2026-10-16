@@ -18,6 +18,7 @@ from ..common.outcomes import (
 )
 from ..common.policies import SimulationAdaptationPolicy, WashingPolicy
 from ..common.interface import normalized_command as _normalized_command
+from .empty_blocks import vmx_empty_block_policy
 
 
 def _junos_statement_identity(command: str, path: list[str] | None = None) -> str:
@@ -81,7 +82,8 @@ class JunosNode:
     ``children=None`` 表示叶子，列表表示块；``active`` 仅表示转换过程中的逻辑
     删除，Junos 文本里的 ``inactive:`` 由 ``effective`` 单独识别。``origin`` 和
     ``rank`` 为 group 继承保留来源及优先级；``comment`` 保存独立或行尾注释。
-    ``preserve_when_empty`` 表示该节点原本就是配置语句，空层级仍应输出为分号语句。
+    ``declared_in_source`` 表示该块原本在输入配置中明确出现，或由原有叶子
+    升级而来；空时按 vMX YAML 策略输出。转换中新建的空容器则不输出。
     统一节点模型可递归修改任意层级，同时保留解析器暂时不理解的语句文本。
     """
     header: str
@@ -90,7 +92,7 @@ class JunosNode:
     origin: str = "explicit"
     rank: tuple[int, ...] = (1_000_000, 0)
     comment: str | None = None
-    preserve_when_empty: bool = False
+    declared_in_source: bool = False
 
     @property
     def is_block(self) -> bool:
@@ -327,7 +329,7 @@ class JunosDocument(VendorConfiguration):
                     header[:-1].strip(),
                     [],
                     comment=comment,
-                    preserve_when_empty=True,
+                    declared_in_source=True,
                 )
                 stack[-1].children.append(node)
                 stack.append(node)
@@ -786,11 +788,15 @@ class JunosDocument(VendorConfiguration):
 
         walk(self.root)
 
-    def _render_node(self, node: JunosNode, depth: int) -> str:
+    def _render_node(
+        self, node: JunosNode, depth: int, ancestors: tuple[str, ...] = ()
+    ) -> str:
         """按深度递归渲染一个活动 Junos 节点及其子树。
 
         叶子直接输出 header，块节点补齐缩进和大括号；原配置中的空层级和
-        由叶子升级的空块输出为分号语句，新建的空容器不输出。逻辑停用节点跳过。
+        由叶子升级的空块默认输出为分号语句，YAML 可指定保留大括号或省略；
+        新建的空容器不输出；omit 路径上的注释不单独使空块保留。
+        逻辑停用节点跳过。
         """
         if not node.active:
             return ""
@@ -800,24 +806,38 @@ class JunosDocument(VendorConfiguration):
             if node.comment:
                 header = f"{header} {node.comment}" if header else node.comment
             return indent + header
+        path = (*ancestors, self._base_header(node.header))
         opening = indent + self._output_header(node.header) + " {"
         if node.comment:
             opening += " " + node.comment
         lines = [opening]
-        has_content = False
+        has_statement = False
+        standalone_comments: list[str] = []
         for child in node.children:
-            rendered = self._render_node(child, depth + 1)
+            rendered = self._render_node(child, depth + 1, path)
             if rendered:
                 lines.append(rendered)
-                if child.children is not None or child.header.strip() or child.comment:
-                    has_content = True
-        if not has_content:
-            if node.preserve_when_empty:
+                if child.children is not None or child.header.strip():
+                    has_statement = True
+                elif child.is_comment_only:
+                    standalone_comments.append(child.comment)
+        if not has_statement:
+            if not node.declared_in_source:
+                return ""
+            action = vmx_empty_block_policy().action_for(path)
+            if action == "omit":
+                return ""
+            if action == "semicolon":
                 statement = indent + self._output_header(node.header) + ";"
                 if node.comment:
                     statement += " " + node.comment
-                return statement
-            return ""
+                # 块内独立注释前置，避免被误读为后续兄弟语句的注释。
+                return "\n".join(
+                    [*(indent + comment for comment in standalone_comments), statement]
+                )
+            return "\n".join(
+                [opening, *(indent + "    " + comment for comment in standalone_comments), indent + "}"]
+            )
         lines.append(indent + "}")
         return "\n".join(lines)
 
