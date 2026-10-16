@@ -34,8 +34,8 @@ rules:
     action: delete
     reason: '实验不验证 QoS，删除 class-of-service 接口挂载'
 
-  # Junos 可选清理项；全部默认启用。
-  # 同一 category 的定义与引用规则须同时启用，否则残留引用会指向已删除的对象。
+  # Junos 扩展清理项；默认启用，修改 enable 可单独关闭。
+  # 同一 category 的定义与引用规则须同时开启或关闭，否则残留引用会指向已删除的对象。
   - id: remove.protocol.auth.definition
     vendor: juniper_junos
     enable: true

@@ -310,7 +310,7 @@ flowchart TB
 | `adaptation/topology.py` | Excel 读写和列别名处理 | 输入问题时读 |
 | `adaptation/profiles.py` | 镜像 Profile 加载与校验 | Profile 问题时读 |
 | `adaptation/cleaning_rules.py` | 统一清洗规则加载与调度 | 修改清洗框架时读 |
-| `cisco/rules/xrv9000/cleaning.yaml`、`juniper/rules/vmx/cleaning.yaml` | 各厂商的 PTP、可选能力及扩展清洗规则 | 增删清洗项时读 |
+| `cisco/rules/xrv9000/cleaning.yaml`、`juniper/rules/vmx/cleaning.yaml` | 各厂商的 PTP、接口类型约束及扩展清洗规则 | 增删清洗项时读 |
 
 ### 5.3 为什么有些东西是类，有些是函数
 
@@ -458,7 +458,7 @@ classDiagram
 - Bundle/ae 成员关系。
 - 协议中的接口引用。
 - 用户、AAA 和管理服务。
-- 可选清洗所关注的配置。
+- 扩展清洗所关注的配置。
 
 如果不先展开，后续接口分类与清洗看到的是不完整配置。
 
@@ -898,7 +898,7 @@ flowchart TD
 
 - 所有环境都必须清理的管理面内容：修改厂商 `clean_management_access()`。
 - PTP、协议认证、PKI、硬件、NAT、流量统计及镜像版本相关内容：在对应厂商目标镜像目录的 `cleaning.yaml` 增加规则。
-- 会改变业务能力的规则保持 `enable: false`，需要时由项目维护者在内置文件中开启。
+- 规则默认 `enable: true`；需要保留某类配置时由项目维护者在内置文件中关闭，同一 `category` 的规则应同时开关。
 - 只有“删除旧认证并配置实验登录凭据”这类复合业务动作继续保留专用 Handler。
 
 ## 17. 测试策略
@@ -928,7 +928,7 @@ flowchart TB
 | `cross_vendor` | Cisco/Juniper 普通及聚合互联 |
 | `junos_unresolved` | Group 无法解析时回滚和失败输出 |
 | `group_configs` | Group 优先级、通配、循环和冲突 |
-| `washing_configs` | 强制与可选清洗 |
+| `washing_configs` | 强制与扩展清洗 |
 | `simulation_adaptation` | 镜像适配范围和幂等性 |
 
 ### 17.3 修改代码后的最低检查

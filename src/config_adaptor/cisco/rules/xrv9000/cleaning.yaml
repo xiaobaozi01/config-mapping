@@ -63,8 +63,8 @@ rules:
     action: delete
     reason: '实验不验证 QoS，删除接口 service-policy 挂载'
 
-  # IOS XR 可选清理项；全部默认启用。
-  # 同一 category 的定义与引用规则须同时启用，否则残留引用会指向已删除的对象。
+  # IOS XR 扩展清理项；默认启用，修改 enable 可单独关闭。
+  # 同一 category 的定义与引用规则须同时开启或关闭，否则残留引用会指向已删除的对象。
   - id: remove.protocol.auth.definition
     vendor: cisco_iosxr
     enable: true

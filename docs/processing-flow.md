@@ -135,7 +135,7 @@ NNI 中的聚合链路识别先由纯函数 `plan_nni_components()` 生成不可
 
 `interface preconfigure` 表示源设备硬件尚未插入时保存的物理接口候选配置。系统按“当前设备已经实例化并生效的配置”生成 GNS3 实验，因此 Group 展开后，`PreconfiguredInterfaceCleanupHandler` 在接口分类前通过 `active=False` 忽略整个候选块。预配置接口不会进入 NNI/UNI、接口引用改写或目标端口分配，输出中也不会出现 `interface preconfigure`。
 
-`CleaningRulesHandler` 在两个固定点运行。`pre_analysis` 的 `cisco.remove.banner` 在任何业务分析前按分隔符停用完整 exec/login banner；`post_rewrite` 先执行两家目标镜像目录下 `cleaning.yaml` 中 `enable: true` 的规则，再原子执行管理认证替换。默认启用的 `cisco.remove.ptp.interface` 只将 `interface PTP...` 虚拟接口块标记为非活动；全局 `ptp`、普通数据口下的 `ptp` 及频率同步配置不命中该规则。同样默认启用的还有接口类型约束清理规则：删除 LLDP/CDP、以太网 CFM/OAM、非 Bundle-Ether 接口上的 `bfd` 以及接口 QoS 挂载，避免这些与路由验证无关、且受接口类型限制的配置在迁移后导致导入报错。Junos 容器被删空时按 `empty_blocks.yaml` 省略输出。
+`CleaningRulesHandler` 在两个固定点运行。`pre_analysis` 的 `cisco.remove.banner` 在任何业务分析前按分隔符停用完整 exec/login banner；`post_rewrite` 先执行两家目标镜像目录下 `cleaning.yaml` 中 `enable: true` 的规则，再原子执行管理认证替换。默认启用的 `cisco.remove.ptp.interface` 只将 `interface PTP...` 虚拟接口块标记为非活动；全局 `ptp`、普通数据口下的 `ptp` 及频率同步配置不命中该规则。同样默认启用的还有接口类型约束清理规则：删除 LLDP/CDP、以太网 CFM/OAM、非 Bundle-Ether 接口上的 `bfd`、接口 QoS 挂载以及 Junos 服务链（`service-set`、接口服务挂载、服务接口），避免这些与路由验证无关、且受接口类型限制的配置在迁移后导致导入报错。Junos 容器被删空时按 `empty_blocks.yaml` 省略输出。
 
 ## 4. 输入准备
 
@@ -862,7 +862,7 @@ match: '^maximum-paths\s+ebgp\b'
 
 Cisco 使用去除缩进后的命令头匹配；Junos 的 `inactive:` 节点不参与清洗，其他节点会先去除 `protect:` 和行尾分号。`path` 必须匹配从配置根到目标父节点的完整路径，避免同名命令在其他层级被误删。
 
-协议认证、PKI、硬件、NAT 和流量统计规则默认关闭，因为这些删除可能改变业务能力。需要清理时由项目维护者把内置规则的 `enable` 改为 `true`；协议认证的定义和引用规则应同时开启。规则命中事件记录 ID、类别、动作、数量和原因，不记录被删除的秘密值。
+协议认证、PKI、硬件、NAT 和流量统计规则默认启用。需要保留某类配置时由项目维护者把对应规则的 `enable` 改为 `false`；同一 `category` 的定义和引用规则应同时开启或关闭。规则命中事件记录 ID、类别、动作、数量和原因，不记录被删除的秘密值。
 
 ### 8.7 模拟参数适配
 

@@ -37,7 +37,7 @@ group 展开是事务式的，并遵循显式配置、嵌套层级和 group 列�
 - `cross_vendor/`：Cisco XRv9000 与 Juniper vMX 互联时，普通 NNI 和 `Bundle-Ether`/`ae` 聚合两端独立适配样例。
 - `junos_unresolved/`：无法解析 group 时事务回滚样例。
 - `group_configs/`：独立的厂商 group 优先级、通配、`inactive`/`protect`、引号组名与 `apply-groups-except` 配置。
-- `washing_configs/`：管理面必清项、默认保留项及五类可选清洗开关样例。
+- `washing_configs/`：管理面必清项、默认保留项及五类扩展清洗样例。
 - `simulation_adaptation/`：目标镜像模拟参数适配与幂等性样例。
 - `cisco_ast/`：IOS XR 持久 AST 层级、`!` 边界与编辑样例。
 - `junos_ast/`：Junos 行内块、注释、hostname 与括号边界样例。
@@ -63,7 +63,7 @@ config-adaptor convert \
 
 每个镜像 Profile 的 `simulation_adaptation.mode` 支持 `off`、`compatible` 和 `stable`。默认 `stable` 仅保证已映射数据口启用、删除这些目标口上的物理硬件属性，并将配置中已经存在且低于安全下限的 BFD interval/multiplier 调高；不会自动开启 BFD，也不会修改 OSPF、IS-IS 或 BGP 的业务定时器。全部修改写入 `report.json` 的 `simulation-adaptation` 事件。旧 `param_adjustment` YAML 节点仍兼容读取，但不能与新节点同时配置。
 
-管理账号、AAA/TACACS/RADIUS、SSH/Telnet 网络管理服务、SSH 信任、SNMP 以及聚合扁平化后的 LACP/门限属性始终清理。简单清洗由 YAML 描述，banner、认证替换等复杂清洗由代码规则实现，两类规则统一由 `CleaningRulesHandler` 在固定执行点调度并按 `category` 报告。协议认证等可能改变业务能力的 YAML 规则默认关闭。
+管理账号、AAA/TACACS/RADIUS、SSH/Telnet 网络管理服务、SSH 信任、SNMP 以及聚合扁平化后的 LACP/门限属性始终清理。简单清洗由 YAML 描述，banner、认证替换等复杂清洗由代码规则实现，两类规则统一由 `CleaningRulesHandler` 在固定执行点调度并按 `category` 报告。协议认证、PKI、硬件、NAT、流量统计等 YAML 规则默认启用，可按 `enable` 单独关闭。
 
 group 统一采用全量处理：静态展开并校验所有活动的 group 引用及其依赖，成功后移除 group 定义和控制语句。未被活动配置引用的模板不参与求值；缺失引用、循环依赖或无法安全静态解释的活动 group 会使转换整体回滚。Junos 的 `inactive:` 配置不参与求值，若父节点保留则随之保留；重复的顶层 `groups {}` 容器及同名定义会先合并再求值。
 
