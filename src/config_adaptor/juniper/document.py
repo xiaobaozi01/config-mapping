@@ -725,7 +725,8 @@ class JunosDocument(VendorConfiguration):
 
         方法先规范化并去重映射，再基于原 header 一次性生成节点变体；``interfaces``
         子树已由迁移阶段处理，因此这里不二次改名。这样协议、策略和业务引用能跟随
-        最终接口映射，又不会因目标名命中另一条源规则而发生级联替换。
+        最终接口映射，又不会因目标名命中另一条源规则而发生级联替换。``inactive:``
+        引用同样改名，确保实验环境中重新 activate 后指向迁移后的接口。
         """
         relevant = {
             canonical_junos_interface(source): list(dict.fromkeys(targets))
@@ -766,7 +767,7 @@ class JunosDocument(VendorConfiguration):
             进入 ``interfaces`` 后只继续遍历、不替换 header，因为接口定义已经完成
             专门迁移；在父节点重建列表则允许一个引用节点安全扩展成多个独立副本。
             """
-            if node is not self.root and not node.effective:
+            if node is not self.root and not node.active:
                 return
             if node.children is None:
                 return
@@ -775,7 +776,8 @@ class JunosDocument(VendorConfiguration):
             )
             rebuilt: list[JunosNode] = []
             for child in node.children:
-                if not child.effective:
+                # 逻辑删除节点和独立注释不改名；inactive 节点仍按映射改名。
+                if not child.active or child.is_comment_only:
                     rebuilt.append(child)
                     continue
                 variants = [child.header] if current_inside else expand(child.header)
