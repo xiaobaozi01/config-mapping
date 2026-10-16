@@ -129,6 +129,33 @@ class JunosAstTest(unittest.TestCase):
         document.replace_references({"ge-0/0/1": ["ge-0/0/2"]})
         self.assertIn("# ge-0/0/1\n/* ge-0/0/1 */\n", document.render())
 
+    def test_inactive_references_follow_interface_mapping(self):
+        document = JunosDocument(
+            "protocols {\n ospf {\n  area 0 {\n"
+            "   interface ge-1/0/1.0;\n"
+            "   inactive: interface ge-1/0/2.0;\n"
+            "   inactive: interface ge-1/0/1.0 {\n    passive;\n   }\n"
+            "  }\n"
+            "  inactive: area 1 {\n   interface ge-1/0/2.0;\n  }\n"
+            " }\n}\n"
+        )
+
+        document.replace_references(
+            {"ge-1/0/1.0": ["ge-0/0/1.0"], "ge-1/0/2.0": ["ge-0/0/2.0", "ge-0/0/3.0"]}
+        )
+        rendered = document.render()
+
+        self.assertNotIn("ge-1/0/", rendered)
+        self.assertIn("    interface ge-0/0/1.0;\n", rendered)
+        self.assertIn("inactive: interface ge-0/0/1.0 {\n", rendered)
+        self.assertIn("inactive: interface ge-0/0/2.0;\n", rendered)
+        self.assertIn("inactive: interface ge-0/0/3.0;\n", rendered)
+        self.assertIn(
+            "inactive: area 1 {\n            interface ge-0/0/2.0;\n"
+            "            interface ge-0/0/3.0;\n",
+            rendered,
+        )
+
     def test_inline_comment_stays_with_statement_and_quoted_hash_is_literal(self):
         document = JunosDocument(
             'system {\n host-name "lab#1"; # host note\n'
