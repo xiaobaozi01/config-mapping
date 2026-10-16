@@ -1,4 +1,7 @@
 rules:
+  # 管理面认证（username/aaa/tacacs/radius/snmp/ssh/telnet、line 认证）的删除与
+  # 实验账号写入由内置代码规则 cisco.replace.authentication 原子执行，无需在此配置。
+
   # XRv9000 实验固定清理项。
   - id: remove.ptp.interface
     vendor: cisco_iosxr
@@ -9,10 +12,62 @@ rules:
     action: delete
     reason: 'XRv9000 实验不使用 PTP 虚拟接口'
 
-  # IOS XR 可选清理项；修改 enable 即可控制单条规则。
+  # 以下功能不参与路由协议验证；接口类型在 NNI/UNI 迁移后可能变化，
+  # 残留在不支持的接口类型上会导致导入报错，因此统一删除。
+  - id: remove.interface.link.discovery
+    vendor: cisco_iosxr
+    enable: true
+    category: link-discovery
+    path:
+      - '^interface\b'
+    match: '^(?:lldp|cdp)\b'
+    action: delete
+    reason: '实验只验证路由协议，删除接口 LLDP/CDP 配置'
+
+  - id: remove.interface.ethernet.oam
+    vendor: cisco_iosxr
+    enable: true
+    category: ethernet-oam
+    path:
+      - '^interface\b'
+    match: '^ethernet\s+(?:cfm|oam)\b'
+    action: delete
+    reason: '实验只验证路由协议，删除接口以太网 CFM/OAM 配置'
+
+  - id: remove.ethernet.oam
+    vendor: cisco_iosxr
+    enable: true
+    category: ethernet-oam
+    path: []
+    match: '^ethernet\s+(?:cfm|oam)\b'
+    action: delete
+    reason: '实验只验证路由协议，删除全局以太网 CFM/OAM 配置'
+
+  - id: remove.interface.bundle.bfd
+    vendor: cisco_iosxr
+    enable: true
+    category: bundle-bfd
+    path:
+      - '^interface\s+(?!Bundle-Ether)'
+    match: '^bfd\b'
+    action: delete
+    reason: 'Bundle 扁平化后物理口不支持 BFD over Bundle；路由协议内 BFD 不受影响'
+
+  - id: remove.interface.service.policy
+    vendor: cisco_iosxr
+    enable: true
+    category: interface-qos
+    path:
+      - '^interface\b'
+    match: '^service-policy\b'
+    action: delete
+    reason: '实验不验证 QoS，删除接口 service-policy 挂载'
+
+  # IOS XR 可选清理项；全部默认启用。
+  # 同一 category 的定义与引用规则须同时启用，否则残留引用会指向已删除的对象。
   - id: remove.protocol.auth.definition
     vendor: cisco_iosxr
-    enable: false
+    enable: true
     category: protocol-auth-definition
     path: []
     match: '^(?:key\s+chain|key-?chain)\b'
@@ -21,18 +76,18 @@ rules:
 
   - id: remove.routing.protocol.auth.reference
     vendor: cisco_iosxr
-    enable: false
+    enable: true
     category: protocol-auth-reference
     path:
       - '^(?:router\s+(?:bgp|isis|ospf|ospfv3|rip)|mpls\s+ldp|rsvp)\b'
       - '**'
-    match: '(?:^|\s)(?:authentication(?:-key(?:-chain)?|-algorithm|-type)?|password|key-?chain)(?:\s|$)'
+    match: '(?:^|\s)(?:authentication(?:-key(?:-chain)?|-algorithm|-type)?|message-digest-key|(?:hello-|lsp-)?password|key-?chain)(?:\s|$)'
     action: delete
     reason: '删除路由协议和 MPLS/RSVP 下的生产认证引用'
 
   - id: remove.interface.auth.reference
     vendor: cisco_iosxr
-    enable: false
+    enable: true
     category: protocol-auth-reference
     path:
       - '^interface\b'
@@ -43,7 +98,7 @@ rules:
 
   - id: remove.pki
     vendor: cisco_iosxr
-    enable: false
+    enable: true
     category: pki
     path: []
     match: '^(?:crypto\s+(?:pki|ca|key)\b|certificate\b|trustpoint\b)'
@@ -52,7 +107,7 @@ rules:
 
   - id: remove.hardware
     vendor: cisco_iosxr
-    enable: false
+    enable: true
     category: hardware
     path: []
     match: '^(?:hw-module|platform|service-location|slot)\b'
@@ -61,7 +116,7 @@ rules:
 
   - id: remove.nat
     vendor: cisco_iosxr
-    enable: false
+    enable: true
     category: nat
     path: []
     match: '^(?:nat|cgn|service\s+cgn)\b'
@@ -70,16 +125,26 @@ rules:
 
   - id: remove.flow.statistics
     vendor: cisco_iosxr
-    enable: false
+    enable: true
     category: flow-statistics
     path: []
-    match: '^(?:flow(?:-exporter|-monitor)?|sampler|monitor-session)\b'
+    match: '^(?:flow|sampler(?:-map)?|monitor-session)\b'
     action: delete
     reason: '实验环境不使用生产流量统计配置'
 
+  - id: remove.interface.flow.statistics
+    vendor: cisco_iosxr
+    enable: true
+    category: flow-statistics
+    path:
+      - '^interface\b'
+    match: '^(?:flow\s+(?:ipv4|ipv6|mpls|datalinkframesection)\s+monitor|monitor-session)\b'
+    action: delete
+    reason: '删除接口下引用流量统计和镜像会话的配置'
+
   - id: warn.telemetry
     vendor: cisco_iosxr
-    enable: false
+    enable: true
     category: telemetry
     path: []
     match: '^telemetry\s+model-driven$'
