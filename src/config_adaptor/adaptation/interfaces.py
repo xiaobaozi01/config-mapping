@@ -4,63 +4,9 @@ from __future__ import annotations
 
 from typing import cast
 
-from ..common.errors import require_invariant
-from ..common.interface import InterfaceKind, interface_parent
+from ..common.interface import InterfaceKind
 from ..cisco.document import CiscoDocument
-from .models import ConversionContext, DeviceContext, PhysicalPortMapping, Vendor
-
-
-def summarize_physical_ports(
-    device: DeviceContext,
-) -> tuple[list[PhysicalPortMapping], list[str], list[str]]:
-    """把接口级映射汇总为物理口结果。
-
-    返回 ``(物理口映射, 未使用源物理口, 未使用目标口)``。源物理口及其子接口的
-    任一非空目标都折算为目标物理父口；未使用目标口从镜像接口中扣除全部映射
-    已占用的父口，最后两个预留口不计入。
-    """
-    by_parent: dict[str, list] = {}
-    for mapping in device.mappings:
-        by_parent.setdefault(interface_parent(mapping.source_interface), []).append(mapping)
-
-    physical: list[PhysicalPortMapping] = []
-    for source in device.source_physical_interfaces:
-        records = by_parent.get(source, [])
-        targets = list(
-            dict.fromkeys(
-                interface_parent(item.target_interface)
-                for item in records
-                if item.target_interface
-            )
-        )
-        require_invariant(
-            len(targets) <= 1,
-            f"源物理口 {source} 映射到多个目标物理口: {targets}",
-        )
-        primary = next(
-            (item for item in records if item.source_interface == source),
-            records[0] if records else None,
-        )
-        physical.append(
-            PhysicalPortMapping(
-                source_interface=source,
-                target_interface=targets[0] if targets else None,
-                role=primary.role if primary else "",
-                action=primary.action if primary else "unmapped",
-                reason=primary.reason if primary else "未被 NNI/UNI 处理",
-            )
-        )
-
-    unused_sources = [item.source_interface for item in physical if not item.target_interface]
-    occupied = {
-        interface_parent(item.target_interface)
-        for item in device.mappings
-        if item.target_interface
-    }
-    unused_targets = [
-        name for name in device.profile.interfaces[:-2] if name not in occupied
-    ]
-    return physical, unused_sources, unused_targets
+from .models import ConversionContext, Vendor
 
 
 class PreconfiguredInterfaceCleanupHandler:
@@ -104,15 +50,12 @@ class InterfaceClassificationHandler:
         """
         for device_name in sorted(context.devices):
             device = context.devices[device_name]
-            specs = device.document.interface_specs()
-            # 物理口快照必须在 NNI/UNI 改写配置树之前记录，供物理口汇总使用。
-            device.source_physical_interfaces = list(
-                dict.fromkeys(
-                    spec.parent for spec in specs if spec.kind == InterfaceKind.PHYSICAL
-                )
-            )
             unknown_parents = sorted(
-                {spec.parent for spec in specs if spec.kind == InterfaceKind.UNKNOWN}
+                {
+                    spec.parent
+                    for spec in device.document.interface_specs()
+                    if spec.kind == InterfaceKind.UNKNOWN
+                }
             )
             for interface in unknown_parents:
                 message = (

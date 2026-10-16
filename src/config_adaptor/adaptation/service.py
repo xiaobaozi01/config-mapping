@@ -4,24 +4,12 @@ from __future__ import annotations
 
 import json
 import re
-from collections.abc import Sequence
 from pathlib import Path
 
 from ..common.lab_account import LAB_PASSWORD, LAB_USERNAME
 from .factory import parse_document
 from .input_normalization import normalize_input
-from .interfaces import summarize_physical_ports
-from .models import (
-    ConversionContext,
-    Device,
-    DeviceAdaptationResult,
-    DeviceContext,
-    DeviceLink,
-    ImageProfile,
-    Link,
-    TopologyWorkbook,
-    Vendor,
-)
+from .models import ConversionContext, DeviceContext, Vendor
 from .pipeline import build_default_pipeline
 from .profiles import load_profiles
 from .topology import load_topology, write_adapted_topology
@@ -63,34 +51,6 @@ def _safe_output_name(device_name: str) -> str:
     return cleaned or "device"
 
 
-def _load_device(
-    device: Device,
-    config_path: Path,
-    text: str,
-    profiles: dict[Vendor, ImageProfile],
-    input_events: list[dict[str, object]],
-) -> DeviceContext:
-    """整理原始采集文本并解析成厂商文档；命中的输入整理规则写入 input_events。"""
-    normalized = normalize_input(device.vendor, text)
-    document = parse_document(device.vendor.value, normalized.text)
-    for removal in normalized.removed:
-        input_events.append({
-            "kind": "input-normalization",
-            "message": f"设备 {device.name} 命中输入整理规则 {removal.rule_id}",
-            "device": device.name,
-            "rule_id": removal.rule_id,
-            "start_line": removal.start_line,
-            "end_line": removal.end_line,
-            "removed_lines": removal.removed_lines,
-        })
-    return DeviceContext(
-        device=device,
-        config_path=config_path,
-        document=document,
-        profile=profiles[device.vendor],
-    )
-
-
 def prepare_context(
     topology_path: Path,
     config_dir: Path,
@@ -116,8 +76,23 @@ def prepare_context(
         try:
             config_path = _safe_config_path(config_dir, device.config_file, device.name)
             text = config_path.read_text(encoding="utf-8-sig")
-            device_contexts[device.name] = _load_device(
-                device, config_path, text, profiles, input_events
+            normalized = normalize_input(device.vendor, text)
+            document = parse_document(device.vendor.value, normalized.text)
+            for removal in normalized.removed:
+                input_events.append({
+                    "kind": "input-normalization",
+                    "message": f"设备 {device.name} 命中输入整理规则 {removal.rule_id}",
+                    "device": device.name,
+                    "rule_id": removal.rule_id,
+                    "start_line": removal.start_line,
+                    "end_line": removal.end_line,
+                    "removed_lines": removal.removed_lines,
+                })
+            device_contexts[device.name] = DeviceContext(
+                device=device,
+                config_path=config_path,
+                document=document,
+                profile=profiles[device.vendor],
             )
         except (OSError, ValueError) as exc:
             errors.append(str(exc))
@@ -183,155 +158,15 @@ def convert(
     return context
 
 
-def _single_device_context(
-    device_name: str,
-    vendor: str,
-    config_text: str,
-    links: Sequence[DeviceLink],
-    profiles_path: Path | None,
-) -> ConversionContext:
-    """把单台设备及其链路构造成与全量转换等价的共享上下文。
-
-    链路按输入顺序编号（从 2 开始，对应 Excel 首个数据行），NNI 目标口按此顺序
-    分配。对端只作为拓扑端点存在：受支持厂商放入 ``external_devices``，华为/未知
-    厂商不放入，由预检阶段按全量规则跳过。
-    """
-    local = Device(name=device_name, vendor=Vendor.parse(vendor), config_file=None, row=2)
-    devices: dict[str, Device] = {device_name: local}
-    topology_links: list[Link] = []
-    errors: list[str] = []
-    for index, item in enumerate(links):
-        if item.peer_device == device_name:
-            errors.append(f"链路 {index + 1} 的对端设备不能是本设备: {device_name}")
-            continue
-        peer_vendor = Vendor.parse(item.peer_vendor)
-        known = devices.get(item.peer_device)
-        if known is None:
-            devices[item.peer_device] = Device(
-                name=item.peer_device,
-                vendor=peer_vendor,
-                config_file=None,
-                row=len(devices) + 2,
-            )
-        elif known.vendor != peer_vendor:
-            errors.append(f"对端设备 {item.peer_device} 的厂商在不同链路中不一致")
-        topology_links.append(
-            Link(
-                row=index + 2,
-                a_device=device_name,
-                a_interface=item.local_interface,
-                z_device=item.peer_device,
-                z_interface=item.peer_interface,
-            )
-        )
-    topology = TopologyWorkbook(
-        path=Path(f"<{device_name}>"),
-        workbook=None,
-        device_sheet="",
-        link_sheet="",
-        device_headers={},
-        link_headers={},
-        devices=list(devices.values()),
-        links=topology_links,
-    )
-    context = ConversionContext(
-        topology=topology,
-        devices={},
-        errors=errors,
-        external_devices={
-            name
-            for name, device in devices.items()
-            if name != device_name
-            and device.vendor in {Vendor.CISCO_IOSXR, Vendor.JUNIPER_JUNOS}
-        },
-    )
-    if local.vendor not in {Vendor.CISCO_IOSXR, Vendor.JUNIPER_JUNOS}:
-        context.errors.append(f"设备 {device_name} 的厂商不在支持范围: {vendor}")
-        return context
-    try:
-        profiles = load_profiles(profiles_path)
-        context.devices[device_name] = _load_device(
-            local,
-            Path(f"<{device_name}>"),
-            config_text.removeprefix("\ufeff"),
-            profiles,
-            context.events,
-        )
-    except (OSError, ValueError) as exc:
-        context.errors.append(str(exc))
-    return context
-
-
-def adapt_device(
-    device_name: str,
-    vendor: str,
-    config_text: str,
-    links: Sequence[DeviceLink] = (),
-    profiles_path: Path | None = None,
-) -> DeviceAdaptationResult:
-    """对单台设备执行完整自适应，结果只在内存中返回，不写任何文件。
-
-    ``links`` 是该设备参与的全部 NNI，顺序决定目标口分配顺序；链路两端各自
-    调用本函数即可得到各自的目标接口，与全量 ``convert`` 的结果一致。可预期的
-    业务失败写入 ``errors``；内部异常记录 ``internal-error`` 事件后继续抛出。
-    """
-    context = _single_device_context(device_name, vendor, config_text, links, profiles_path)
-    phase = "核心转换流水线"
-    config: str | None = None
-    try:
-        if not context.has_errors:
-            phase = "清洗规则加载"
-            pipeline = build_default_pipeline()
-            phase = "核心转换流水线"
-            pipeline.execute(context)
-        if not context.has_errors:
-            phase = "输出结果"
-            config = context.devices[device_name].document.render()
-    except Exception as exc:
-        detail = str(exc).strip() or "异常未提供详细信息"
-        message = f"{phase}发生内部异常 ({type(exc).__name__}): {detail}"
-        context.errors.append(message)
-        context.add_event(
-            "internal-error",
-            message,
-            phase=phase,
-            exception_type=type(exc).__name__,
-        )
-        raise
-    report = build_report(context)
-    physical, unused_sources, unused_targets = (
-        summarize_physical_ports(context.devices[device_name])
-        if config is not None
-        else ([], [], [])
-    )
-    return DeviceAdaptationResult(
-        status=str(report["status"]),
-        config=config,
-        mappings=context.mappings,
-        links=[
-            {
-                "source_interface": links[link.row - 2].local_interface,
-                "target_interface": link.a_interface if link.active else None,
-                "peer_device": link.z_device,
-                "peer_interface": link.z_interface,
-                "active": link.active,
-                "skip_reason": link.skip_reason,
-            }
-            for link in context.topology.links
-        ],
-        warnings=list(report["warnings"]),
-        errors=list(report["errors"]),
-        events=context.events,
-        summary=dict(report["summary"]),
-        physical_mappings=physical,
-        unused_source_interfaces=unused_sources,
-        unused_target_interfaces=unused_targets,
+def write_outputs(context: ConversionContext, output_dir: Path) -> None:
+    """写出报告、接口映射、设备配置和修改后的拓扑。"""
+    output_dir.mkdir(parents=True, exist_ok=True)
+    mapping_payload = [mapping.to_dict() for mapping in context.mappings]
+    (output_dir / "interface-mapping.json").write_text(
+        json.dumps(mapping_payload, ensure_ascii=False, indent=2) + "\n",
+        encoding="utf-8",
     )
 
-
-def build_report(context: ConversionContext) -> dict[str, object]:
-    """汇总错误、警告、事件和统计信息，生成 report.json 的内容。"""
-    mapping_count = len(context.mappings)
     combined_errors = context.errors + [
         message for device in context.devices.values() for message in device.errors
     ]
@@ -383,7 +218,7 @@ def build_report(context: ConversionContext) -> dict[str, object]:
             "converted_devices": len(context.devices) if not context.has_errors else 0,
             "active_links": sum(1 for link in context.topology.links if link.active),
             "skipped_links": sum(1 for link in context.topology.links if not link.active),
-            "mapping_count": mapping_count,
+            "mapping_count": len(mapping_payload),
             "group_conflict_count": len(group_conflicts),
             "group_identity_ambiguity_count": group_identity_ambiguity_count,
             "group_identity_rule_hits": group_identity_rule_hits,
@@ -397,19 +232,6 @@ def build_report(context: ConversionContext) -> dict[str, object]:
             "cleaning_rule_hits_by_category": cleaning_rule_hits_by_category,
         },
     }
-    return report
-
-
-def write_outputs(context: ConversionContext, output_dir: Path) -> None:
-    """写出报告、接口映射、设备配置和修改后的拓扑。"""
-    output_dir.mkdir(parents=True, exist_ok=True)
-    mapping_payload = [mapping.to_dict() for mapping in context.mappings]
-    (output_dir / "interface-mapping.json").write_text(
-        json.dumps(mapping_payload, ensure_ascii=False, indent=2) + "\n",
-        encoding="utf-8",
-    )
-
-    report = build_report(context)
     (output_dir / "report.json").write_text(
         json.dumps(report, ensure_ascii=False, indent=2) + "\n",
         encoding="utf-8",
