@@ -192,6 +192,19 @@ class OptionalCleaningRuleCompletenessTest(unittest.TestCase):
         self.assertNotIn("fpc 0", output)
         self.assertIn("address 10.0.0.1/24;", output)
 
+    def test_junos_service_nat_removes_whole_service_chain(self):
+        output = apply_categories(
+            JunosDocument((FIXTURES / "junos_service_nat.cfg").read_text()),
+            "juniper_junos",
+            {"nat"},
+        )
+        self.assertNotIn("service-set", output)
+        self.assertNotIn("services", output)
+        self.assertNotIn("ms-0/0/0", output)
+        self.assertNotIn("service {", output)
+        self.assertIn("address 10.0.0.1/24;", output)
+        self.assertIn("interface ge-0/0/0.0;", output)
+
     def test_junos_hardware_keeps_aggregated_devices(self):
         output = apply_categories(
             JunosDocument((FIXTURES / "junos_optional.cfg").read_text()),

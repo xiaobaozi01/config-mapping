@@ -108,6 +108,40 @@ rules:
     action: delete
     reason: '实验环境不使用生产 NAT 服务配置'
 
+  # 删除 NAT 规则后 service-set 可能为空，且服务接口依赖 vMX 默认没有的服务卡；
+  # 因此整条服务链（service-set、接口挂载、服务接口）一并删除。
+  - id: remove.services.service-set
+    vendor: juniper_junos
+    enable: true
+    category: nat
+    path:
+      - '^services$'
+    match: '^service-set\b'
+    action: delete
+    reason: '删除依赖服务卡的 service-set'
+
+  - id: remove.interface.service-set.reference
+    vendor: juniper_junos
+    enable: true
+    category: nat
+    path:
+      - '^interfaces$'
+      - '**'
+      - '^family\s+inet6?$'
+    match: '^service$'
+    action: delete
+    reason: '删除接口 unit 下引用 service-set 的服务挂载'
+
+  - id: remove.service.interface
+    vendor: juniper_junos
+    enable: true
+    category: nat
+    path:
+      - '^interfaces$'
+    match: '^(?:ms|sp|vms|ams)-'
+    action: delete
+    reason: '删除依赖服务卡的服务接口'
+
   - id: remove.flow.monitoring
     vendor: juniper_junos
     enable: true

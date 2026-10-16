@@ -21,6 +21,8 @@ rules:
     action: omit
   - path: ['^forwarding-options$']
     action: omit
+  - path: ['^services$']
+    action: omit
   - path: ['^chassis$']
     action: omit
   - path: ['^chassis$', '^fpc\b']
