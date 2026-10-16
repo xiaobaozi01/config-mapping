@@ -4,8 +4,10 @@ from __future__ import annotations
 
 import unittest
 from pathlib import Path
+from unittest.mock import patch
 
 from config_adaptor.juniper.document import JunosDocument, JunosNode
+from config_adaptor.juniper.empty_blocks import EmptyBlockPolicy
 
 
 FIXTURES = Path(__file__).parent / "fixtures" / "junos_ast"
@@ -58,7 +60,7 @@ class JunosAstTest(unittest.TestCase):
 
         self.assertIsNone(document.hostname())
 
-    def test_render_preserves_declared_empty_levels_and_deleted_children(self):
+    def test_render_omits_configured_empty_containers(self):
         document = JunosDocument(
             "system {\n"
             "    host-name lab;\n"
@@ -74,8 +76,6 @@ class JunosAstTest(unittest.TestCase):
             document.render(),
             "system {\n"
             "    host-name lab;\n"
-            "    services;\n"
-            "    login;\n"
             "}\n"
             "interfaces {\n"
             "    ge-0/0/0;\n"
@@ -141,12 +141,72 @@ class JunosAstTest(unittest.TestCase):
         self.assertIn('host-name "lab#1"; # host note\n', document.render())
         system.children[1].children[0].active = False
         self.assertNotIn("access note", document.render())
-        self.assertIn("services;\n", document.render())
+        self.assertNotIn("services;\n", document.render())
 
-    def test_standalone_comment_keeps_its_parent_block(self):
+    def test_standalone_comment_does_not_keep_omitted_block(self):
         document = JunosDocument("system {\n services {\n  # note\n }\n}\n")
 
-        self.assertIn("services {\n        # note\n", document.render())
+        self.assertNotIn("services", document.render())
+        self.assertNotIn("# note", document.render())
+
+    def test_inline_comment_does_not_keep_omitted_block(self):
+        document = JunosDocument("security { # note\n}\n")
+
+        self.assertNotIn("security", document.render())
+        self.assertNotIn("# note", document.render())
+
+    def test_omitted_block_with_configuration_keeps_its_comments(self):
+        document = JunosDocument("security { # note\n policies {\n  policy P;\n }\n}\n")
+
+        self.assertIn("security { # note", document.render())
+        self.assertIn("policy P;", document.render())
+
+    def test_empty_security_is_omitted_but_nonempty_security_is_kept(self):
+        document = JunosDocument(
+            "security {\n ssh-known-hosts {\n host peer {\n rsa-key KEY;\n }\n }\n}\n"
+        )
+        self.assertIn("security {", document.render())
+
+        document.clean_management_access()
+        self.assertNotIn("security", document.render())
+
+    def test_empty_block_policy_keeps_independent_family_statement(self):
+        document = JunosDocument(
+            "interfaces { ge-0/0/0 { unit 0 { family inet { } } } }\n"
+        )
+
+        self.assertIn("family inet;", document.render())
+
+    def test_empty_block_policy_can_keep_braces(self):
+        document = JunosDocument("security {\n}\n")
+        policy = EmptyBlockPolicy("semicolon", ((("security",), "braces"),))
+
+        with patch("config_adaptor.juniper.document.vmx_empty_block_policy", return_value=policy):
+            self.assertEqual(document.render(), "security {\n}\n")
+
+    def test_empty_block_policy_controls_shape_when_only_comments_remain(self):
+        document = JunosDocument("security { # header note\n # inner note\n}\n")
+        expected = {
+            "omit": "\n",
+            "semicolon": "# inner note\nsecurity; # header note\n",
+            "braces": "security { # header note\n    # inner note\n}\n",
+        }
+        for action, rendered in expected.items():
+            with self.subTest(action=action):
+                policy = EmptyBlockPolicy(action, ())
+                with patch(
+                    "config_adaptor.juniper.document.vmx_empty_block_policy",
+                    return_value=policy,
+                ):
+                    self.assertEqual(document.render(), rendered)
+
+    def test_generated_empty_block_ignores_yaml_default(self):
+        document = JunosDocument("")
+        document.root.children.append(JunosNode("generated", [JunosNode("", comment="# note")]))
+        policy = EmptyBlockPolicy("braces", ())
+
+        with patch("config_adaptor.juniper.document.vmx_empty_block_policy", return_value=policy):
+            self.assertEqual(document.render(), "\n")
 
     def test_group_expansion_keeps_comments_outside_group_definition(self):
         document = JunosDocument(

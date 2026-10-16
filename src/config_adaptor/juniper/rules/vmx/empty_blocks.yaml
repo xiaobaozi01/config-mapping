@@ -1,0 +1,16 @@
+schema_version: 1
+target:
+  vendor: juniper_junos
+  image: vmx
+# 原配置空块默认输出分号；可改为 braces 或 omit。新生成空块始终省略。
+default_when_empty: semicolon
+# path 语法同 cleaning.yaml：每个元素按不区分大小写的正则匹配一级块 header（需自行加 ^$ 锚定），
+# '*' 恰好匹配一级，'**' 匹配零级或多级；须覆盖块自身在内的完整路径，按顺序首条命中生效。
+# action 可选 semicolon（;）、braces（{}）或 omit（不输出，忽略注释）。
+rules:
+  - path: ['^security$']
+    action: omit
+  - path: ['^system$', '^services$']
+    action: omit
+  - path: ['^system$', '^login$']
+    action: omit
