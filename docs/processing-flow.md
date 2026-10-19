@@ -34,7 +34,7 @@ Excel 至少包含两个工作表：
 
 - Cisco：IOS XR 文本配置。
 - Juniper：Junos 大括号层级配置。
-- Huawei：当前版本不转换，相关设备和涉及 Huawei 的链路标记为跳过。
+- Huawei：不参与配置转换，也不需要配置文件，只作为拓扑对端；与 Huawei 相连的 Cisco/Juniper 端点仍按本端 Profile 适配，Huawei 侧接口名保持不变。
 
 #### 镜像接口配置
 
@@ -63,7 +63,7 @@ output/
 └── README.txt
 ```
 
-- `topology-adapted.xlsx`：更新 NNI 接口并删除冗余聚合成员行。
+- `topology-adapted.xlsx`：更新 NNI 接口并删除冗余聚合成员行，保留 Huawei 等未适配设备行及其链路。
 - `configs/*.cfg`：适配后的设备配置。
 - `interface-mapping.json`：源接口到目标接口的结构化映射。
 - `report.json`：错误、告警、Group 冲突、清洗和转换事件。
@@ -82,7 +82,7 @@ output/
         ↓
 按厂商解析配置
         ↓
-预检链路端点并标记不支持的链路
+预检链路端点并跳过无法识别的链路
         ↓
 展开并校验全部活动 Group 引用
         ↓
@@ -127,7 +127,7 @@ SimulationAdaptationHandler
 
 NNI 中的聚合链路识别先由纯函数 `plan_nni_components()` 生成不可变的分组计划，校验成功后 Stage 才分配目标端口并修改拓扑和厂商配置。UNI 的 VLAN 冲突由 `allocate_uni_vlans()` 完成。这两类规划函数不依赖 Cisco/Junos AST，因此可以独立测试；实际配置修改仍通过统一厂商配置接口分派。
 
-`TopologyPreflightHandler` 在任何配置改写前验证链路端点，标记超出支持范围的链路，并为本端生成 `action=skip` 的 NNI 映射。后续 Group、NNI 和 UNI 只消费有效链路或明确保留的接口角色，避免跳过的 NNI 被误分类为 UNI。
+`TopologyPreflightHandler` 在任何配置改写前验证链路端点，只跳过端点缺失或厂商无法识别/未登记的链路，并为本端生成 `action=skip` 的 NNI 映射。Huawei 设备在输入加载阶段登记到 `external_devices`，按仅适配对端处理，不会使链路失效。后续 Group、NNI 和 UNI 只消费有效链路或明确保留的接口角色，避免跳过的 NNI 被误分类为 UNI。
 
 `GroupExpansionHandler` 统一展开并校验所有活动的 group 引用及其依赖。未被活动配置引用的模板不参与求值；成功展开后删除 group 定义和对应控制语句，任一活动引用无法安全解析时整体回滚。
 
@@ -409,6 +409,8 @@ ipv4 access-group ACL-IN ingress
 #### 普通 NNI
 
 普通 NNI 按 Excel 行号稳定排序并分配镜像物理接口。
+
+与 Huawei 相连的普通 NNI 只解析本端：Huawei 端点不加载配置，Cisco/Juniper 端仍按本端 Profile 分配目标口并改写本端配置，Huawei 侧接口名原样保留。Huawei 侧聚合关系不可见，聚合扁平化只依据本端 `Bundle-Ether`/`ae`。
 
 系统执行：
 
@@ -981,7 +983,7 @@ report.json
 - 聚合链路扁平化事件。
 - M-LAG 按对端拆分的源接口、目标接口和 Excel 行。
 - 接口映射数量。
-- 有效和跳过链路数量。
+- 有效和跳过链路数量；Huawei 对端链路计入有效链路。
 - 清洗规则的 ID、类别、动作和命中数量。
 - 认证清洗分类统计。
 - 模拟参数适配分类统计。
@@ -994,7 +996,7 @@ report.json
 当前版本不处理：
 
 - Huawei 配置转换。
-- 涉及 Huawei 的跨厂商 NNI。
+- Huawei 侧接口名与配置适配；Huawei 设备只作为拓扑对端。
 - IOS、IOS XE 或 NX-OS 到 IOS XR 的语法转换。
 - UNI 的真实 GNS3 外部连接。
 - 包含运行时变量且无法静态求值的复杂 Group。

@@ -64,11 +64,16 @@ def prepare_context(
     warnings: list[str] = []
     errors: list[str] = []
     input_events: list[dict[str, object]] = []
+    external_devices: set[str] = set()
 
-    # 华为首版跳过；未知厂商属于输入错误，不能静默忽略。
+    # 华为设备不参与配置转换，只作为拓扑对端；未知厂商属于输入错误，不能静默忽略。
     for device in topology.devices:
         if device.vendor == Vendor.HUAWEI:
-            warnings.append(f"设备 {device.name} 为华为设备，首版跳过")
+            warnings.append(
+                f"设备 {device.name} 为华为设备，不参与配置自适应（无需配置文件），"
+                "仅作为拓扑对端保留"
+            )
+            external_devices.add(device.name)
             continue
         if device.vendor == Vendor.UNKNOWN:
             errors.append(f"设备 {device.name} 的厂商无法识别")
@@ -104,6 +109,7 @@ def prepare_context(
         warnings=warnings,
         errors=errors,
         events=input_events,
+        external_devices=external_devices,
     )
 
 

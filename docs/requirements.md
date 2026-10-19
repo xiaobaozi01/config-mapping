@@ -4,7 +4,7 @@
 
 本系统将真实网络中的 Cisco IOS XR 与 Juniper Junos 配置，以及描述设备和物理链路的 Excel 拓扑，转换为可导入 GNS3 的 XRv9000 与 vMX 配置。系统重点解决虚拟镜像接口数量、接口名称和真实设备不一致的问题，并清理实验环境不可用的认证配置。
 
-本文档是首版实现和验收的基线。华为配置转换及涉及华为设备的跨厂商 NNI 不在首版范围内。
+本文档是首版实现和验收的基线。华为设备不参与配置转换，只作为拓扑对端；涉及华为设备的链路仍按本端 Cisco/Juniper 端点完成 NNI 适配。
 
 ## 2. 输入
 
@@ -55,6 +55,8 @@
 5. 普通 NNI 物理接口的配置和全局引用改为目标物理接口。
 6. NNI 数量超过可分配物理接口时，转换失败并报告错误。
 7. 系统不审计链路两端的 IP、VLAN、MTU 或封装一致性，此类业务一致性由输入配置保证。
+8. 华为设备不参与配置转换，也不需要提供配置文件；华为只作为链路对端。与华为相连的 Cisco/Juniper 端点仍按本端 Profile 分配目标 NNI 并改写本端配置和拓扑接口，华为侧设备行与接口名保持原样。
+9. 华为与华为之间的链路原样保留在适配拓扑中，不产生接口映射；只有对端厂商无法识别或端点未登记时才跳过链路。
 
 ### 4.2 UNI映射
 
@@ -130,7 +132,7 @@ CleaningRulesHandler(pre_analysis) -> TopologyPreflightHandler -> GroupExpansion
 
 每个处理器只负责其领域的识别、映射、配置变更和报告，并将上下文传递给下一个处理器。后续处理器可插入链中而不修改已有处理器调用方式。
 
-- `TopologyPreflightHandler` 在配置改写前校验端点，标记无效或暂不支持的链路；跳过链路的本端接口仍以 `action=skip` 保留 NNI 角色，不得被 UNI 重新分类。
+- `TopologyPreflightHandler` 在配置改写前校验端点，仅标记端点缺失或厂商无法识别/未登记的链路；跳过链路的本端接口仍以 `action=skip` 保留 NNI 角色，不得被 UNI 重新分类。华为设备登记到 `external_devices`，按仅适配对端处理，不在此处跳过。
 - `InterfaceClassificationHandler` 只允许厂商白名单中的物理接口参与物理端口映射；未识别接口保留原配置并告警，若被链接表用作端点则转换失败。
 - `CleaningRulesHandler` 只在 `pre_analysis`、`post_rewrite` 两个固定执行点运行。
 - YAML 规则固定在 `post_rewrite` 执行；复杂规则通过统一接口声明执行点。
@@ -183,13 +185,13 @@ CleaningRulesHandler(pre_analysis) -> TopologyPreflightHandler -> GroupExpansion
 
 输出目录包含：
 
-- `topology-adapted.xlsx`：更新后的有效 NNI 拓扑；冗余聚合成员行被删除。
+- `topology-adapted.xlsx`：更新后的有效 NNI 拓扑；冗余聚合成员行被删除，华为设备行及其链路保留。
 - `configs/<设备名>.cfg`：转换后的设备配置。
 - `interface-mapping.json`：完整接口映射。
 - `report.json`：错误、警告、删除和处理摘要。
 - `README.txt`：导入说明和固定实验账号。
 
-涉及华为的设备及其链路不转换，并在报告中标记为跳过。
+华为设备不转换，也不需要配置文件；与华为相连的链路仍保留，Cisco/Juniper 侧按 NNI 适配，华为侧接口名不变。
 
 ## 6. 失败和告警策略
 
@@ -216,7 +218,7 @@ CleaningRulesHandler(pre_analysis) -> TopologyPreflightHandler -> GroupExpansion
 ## 8. 首版不包含
 
 - 华为配置转换。
-- 涉及华为设备的跨厂商 NNI。
+- 华为侧接口名与配置适配；华为设备只作为拓扑对端。
 - IOS/IOS XE/NX-OS 到 IOS XR 的语法转换。
 - UNI 的真实 GNS3 外部连接。
 - 未经规则明确指定的大范围硬件配置删除。

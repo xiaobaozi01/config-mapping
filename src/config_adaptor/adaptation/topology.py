@@ -8,7 +8,14 @@ from typing import Iterable
 from openpyxl import load_workbook
 
 from ..common.interface import interface_parent
-from .models import ConversionContext, Device, InterfaceMapping, Link, TopologyWorkbook, Vendor
+from .models import (
+    ConversionContext,
+    Device,
+    InterfaceMapping,
+    Link,
+    TopologyWorkbook,
+    Vendor,
+)
 
 
 DEVICE_SHEET_ALIASES = ("设备列表", "devices", "device list", "device_list")
@@ -154,20 +161,23 @@ def write_adapted_topology(
 class TopologyPreflightHandler:
     """在配置改写前划定本次转换能够安全处理的拓扑链路范围。
 
-    该处理器检查每条链路的两端设备是否存在于拓扑设备表，以及是否已加载为
-    当前版本支持的设备；缺失设备的链路记为错误，不支持厂商的链路则记为警告
-    并跳过。预检必须位于流水线最前面，否则无效链路可能消耗 NNI 目标端口、
-    触发不存在设备的访问，甚至让后续 UNI 阶段错误迁移原本属于该链路的接口。
+    该处理器检查每条链路的两端设备是否存在于拓扑设备表，以及是否已加载配置或
+    登记为外部设备；缺失设备的链路记为错误，既未加载也未登记为外部设备的端点
+    链路则记为警告并跳过。华为设备由输入加载阶段登记到 ``external_devices``，
+    按“仅适配对端”的合法端点处理。预检必须位于流水线最前面，否则无效链路可能
+    消耗 NNI 目标端口、触发不存在设备的访问，甚至让后续 UNI 阶段错误迁移原本
+    属于该链路的接口。
     """
 
     def process(self, context: ConversionContext) -> None:
         """校验全部链路端点，停用不可处理的链路并记录诊断及汇总事件。
 
         端点设备未出现在设备表时说明输入拓扑不完整，因此写入错误，让流水线在
-        本阶段后停止；设备存在但厂商暂不支持时只写警告和 ``skip-link`` 事件，
-        允许其余链路继续转换。两类链路都会设置 ``active=False``，因为下游阶段
-        只应消费已通过预检的链路，同时会为可识别端点补记跳过映射，保留其 NNI
-        身份。最后记录活动/跳过数量，供报告解释哪些拓扑数据实际参与了转换。
+        本阶段后停止；设备存在但既未加载配置也未登记为外部设备时只写警告和
+        ``skip-link`` 事件，允许其余链路继续转换。两类链路都会设置
+        ``active=False``，因为下游阶段只应消费已通过预检的链路，同时会为可识别
+        端点补记跳过映射，保留其 NNI 身份。最后记录活动/跳过数量，供报告解释
+        哪些拓扑数据实际参与了转换。
         """
         topology_devices = {device.name for device in context.topology.devices}
         for link in context.topology.links:
@@ -178,10 +188,14 @@ class TopologyPreflightHandler:
                 context.errors.append(f"链接表第 {link.row} 行：{link.skip_reason}")
                 self._record_skipped_endpoints(context, link, link.skip_reason)
                 continue
-            if all(device_name in context.devices for device_name, _ in link.endpoints()):
+            if all(
+                device_name in context.devices
+                or device_name in context.external_devices
+                for device_name, _ in link.endpoints()
+            ):
                 continue
             link.active = False
-            link.skip_reason = "端点包含不在首版范围内的设备（可能为华为或未知厂商）"
+            link.skip_reason = "端点包含无法识别或不在支持范围内的设备"
             self._record_skipped_endpoints(context, link, link.skip_reason)
             context.warnings.append(f"链接表第 {link.row} 行已跳过：{link.skip_reason}")
             context.add_event(
@@ -204,11 +218,12 @@ class TopologyPreflightHandler:
         link: Link,
         reason: str | None,
     ) -> None:
-        """为跳过链路中仍可识别的端点登记 NNI 保留映射。
+        """为真正被跳过的链路中仍可识别的端点登记 NNI 保留映射。
 
         方法同时记录规范化物理父口及其可能所属的 Bundle/ae 逻辑口，但不生成
         目标接口。这样 UNI 候选筛选仍会排除这些源口，避免因为链路被停用就把
         原 NNI 业务误判成 UNI 并迁移；不存在或不支持的设备端点则安全忽略。
+        华为端点在预检中已按合法对端保留，不会进入本方法。
         """
         for device_name, raw_interface in link.endpoints():
             device = context.devices.get(device_name)

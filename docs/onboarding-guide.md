@@ -29,7 +29,7 @@ flowchart LR
     Adaptor -->|XRv9000 / vMX 配置| GNS3
     Adaptor -->|映射与转换报告| Audit[人工检查 / 自动化审计]
 
-    Adaptor -.当前不转换.-> Huawei[Huawei 设备]
+    Adaptor -.不转换，仅作为对端.-> Huawei[Huawei 设备]
 ```
 
 当前支持：
@@ -37,11 +37,13 @@ flowchart LR
 - Cisco IOS XR 配置到 GNS3 XRv9000。
 - Juniper Junos 大括号配置到 GNS3 vMX。
 - Cisco 与 Juniper 之间的跨厂商 NNI。
+- Cisco/Juniper 与 Huawei 相连的 NNI：只适配 Cisco/Juniper 端，Huawei 侧接口名不变。
 - 普通链路、聚合链路和同一聚合跨多个对端的 M-LAG 形态。
 
 当前不负责：
 
 - Huawei 配置转换。
+- Huawei 侧接口名与配置适配；Huawei 设备只作为拓扑对端。
 - IOS、IOS XE、NX-OS 等其他 Cisco 操作系统的语法转换。
 - 校验链路两端的 IP、VLAN、MTU、封装是否一致。
 - 在 GNS3 中自动创建或启动节点。
@@ -436,7 +438,7 @@ classDiagram
 | 顺序 | Stage | 输入关注点 | 主要副作用 | 关键失败条件 |
 | --- | --- | --- | --- | --- |
 | 1 | `CleaningRulesHandler(pre_analysis)` | 早期代码规则 | 删除可能干扰分析的完整 banner | 缺少结束分隔符 |
-| 2 | `TopologyPreflightHandler` | 拓扑设备和链路端点 | 标记跳过链路，保留 NNI 角色 | 端点设备不存在 |
+| 2 | `TopologyPreflightHandler` | 拓扑设备和链路端点 | 保留 Huawei 对端链路，仅跳过无法识别的链路并为本端保留 NNI 角色 | 端点设备不存在 |
 | 3 | `GroupExpansionHandler` | 活动 Group 引用、已知接口 | 事务式展开 Group，记录冲突 | 引用缺失、循环或无法静态求值 |
 | 4 | `PreconfiguredInterfaceCleanupHandler` | IOS XR 预配置接口 | 忽略未实例化接口候选块 | 本阶段一般不失败 |
 | 5 | `InterfaceClassificationHandler` | 厂商接口类型 | 未知接口告警并保留 | 本阶段一般不失败 |
@@ -511,6 +513,8 @@ Excel 源端：R1 Gi0/0/0/5  <->  J1 xe-1/2/0
 ```
 
 系统保证“相同输入产生相同分配”，不会依赖字典的偶然顺序。
+
+Huawei 对端不加载配置：与 Huawei 相连的链路只解析 Cisco/Juniper 本端，仍按本端 Profile 分配目标口并改写本端配置，Huawei 侧接口名和拓扑行保持原样。Huawei 侧的聚合关系不可见，聚合扁平化只依据本端 `Bundle-Ether`/`ae`。
 
 ### 9.2 同一对端的聚合扁平化
 
@@ -743,7 +747,7 @@ YAML 规则的本地 `id` 使用点号划分命名层级，每一段可由小写
 典型 Warning：
 
 - 未识别的接口类型被原样保留，不参与物理映射。
-- Huawei 设备及相关链路被跳过。
+- Huawei 设备不参与配置转换，只作为拓扑对端保留。
 
 典型 Error：
 
@@ -926,6 +930,7 @@ flowchart TB
 | `iosxr_mlag` | Cisco 聚合跨对端拆分、QinQ、一对多引用 |
 | `junos_mlag` | Junos ae 跨对端拆分、裸口与 QinQ |
 | `cross_vendor` | Cisco/Juniper 普通及聚合互联 |
+| `huawei_peer` | Huawei 只作为对端，Cisco/Juniper 端仍完成 NNI 适配 |
 | `junos_unresolved` | Group 无法解析时回滚和失败输出 |
 | `group_configs` | Group 优先级、通配、循环和冲突 |
 | `washing_configs` | 强制与扩展清洗 |

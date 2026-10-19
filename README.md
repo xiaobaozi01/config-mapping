@@ -35,6 +35,7 @@ group 展开是事务式的，并遵循显式配置、嵌套层级和 group 列�
 - `iosxr_mlag/`：IOS XR 同一 Bundle 跨对端拆分、一对多引用与 QinQ UNI 样例。
 - `junos_mlag/`：Junos ae 跨对端拆分、裸口清理与 QinQ UNI 样例。
 - `cross_vendor/`：Cisco XRv9000 与 Juniper vMX 互联时，普通 NNI 和 `Bundle-Ether`/`ae` 聚合两端独立适配样例。
+- `huawei_peer/`：华为设备只作为拓扑对端，Cisco/Juniper 端仍完成 NNI 适配的样例。
 - `junos_unresolved/`：无法解析 group 时事务回滚样例。
 - `group_configs/`：独立的厂商 group 优先级、通配、`inactive`/`protect`、引号组名与 `apply-groups-except` 配置。
 - `washing_configs/`：管理面必清项、默认保留项及五类扩展清洗样例。
@@ -70,6 +71,8 @@ group 统一采用全量处理：静态展开并校验所有活动的 group 引�
 group 叶子语句使用 XRv9000/vMX 路径感知规则判定语义冲突。未匹配规则且同路径同命令族出现不同值时，固定按 `warn` 处理：保留语句并报告潜在歧义。报告中的 `group-identity-coverage` 事件和 summary 字段给出规则命中数、降级数及实际覆盖率。
 
 Cisco 与 Juniper 的跨厂商 NNI 会按链路两端各自的厂商语法和镜像 Profile 独立分配接口，不要求两端目标接口同名。转换器不审计链路两端的 IP、VLAN、MTU 或封装是否一致，这些业务一致性由输入配置保证。
+
+华为设备只作为拓扑对端：转换器不读取、不解析、不生成华为配置，也不要求提供华为配置文件。与华为相连的 Cisco/Juniper 端点仍按本端镜像 Profile 分配 NNI 目标口并改写本端配置和拓扑接口，华为侧设备行和接口名保持原样。华为与华为之间的链路同样保留在适配拓扑中，但不产生接口映射；未知厂商仍按不支持处理。
 
 UNI 只迁移有 IP、L2VC/L2Circuit、L2 绑定或全局业务引用的接口；裸口删除。Cisco 会沿 `bridge-domain` 关联活跃 attachment circuit 与 BVI，Juniper 会沿 `bridge-domains`/`vlans` 关联活跃接口、VLAN 与 IRB；未关联活跃业务的 BVI/IRB 不迁移。目标 UNI 统一重写为 QinQ，旧标签匹配和 VLAN rewrite 清除，外层 VLAN 是设备内唯一的目标子接口编号，内层优先保留可识别的原 VLAN。
 

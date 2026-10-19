@@ -434,42 +434,138 @@ class ConversionTest(unittest.TestCase):
             self.assertEqual(report["summary"]["active_links"], 2)
             self.assertEqual(report["summary"]["skipped_links"], 1)
 
-    def test_skipped_nni_is_not_reclassified_as_uni(self):
-        """预检跳过的跨范围链路仍保留 NNI 角色，不进入 UNI 汇聚。"""
-        topology, config_dir = conversion_fixture("iosxr_duplicate_vlan")
+    def test_huawei_peer_adapts_supported_ends_and_keeps_huawei_side(self):
+        """华为设备不转换，但 Cisco/Juniper 端仍完成 NNI 适配并保留华为链路。"""
+        topology, config_dir = conversion_fixture("huawei_peer")
+        with tempfile.TemporaryDirectory() as directory:
+            output = Path(directory) / "output"
+            context = convert(topology, config_dir, output)
+            self.assertFalse(context.has_errors, context.errors)
+            self.assertEqual(set(context.devices), {"R1", "J1"})
+            self.assertEqual(context.external_devices, {"HW1", "HW2"})
+
+            cisco = (output / "configs" / "R1.cfg").read_text(encoding="utf-8")
+            self.assertIn("interface GigabitEthernet0/0/0/0", cisco)
+            self.assertIn("ipv4 address 10.0.0.1 255.255.255.252", cisco)
+            self.assertIn("interface GigabitEthernet0/0/0/1", cisco)
+            self.assertIn("ipv4 address 10.0.1.1 255.255.255.252", cisco)
+            self.assertNotIn("GigabitEthernet0/0/0/2", cisco)
+            self.assertNotIn("GigabitEthernet0/0/0/3", cisco)
+
+            juniper = (output / "configs" / "J1.cfg").read_text(encoding="utf-8")
+            self.assertIn("ge-0/0/0", juniper)
+            self.assertIn("address 10.0.0.2/30;", juniper)
+            self.assertIn("ge-0/0/1", juniper)
+            self.assertIn("address 10.0.1.2/30;", juniper)
+            self.assertNotIn("ge-0/0/2", juniper)
+            self.assertNotIn("ge-0/0/3", juniper)
+
+            self.assertFalse((output / "configs" / "HW1.cfg").exists())
+            self.assertFalse((output / "configs" / "HW2.cfg").exists())
+
+            adapted = load_workbook(output / "topology-adapted.xlsx")
+            devices = adapted["设备列表"]
+            self.assertEqual(devices.cell(4, 1).value, "HW1")
+            self.assertEqual(devices.cell(4, 2).value, "Huawei")
+            self.assertIsNone(devices.cell(4, 3).value)
+            self.assertEqual(devices.cell(5, 1).value, "HW2")
+            self.assertEqual(devices.cell(5, 2).value, "华为")
+            self.assertIsNone(devices.cell(5, 3).value)
+
+            links = adapted["链接表"]
+            self.assertEqual(links.max_row, 5)
+            self.assertEqual(links.cell(2, 2).value, "GigabitEthernet0/0/0/0")
+            self.assertEqual(links.cell(2, 4).value, "GigabitEthernet0/0/0")
+            self.assertEqual(links.cell(3, 2).value, "ge-0/0/0")
+            self.assertEqual(links.cell(3, 4).value, "GigabitEthernet0/0/1")
+            self.assertEqual(links.cell(4, 2).value, "GigabitEthernet0/0/0/1")
+            self.assertEqual(links.cell(4, 4).value, "ge-0/0/1")
+            # 华为与华为之间的链路原样保留，不产生映射。
+            self.assertEqual(links.cell(5, 2).value, "GigabitEthernet0/0/2")
+            self.assertEqual(links.cell(5, 4).value, "GigabitEthernet0/0/0")
+
+            mappings = json.loads(
+                (output / "interface-mapping.json").read_text(encoding="utf-8")
+            )
+            self.assertFalse(
+                any(item["device"] in {"HW1", "HW2"} for item in mappings)
+            )
+
+            report = json.loads((output / "report.json").read_text(encoding="utf-8"))
+            self.assertEqual(report["status"], "success")
+            self.assertEqual(report["summary"]["active_links"], 4)
+            self.assertEqual(report["summary"]["skipped_links"], 0)
+            self.assertTrue(
+                any(
+                    "HW1" in warning and "华为" in warning
+                    for warning in report["warnings"]
+                )
+            )
+            self.assertTrue(
+                any(
+                    "HW2" in warning and "华为" in warning
+                    for warning in report["warnings"]
+                )
+            )
+
+    def test_unknown_vendor_device_still_fails_conversion(self):
+        """未知厂商仍属于输入错误，不会被当作可忽略的对端。"""
+        topology, config_dir = conversion_fixture("iosxr_bundle")
         with tempfile.TemporaryDirectory() as directory:
             temporary_topology = Path(directory) / "topology.xlsx"
             workbook = load_workbook(topology)
-            workbook["设备列表"].append(["H1", "Huawei", None])
-            workbook["链接表"].cell(2, 3).value = "H1"
+            workbook["设备列表"].append(["X1", "H3C", None])
+            workbook["链接表"].cell(2, 3).value = "X1"
             workbook["链接表"].cell(2, 4).value = "GigabitEthernet0/0/0"
             workbook.save(temporary_topology)
 
             output = Path(directory) / "output"
             context = convert(temporary_topology, config_dir, output)
-            self.assertFalse(context.has_errors)
-            mappings = context.devices["R1"].mappings
+            self.assertTrue(context.has_errors)
+            report = json.loads((output / "report.json").read_text(encoding="utf-8"))
+            self.assertEqual(report["status"], "failed")
             self.assertTrue(
                 any(
-                    item.role == "NNI"
-                    and item.action == "skip"
-                    and item.source_interface == "GigabitEthernet0/0/0/5"
-                    for item in mappings
+                    "X1" in error and "厂商无法识别" in error
+                    for error in report["errors"]
                 )
             )
-            self.assertFalse(
-                any(
-                    item.role == "UNI"
-                    and item.source_interface == "GigabitEthernet0/0/0/5"
-                    for item in mappings
-                )
-            )
+
+    def test_huawei_peer_bundle_is_flattened_on_supported_side(self):
+        """本端聚合连华为时，只在本端按 Bundle 扁平化并保留华为侧接口。"""
+        topology, config_dir = conversion_fixture("iosxr_bundle")
+        with tempfile.TemporaryDirectory() as directory:
+            temporary_topology = Path(directory) / "topology.xlsx"
+            workbook = load_workbook(topology)
+            for row in range(2, workbook["设备列表"].max_row + 1):
+                if workbook["设备列表"].cell(row, 1).value == "R2":
+                    workbook["设备列表"].cell(row, 2).value = "Huawei"
+                    workbook["设备列表"].cell(row, 3).value = None
+            workbook.save(temporary_topology)
+
+            output = Path(directory) / "output"
+            context = convert(temporary_topology, config_dir, output)
+            self.assertFalse(context.has_errors, context.errors)
+            self.assertEqual(set(context.devices), {"R1"})
+
+            cisco = (output / "configs" / "R1.cfg").read_text(encoding="utf-8")
+            self.assertNotIn("Bundle-Ether10", cisco)
+            self.assertIn("interface GigabitEthernet0/0/0/0", cisco)
+            self.assertIn("ipv4 address 10.0.0.1 255.255.255.252", cisco)
+
+            adapted = load_workbook(output / "topology-adapted.xlsx")
+            links = adapted["链接表"]
+            self.assertEqual(links.max_row, 2)
+            self.assertEqual(links.cell(2, 2).value, "GigabitEthernet0/0/0/0")
+            self.assertEqual(links.cell(2, 4).value, "Gi0/0/0/0")
+
             report = json.loads((output / "report.json").read_text(encoding="utf-8"))
-            validation = next(
-                event for event in report["events"] if event["kind"] == "topology-preflight"
+            self.assertEqual(report["status"], "success")
+            self.assertEqual(report["summary"]["active_links"], 1)
+            self.assertEqual(report["summary"]["skipped_links"], 1)
+            self.assertFalse(
+                any("成员关系不一致" in warning for warning in report["warnings"])
             )
-            self.assertEqual(validation["active_links"], 0)
-            self.assertEqual(validation["skipped_links"], 1)
 
     def test_iosxr_mlag_is_split_by_peer_and_references_are_cloned(self):
         """同一 Bundle 跨对端时分配多个物理口，全局引用同步展开。"""
