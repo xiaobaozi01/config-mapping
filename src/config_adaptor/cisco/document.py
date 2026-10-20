@@ -8,6 +8,7 @@ from dataclasses import dataclass, field
 from functools import lru_cache
 from typing import Iterable
 
+from .empty_blocks import EmptyBlockPolicy, xrv9000_empty_block_policy
 from ..common.cleaning import matches_cleaning_path
 from ..common.contracts import VendorConfiguration
 from ..common.interface import InterfaceKind, InterfaceSpec, interface_parent
@@ -157,39 +158,59 @@ def _clone_cisco_nodes(
     return result
 
 
-def _render_cisco_nodes(nodes: Iterable[CiscoNode], depth: int = 1) -> list[str]:
-    """按 AST 深度递归渲染节点，并保留格式节点的位置。
+def _render_cisco_nodes(
+    nodes: Iterable[CiscoNode],
+    depth: int = 1,
+    *,
+    empty_block_policy: EmptyBlockPolicy | None = None,
+) -> list[str]:
+    """按 AST 深度渲染节点；最终输出可按完整路径省略空块。
 
-    语义节点使用每层一个空格的 IOS XR 规范缩进；``!`` 同样按所属父层输出，空行则
-    输出为空字符串。停用节点夹在两个同层级 ``!`` 之间时只保留一个分隔符。
-    由树结构统一生成缩进，避免节点移动后沿用旧文本的错误层级。
+    从子到父判断是否仍有命令，注释、空行和 ``!`` 不使空块保留。
+    不传策略的 group 等内部语义渲染保留全部活动节点。
+    停用或省略节点夹在两个同层级 ``!`` 之间时只保留一个分隔符。
     """
-    lines: list[str] = []
-    skipped_node = False
-    for node in nodes:
-        if not node.active:
-            skipped_node = True
-            continue
-        if node.header == "!":
-            separator = " " * depth + "!"
-            if skipped_node and lines and lines[-1] == separator:
-                continue
-            lines.append(separator)
-            skipped_node = False
-            continue
+    def render_nodes(
+        current: Iterable[CiscoNode], level: int, ancestors: tuple[str, ...]
+    ) -> tuple[list[str], bool]:
+        lines: list[str] = []
+        has_statement = False
         skipped_node = False
-        if node.comment is not None and not node.header:
-            lines.append(" " * depth + node.comment)
-            continue
-        if not node.header:
-            lines.append("")
-            continue
-        line = " " * depth + node.header
-        if node.comment is not None:
-            line += " " + node.comment
-        lines.append(line)
-        lines.extend(_render_cisco_nodes(node.children, depth + 1))
-    return lines
+        for node in current:
+            if not node.active:
+                skipped_node = True
+                continue
+            if node.header == "!":
+                separator = " " * level + "!"
+                if skipped_node and lines and lines[-1] == separator:
+                    continue
+                lines.append(separator)
+                skipped_node = False
+                continue
+            if node.is_formatting:
+                skipped_node = False
+                lines.append(" " * level + node.comment if node.comment is not None else "")
+                continue
+            path = (*ancestors, node.header.strip())
+            child_lines, has_child_statement = render_nodes(node.children, level + 1, path)
+            if (
+                empty_block_policy is not None
+                and (node.is_block or node.children)
+                and not has_child_statement
+                and empty_block_policy.action_for(path) == "omit"
+            ):
+                skipped_node = True
+                continue
+            skipped_node = False
+            has_statement = True
+            line = " " * level + node.header
+            if node.comment is not None:
+                line += " " + node.comment
+            lines.append(line)
+            lines.extend(child_lines)
+        return lines, has_statement
+
+    return render_nodes(nodes, depth, ())[0]
 
 
 def strip_matching_nodes(
@@ -814,9 +835,11 @@ class CiscoDocument(VendorConfiguration):
     def render(self) -> str:
         """按虚拟根下的文档顺序渲染所有活动 IOS XR 节点。
 
-        逻辑停用的块被跳过，未知命令和格式节点按现有树保留；语义节点的缩进由
+        逻辑停用的块被跳过，空块按镜像 YAML 策略处理；未知命令和格式节点保留。缩进由
         AST 深度统一生成。稳定顺序和统一末尾换行便于设备加载和生成确定性差异。
         """
-        lines = _render_cisco_nodes(self.root.children, depth=0)
+        lines = _render_cisco_nodes(
+            self.root.children, depth=0, empty_block_policy=xrv9000_empty_block_policy()
+        )
         text = "\n".join(lines).rstrip() + "\n"
         return text

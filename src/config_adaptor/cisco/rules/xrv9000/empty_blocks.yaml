@@ -1,0 +1,13 @@
+schema_version: 1
+target:
+  vendor: cisco_iosxr
+  image: xrv9000
+# 空块默认保留原命令及格式；omit 会省略整个空块（包括注释）。
+default_when_empty: keep
+# path 语法同 cleaning.yaml：正则不区分大小写，需自行加 ^$ 锚定；
+# '*' 匹配一级，'**' 匹配零级或多级，须覆盖空块自身的完整路径。
+# 按顺序首条命中生效，action 可选 keep 或 omit，仅作用于块，不影响叶子命令。
+# 例如省略删空的 OSPF area：
+# - path: ['^router ospf\b', '^area\b']
+#   action: omit
+rules: []

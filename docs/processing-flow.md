@@ -137,6 +137,8 @@ NNI 中的聚合链路识别先由纯函数 `plan_nni_components()` 生成不可
 
 `CleaningRulesHandler` 在两个固定点运行。`pre_analysis` 的 `cisco.remove.banner` 在任何业务分析前按分隔符停用完整 exec/login banner；`post_rewrite` 先执行两家目标镜像目录下 `cleaning.yaml` 中 `enable: true` 的规则，再原子执行管理认证替换。默认启用的 `cisco.remove.ptp.interface` 只将 `interface PTP...` 虚拟接口块标记为非活动；全局 `ptp`、普通数据口下的 `ptp` 及频率同步配置不命中该规则。同样默认启用的还有接口类型约束清理规则：删除 LLDP/CDP、以太网 CFM/OAM、非 Bundle-Ether 接口上的 `bfd`、接口 QoS 挂载以及 Junos 服务链（`service-set`、接口服务挂载、服务接口），避免这些与路由验证无关、且受接口类型限制的配置在迁移后导致导入报错。Junos 容器被删空时按 `empty_blocks.yaml` 省略输出。
 
+两家厂商在最终渲染时分别读取目标镜像目录的 `empty_blocks.yaml`。Junos 支持 `semicolon`、`braces` 和 `omit`；IOS XR 支持 `keep`（默认保留空块原命令及格式）和 `omit`（省略整个空块及其注释）。`path` 与清洗规则使用相同的正则和 `*` / `**` 语法，但须匹配包含空块自身的完整路径，按顺序首条命中生效。IOS XR 从子到父判断空块，注释、空行和 `!` 分隔符不算有效命令；省略子块后变空的父块继续按策略处理，叶子命令不受空块策略影响。
+
 ## 4. 输入准备
 
 ### 4.1 厂商识别

@@ -4,7 +4,11 @@ import unittest
 from pathlib import Path
 from tempfile import TemporaryDirectory
 
+import yaml
+
+from config_adaptor.common.empty_blocks import EmptyBlockPolicy as CommonEmptyBlockPolicy
 from config_adaptor.juniper.empty_blocks import (
+    EmptyBlockPolicy,
     load_empty_block_policy,
     vmx_empty_block_policy,
 )
@@ -18,26 +22,27 @@ class JunosEmptyBlockRulesTest(unittest.TestCase):
         self.assertEqual(policy.action_for(("system", "services")), "omit")
         self.assertEqual(policy.action_for(("system", "login")), "omit")
         self.assertEqual(policy.action_for(("interfaces", "ge-0/0/0")), "semicolon")
+        self.assertIs(EmptyBlockPolicy, CommonEmptyBlockPolicy)
+        self.assertIs(policy, vmx_empty_block_policy())
 
-    def test_invalid_empty_block_paths_fail_fast(self):
-        entries = (
-            "rules: security",
-            "rules: [{path: [], action: omit}]",
-            "rules: [{path: [security], action: omit}, {path: [security], action: semicolon}]",
-            "rules: [{path: [security], action: invalid}]",
-            "rules: [{path: ['^(security$'], action: omit}]",
-        )
+    def test_vendor_wrapper_rejects_wrong_target_and_foreign_actions(self):
+        base = {
+            "schema_version": 1,
+            "target": {"vendor": "juniper_junos", "image": "vmx"},
+            "default_when_empty": "semicolon",
+            "rules": [],
+        }
+        invalid = [
+            {"target": {"vendor": "cisco_iosxr", "image": "vmx"}},
+            {"target": {"vendor": "juniper_junos", "image": "xrv9000"}},
+            {"default_when_empty": "keep"},
+            {"rules": [{"path": ["**"], "action": "keep"}]},
+        ]
         with TemporaryDirectory() as directory:
             path = Path(directory) / "empty_blocks.yaml"
-            for entry in entries:
-                with self.subTest(entry=entry):
-                    path.write_text(
-                        "schema_version: 1\n"
-                        "target: {vendor: juniper_junos, image: vmx}\n"
-                        "default_when_empty: semicolon\n"
-                        + entry + "\n",
-                        encoding="utf-8",
-                    )
+            for change in invalid:
+                with self.subTest(change=change):
+                    path.write_text(yaml.safe_dump(base | change), encoding="utf-8")
                     with self.assertRaises(ValueError):
                         load_empty_block_policy(path)
 
@@ -56,50 +61,6 @@ class JunosEmptyBlockRulesTest(unittest.TestCase):
         self.assertEqual(policy.action_for(("interfaces", "ge-0/0/0")), "semicolon")
         self.assertEqual(policy.action_for(("security",)), "omit")
         self.assertEqual(policy.action_for(("system", "services")), "braces")
-
-    def test_paths_support_regex_and_wildcards_like_cleaning_rules(self):
-        with TemporaryDirectory() as directory:
-            path = Path(directory) / "empty_blocks.yaml"
-            path.write_text(
-                "schema_version: 1\n"
-                "target: {vendor: juniper_junos, image: vmx}\n"
-                "default_when_empty: semicolon\n"
-                "rules:\n"
-                "  - {path: ['^interfaces$', '^ge-', '^unit \\d+$', '^family inet$'], action: braces}\n"
-                "  - {path: ['^protocols$', '*'], action: omit}\n"
-                "  - {path: ['^routing-instances$', '**', '^bgp$'], action: omit}\n",
-                encoding="utf-8",
-            )
-            policy = load_empty_block_policy(path)
-        cases = {
-            ("interfaces", "ge-0/0/1", "unit 10", "family inet"): "braces",
-            ("interfaces", "xe-0/0/1", "unit 10", "family inet"): "semicolon",
-            ("interfaces", "ge-0/0/1", "unit 10", "family inet6"): "semicolon",
-            ("protocols", "bgp"): "omit",
-            ("protocols", "bgp", "group G"): "semicolon",
-            ("routing-instances", "VRF", "protocols", "bgp"): "omit",
-            ("routing-instances", "bgp"): "omit",
-            ("SYSTEM", "SERVICES"): "semicolon",
-        }
-        for block_path, action in cases.items():
-            with self.subTest(path=block_path):
-                self.assertEqual(policy.action_for(block_path), action)
-
-    def test_first_matching_rule_wins(self):
-        with TemporaryDirectory() as directory:
-            path = Path(directory) / "empty_blocks.yaml"
-            path.write_text(
-                "schema_version: 1\n"
-                "target: {vendor: juniper_junos, image: vmx}\n"
-                "default_when_empty: semicolon\n"
-                "rules:\n"
-                "  - {path: ['^system$', '^login$'], action: braces}\n"
-                "  - {path: ['^system$', '*'], action: omit}\n",
-                encoding="utf-8",
-            )
-            policy = load_empty_block_policy(path)
-        self.assertEqual(policy.action_for(("system", "login")), "braces")
-        self.assertEqual(policy.action_for(("system", "services")), "omit")
 
 
 if __name__ == "__main__":
