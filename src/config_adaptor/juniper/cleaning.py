@@ -15,7 +15,8 @@ def _first_token(document: JunosDocument, node: JunosNode) -> str:
     ``inactive:``/``protect:`` 状态前缀和行尾分号，才能让同名命令无论是否
     停用或被保护都识别为同一 token。
     """
-    base = document._base_header(node.header)
+    parser = document._parser
+    base = parser.base_header(node.header)
     return base.split(maxsplit=1)[0].rstrip(";") if base else ""
 
 
@@ -83,6 +84,7 @@ def clean_management_access(document: JunosDocument) -> CleanupOutcome:
     外部 AAA、SNMP 和远程管理凭据不应进入隔离实验环境，否则既有泄密风险，也可能
     因外部认证服务器不可达而无法登录；与可改变业务能力的可选清洗分开。
     """
+    parser = document._parser
     system = document._top_block("system", create=True)
     require_invariant(
         system is not None and system.children is not None,
@@ -113,7 +115,7 @@ def clean_management_access(document: JunosDocument) -> CleanupOutcome:
             for child in system.children
             if child.effective
             and child.is_block
-            and document._base_header(child.header) == "services"
+            and parser.base_header(child.header) == "services"
         ),
         None,
     )

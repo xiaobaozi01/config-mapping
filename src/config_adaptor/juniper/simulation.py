@@ -45,6 +45,7 @@ def _adapt_interface_knobs(
     真机上的 speed/fec/gigether-options 等物理参数在 vMX 镜像上可能无效；按策略
     开关只处理命中 ``target_parents`` 的接口，避免误改未参与映射的端口。
     """
+    parser = document._parser
     knob_leaf_pattern = re.compile(
         r"^(?:speed|link-mode|fec|no-auto-negotiation|loopback|clocking)\b",
         re.IGNORECASE,
@@ -61,7 +62,7 @@ def _adapt_interface_knobs(
             if not child.effective:
                 retained.append(child)
                 continue
-            base = document._base_header(child.header).rstrip(";")
+            base = parser.base_header(child.header).rstrip(";")
             token = base.split(maxsplit=1)[0] if base else ""
             if policy.ensure_data_interfaces_enabled and token == "disable":
                 outcome.record("removed", "interface-disable")
@@ -86,6 +87,7 @@ def _clamp_bfd_timers(
     真机配置常使用激进的 BFD 间隔，GNS3 虚拟环境无法稳定维持；遍历
     ``bfd-liveness-detection`` 子树，仅上修过小值、不降低已合规值。
     """
+    parser = document._parser
     bfd_interval_pattern = re.compile(
         r"^(?P<key>minimum-interval|minimum-receive-interval|transmit-interval)\s+"
         r"(?P<value>\d+)\s*;$",
@@ -99,7 +101,7 @@ def _clamp_bfd_timers(
     def walk(node: JunosNode, inside_bfd: bool = False) -> None:
         if not node.effective:
             return
-        base = document._base_header(node.header)
+        base = parser.base_header(node.header)
         current_bfd = inside_bfd or base.rstrip(";") == "bfd-liveness-detection"
         if current_bfd and node.children is None:
             for pattern, minimum, category in (

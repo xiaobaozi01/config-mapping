@@ -75,6 +75,7 @@ class JunosGroupExpander:
     def __init__(self, document: JunosDocument):
         """绑定待处理的 Junos 文档；构造阶段不解析或修改配置树。"""
         self._document = document
+        self._base_header = document._parser.base_header
 
     def _iter_source_nodes(self) -> Iterable[JunosNode]:
         """迭代原树，用于进入事务式展开前的廉价筛选。"""

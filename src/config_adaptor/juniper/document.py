@@ -5,12 +5,14 @@ from __future__ import annotations
 import copy
 import re
 from dataclasses import dataclass
+from functools import lru_cache
 from typing import Iterable
 
 from ..common.cleaning import matches_cleaning_path
 from ..common.contracts import VendorConfiguration
 from ..common.errors import require_invariant
 from ..common.interface import InterfaceKind, InterfaceSpec, interface_parent
+from ..common.interface_cache import InterfaceAnalysisCache, copy_interface_specs
 from ..common.outcomes import (
     CleanupOutcome,
     GroupExpansionOutcome,
@@ -75,6 +77,54 @@ def _junos_interface_kind(name: str) -> InterfaceKind:
     return InterfaceKind.UNKNOWN
 
 
+def _resolved_interface_kind(name: str) -> InterfaceKind:
+    """从外部接口写法解析类别，不在模块级保存配置数据。"""
+    return _junos_interface_kind(canonical_junos_interface(name))
+
+
+def _parse_header_prefixes(header: str) -> tuple[str, bool]:
+    """共享解析状态前缀，返回基础语句与是否包含 inactive 标志。"""
+    result = header.strip()
+    inactive = False
+    while True:
+        for prefix in ("inactive:", "protect:"):
+            if result.startswith(prefix):
+                inactive = inactive or prefix == "inactive:"
+                result = result[len(prefix) :].strip()
+                break
+        else:
+            return result, inactive
+
+
+def _is_unit_header(header: str) -> bool:
+    """识别块或叶子形式的 unit，保留原有完整匹配规则。"""
+    return bool(re.fullmatch(r"unit\s+\d+;?", _parse_header_prefixes(header)[0]))
+
+
+def _unit_number_from_header(header: str) -> str:
+    """提取已识别 unit 的原始编号字符串。"""
+    return _parse_header_prefixes(header)[0].rstrip(";").split(maxsplit=1)[1]
+
+
+def _vlan_from_header(header: str) -> int | None:
+    """解析单条语句的单层或 QinQ 外层 VLAN。"""
+    statement = _parse_header_prefixes(header)[0]
+    match = re.match(r"vlan-id\s+(\d+)\s*;", statement)
+    if match:
+        return int(match.group(1))
+    tags = re.match(r"vlan-tags\s+outer\s+(\d+)\s+inner\s+\d+\s*;", statement)
+    return int(tags.group(1)) if tags else None
+
+
+def _inner_vlan_from_header(header: str) -> int | None:
+    """解析单条 QinQ 语句的内层 VLAN，单层或无标签语句返回 None。"""
+    match = re.match(
+        r"vlan-tags\s+outer\s+\d+\s+inner\s+(\d+)\s*;",
+        _parse_header_prefixes(header)[0],
+    )
+    return int(match.group(1)) if match else None
+
+
 @dataclass
 class JunosNode:
     """表示 Junos 大括号配置树中的块节点或叶子语句。
@@ -110,18 +160,7 @@ class JunosNode:
         状态直接从原始 header 读取，因此渲染仍可完整保留前缀；同时支持和
         ``protect:`` 组合及不同排列顺序，避免把受保护的停用节点误判为有效。
         """
-        remaining = self.header.strip()
-        inactive = False
-        while True:
-            matched = False
-            for prefix in ("inactive:", "protect:"):
-                if remaining.startswith(prefix):
-                    inactive = inactive or prefix == "inactive:"
-                    remaining = remaining[len(prefix) :].strip()
-                    matched = True
-                    break
-            if not matched:
-                return inactive
+        return _parse_header_prefixes(self.header)[1]
 
     @property
     def is_comment_only(self) -> bool:
@@ -141,6 +180,37 @@ class JunosNode:
         """
         return copy.deepcopy(self)
 
+
+class _JunosHeaderParser:
+    """单个文档持有的字符串解析器，缓存不引用文档或可修改节点。"""
+
+    def __init__(self) -> None:
+        self.canonical_interface = lru_cache(maxsize=32_768)(canonical_junos_interface)
+        self.interface_kind = lru_cache(maxsize=32_768)(_resolved_interface_kind)
+        self.header_prefixes = lru_cache(maxsize=32_768)(_parse_header_prefixes)
+        self.is_unit = lru_cache(maxsize=32_768)(_is_unit_header)
+        self.unit_number = lru_cache(maxsize=32_768)(_unit_number_from_header)
+        self.vlan = lru_cache(maxsize=32_768)(_vlan_from_header)
+        self.inner_vlan = lru_cache(maxsize=32_768)(_inner_vlan_from_header)
+
+    def __deepcopy__(self, memo: dict[int, object]) -> _JunosHeaderParser:
+        """复制文档时创建空缓存，避免 deepcopy 复用 functools 的包装器。"""
+        return type(self)()
+
+    def base_header(self, header: str) -> str:
+        """复用前缀解析结果，返回语义匹配所用的基础文本。"""
+        return self.header_prefixes(header)[0]
+
+    def output_header(self, header: str) -> str:
+        """复用前缀解析结果，输出时移除 protect 并保留 inactive。"""
+        result, inactive = self.header_prefixes(header)
+        return f"inactive: {result}" if inactive else result
+
+    def is_effective(self, node: JunosNode) -> bool:
+        """只缓存 header 解析，节点的活动与注释状态实时读取。"""
+        return node.active and not self.header_prefixes(node.header)[1] and not node.is_comment_only
+
+
 class JunosDocument(VendorConfiguration):
     """提供可修改 Junos 配置树及应用层所需的统一厂商门面。
 
@@ -156,8 +226,10 @@ class JunosDocument(VendorConfiguration):
         虚拟根统一承载多个顶层块，使所有遍历都可从单一节点开始；构造时立即解析并
         校验括号，可在任何配置改写发生前拒绝结构损坏的输入。
         """
+        self._parser = _JunosHeaderParser()
         self.root = JunosNode("<root>", [])
         self._parse(text)
+        self._interface_analysis_cache = InterfaceAnalysisCache()
 
     def hostname(self) -> str | None:
         """返回 ``system`` 块下最后一条有效的 ``host-name`` 语句值，未配置时返回 ``None``。
@@ -171,9 +243,9 @@ class JunosDocument(VendorConfiguration):
             return None
         value: str | None = None
         for child in system.children:
-            if not child.effective or child.is_block:
+            if not self._parser.is_effective(child) or child.is_block:
                 continue
-            statement = self._base_header(child.header)
+            statement = self._parser.base_header(child.header)
             match = re.match(r"host-name\s+(.+)$", statement, re.IGNORECASE)
             if not match:
                 continue
@@ -350,14 +422,7 @@ class JunosDocument(VendorConfiguration):
         名、块名和清洗规则稳定识别同一命令。原始 header 仍保留在树中，输出阶段再
         单独决定保留 ``inactive:`` 并移除 ``protect:``。
         """
-        result = header.strip()
-        while True:
-            for prefix in ("inactive:", "protect:"):
-                if result.startswith(prefix):
-                    result = result[len(prefix) :].strip()
-                    break
-            else:
-                return result
+        return _parse_header_prefixes(header)[0]
 
     @staticmethod
     def _output_header(header: str) -> str:
@@ -366,16 +431,8 @@ class JunosDocument(VendorConfiguration):
         GNS3 配置不需要继承生产设备上的编辑保护；组合前缀会统一重建为
         ``inactive:`` 加基础语句，确保去保护不会意外激活原本停用的节点。
         """
-        result = header.strip()
-        inactive = False
-        while True:
-            for prefix in ("inactive:", "protect:"):
-                if result.startswith(prefix):
-                    inactive = inactive or prefix == "inactive:"
-                    result = result[len(prefix) :].strip()
-                    break
-            else:
-                return f"inactive: {result}" if inactive else result
+        result, inactive = _parse_header_prefixes(header)
+        return f"inactive: {result}" if inactive else result
 
     def _top_block(self, name: str, create: bool = False) -> JunosNode | None:
         """查找指定活动顶层块，并在请求时创建缺失块。
@@ -389,7 +446,11 @@ class JunosDocument(VendorConfiguration):
             "Junos 文档根节点必须可包含子节点",
         )
         for node in self.root.children:
-            if node.effective and node.is_block and self._base_header(node.header) == name:
+            if (
+                self._parser.is_effective(node)
+                and node.is_block
+                and self._parser.base_header(node.header) == name
+            ):
                 return node
         if create:
             node = JunosNode(name, [])
@@ -414,7 +475,7 @@ class JunosDocument(VendorConfiguration):
         block = self._interfaces_block()
         if not block or block.children is None:
             return []
-        return [node for node in block.children if node.effective and node.is_block]
+        return [node for node in block.children if self._parser.is_effective(node) and node.is_block]
 
     def _interface_name(self, node: JunosNode) -> str:
         """从接口节点 header 的首个字段提取规范化接口名。
@@ -422,7 +483,7 @@ class JunosDocument(VendorConfiguration):
         先移除状态前缀再规范化，可使 ``inactive:``、``protect:`` 或空白差异不影响
         同名节点合并和接口查找。
         """
-        return canonical_junos_interface(self._base_header(node.header).split()[0])
+        return self.resolve_interface(self._parser.base_header(node.header).split()[0])
 
     def _unit_nodes(self, interface: JunosNode) -> list[JunosNode]:
         """列出接口节点下有效的 ``unit`` 子节点，包括空的叶子 unit。
@@ -435,8 +496,7 @@ class JunosDocument(VendorConfiguration):
         return [
             node
             for node in interface.children
-            if node.effective
-            and re.fullmatch(r"unit\s+\d+;?", self._base_header(node.header))
+            if self._parser.is_effective(node) and self._parser.is_unit(node.header)
         ]
 
     def _unit_number(self, node: JunosNode) -> str:
@@ -445,7 +505,7 @@ class JunosDocument(VendorConfiguration):
         保留字符串形式可兼容解析阶段尚未限制的输入，并在拼接完整接口名及选择源
         unit 时保持原始编号表达。
         """
-        return self._base_header(node.header).rstrip(";").split(maxsplit=1)[1]
+        return self._parser.unit_number(node.header)
 
     def _find_vlan(self, unit: JunosNode) -> int | None:
         """读取 unit 的单层 VLAN 或 QinQ 外层 VLAN，未配置时返回 ``None``。
@@ -456,15 +516,11 @@ class JunosDocument(VendorConfiguration):
         if unit.children is None:
             return None
         for child in unit.children:
-            if not child.effective:
+            if not self._parser.is_effective(child):
                 continue
-            statement = self._base_header(child.header)
-            match = re.match(r"vlan-id\s+(\d+)\s*;", statement)
-            if match:
-                return int(match.group(1))
-            tags = re.match(r"vlan-tags\s+outer\s+(\d+)\s+inner\s+\d+\s*;", statement)
-            if tags:
-                return int(tags.group(1))
+            vlan = self._parser.vlan(child.header)
+            if vlan is not None:
+                return vlan
         return None
 
     def _find_inner_vlan(self, unit: JunosNode) -> int | None:
@@ -476,14 +532,11 @@ class JunosDocument(VendorConfiguration):
         if unit.children is None:
             return None
         for child in unit.children:
-            if not child.effective:
+            if not self._parser.is_effective(child):
                 continue
-            match = re.match(
-                r"vlan-tags\s+outer\s+\d+\s+inner\s+(\d+)\s*;",
-                self._base_header(child.header),
-            )
-            if match:
-                return int(match.group(1))
+            vlan = self._parser.inner_vlan(child.header)
+            if vlan is not None:
+                return vlan
         return None
 
     def expand_groups(
@@ -506,7 +559,12 @@ class JunosDocument(VendorConfiguration):
         返回厂商无关的 ``InterfaceSpec``，使 NNI/UNI 规划无需遍历 Junos 节点；统一
         规格也让业务筛选、VLAN 分配和审计映射共享同一事实来源。
         """
-        return self._interfaces().interface_specs(self)
+        return self._interface_analysis_cache.read(
+            self.root,
+            "interface_specs",
+            lambda: self._interfaces().interface_specs(self),
+            copy_interface_specs,
+        )
 
     @staticmethod
     def _interfaces():
@@ -525,7 +583,7 @@ class JunosDocument(VendorConfiguration):
         拓扑预检和配置扫描都通过同一入口分类，可避免对物理口、ae、IRB 或控制接口
         产生不同判断，从而阻止不合法端点参与 NNI 映射。
         """
-        return self._interfaces().interface_kind(self, name)
+        return self._parser.interface_kind(name)
 
     def bundle_members(self) -> dict[str, str]:
         """返回物理接口到 ``ae`` 聚合父口的映射。
@@ -533,7 +591,12 @@ class JunosDocument(VendorConfiguration):
         NNI/UNI 扁平化需要从拓扑物理端点反查真正承载业务的逻辑聚合口，并在迁移后
         清理原成员，因此统一暴露该方向的关系。
         """
-        return self._interfaces().bundle_members(self)
+        return self._interface_analysis_cache.read(
+            self.root,
+            "bundle_members",
+            lambda: self._interfaces().bundle_members(self),
+            dict,
+        )
 
     def resolve_interface(self, value: str) -> str:
         """把拓扑中的 Junos 接口写法转换为解析器的规范形式。
@@ -541,7 +604,7 @@ class JunosDocument(VendorConfiguration):
         所有查找先经过统一规范化，可消除空白差异，避免同一接口在拓扑和配置树之间
         匹配失败或被重复处理。
         """
-        return self._interfaces().resolve_interface(self, value)
+        return self._parser.canonical_interface(value)
 
     def logical_names_under(self, parent: str) -> list[str]:
         """列出指定父接口对应的已配置业务名称或全部 unit 名称。
@@ -557,7 +620,12 @@ class JunosDocument(VendorConfiguration):
         IRB 不因自身配置地址就自动迁移；只有 bridge-domain/vlan 中仍有
         活跃接入口，或其 unit 命中活跃业务 VLAN 时才进入 UNI 计划。
         """
-        return self._interfaces().business_interface_names(self)
+        return self._interface_analysis_cache.read(
+            self.root,
+            "business_interface_names",
+            lambda: self._interfaces().business_interface_names(self),
+            set,
+        )
 
     def _find_interface_node(self, name: str) -> JunosNode | None:
         """按父接口名查找第一个有效 Junos 接口节点。
@@ -698,9 +766,9 @@ class JunosDocument(VendorConfiguration):
 
         def walk(node: JunosNode, ancestors: tuple[str, ...]) -> None:
             nonlocal hits
-            if not node.effective:
+            if not self._parser.is_effective(node):
                 return
-            header = self._base_header(node.header).rstrip(";").strip()
+            header = self._parser.base_header(node.header).rstrip(";").strip()
             if matches_cleaning_path(ancestors, path) and pattern.search(header):
                 hits += 1
                 if action == "delete":
@@ -711,7 +779,7 @@ class JunosDocument(VendorConfiguration):
                     node.header = pattern.sub(value or "", header) + suffix
                 elif action == "mask":
                     node.header = "<masked>" + ("" if node.is_block else ";")
-                header = self._base_header(node.header).rstrip(";").strip()
+                header = self._parser.base_header(node.header).rstrip(";").strip()
             if node.children:
                 for child in node.children:
                     walk(child, (*ancestors, header))
@@ -729,7 +797,7 @@ class JunosDocument(VendorConfiguration):
         引用同样改名，确保实验环境中重新 activate 后指向迁移后的接口。
         """
         relevant = {
-            canonical_junos_interface(source): list(dict.fromkeys(targets))
+            self.resolve_interface(source): list(dict.fromkeys(targets))
             for source, targets in replacements.items()
             if targets and targets != [source]
         }
@@ -772,7 +840,7 @@ class JunosDocument(VendorConfiguration):
             if node.children is None:
                 return
             current_inside = inside_interfaces or (
-                node is not self.root and self._base_header(node.header) == "interfaces"
+                node is not self.root and self._parser.base_header(node.header) == "interfaces"
             )
             rebuilt: list[JunosNode] = []
             for child in node.children:
@@ -804,12 +872,12 @@ class JunosDocument(VendorConfiguration):
             return ""
         indent = "    " * depth
         if node.children is None:
-            header = self._output_header(node.header)
+            header = self._parser.output_header(node.header)
             if node.comment:
                 header = f"{header} {node.comment}" if header else node.comment
             return indent + header
-        path = (*ancestors, self._base_header(node.header))
-        opening = indent + self._output_header(node.header) + " {"
+        path = (*ancestors, self._parser.base_header(node.header))
+        opening = indent + self._parser.output_header(node.header) + " {"
         if node.comment:
             opening += " " + node.comment
         lines = [opening]
@@ -830,7 +898,7 @@ class JunosDocument(VendorConfiguration):
             if action == "omit":
                 return ""
             if action == "semicolon":
-                statement = indent + self._output_header(node.header) + ";"
+                statement = indent + self._parser.output_header(node.header) + ";"
                 if node.comment:
                     statement += " " + node.comment
                 # 块内独立注释前置，避免被误读为后续兄弟语句的注释。
@@ -845,12 +913,12 @@ class JunosDocument(VendorConfiguration):
 
     def _render_effective_node(self, node: JunosNode, depth: int) -> str:
         """渲染仅包含当前生效节点的语义视图，不改变最终输出。"""
-        if not node.effective:
+        if not self._parser.is_effective(node):
             return ""
         indent = "    " * depth
         if node.children is None:
-            return indent + self._output_header(node.header)
-        lines = [indent + self._output_header(node.header) + " {"]
+            return indent + self._parser.output_header(node.header)
+        lines = [indent + self._parser.output_header(node.header) + " {"]
         for child in node.children:
             rendered = self._render_effective_node(child, depth + 1)
             if rendered:

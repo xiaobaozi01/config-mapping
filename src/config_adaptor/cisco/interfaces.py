@@ -9,8 +9,6 @@ from ..common.errors import require_invariant
 from .document import (
     CiscoDocument,
     CiscoNode,
-    _cisco_interface_kind,
-    canonical_cisco_interface,
     strip_matching_nodes,
 )
 from ..common.interface import (
@@ -28,10 +26,11 @@ def interface_nodes(document: CiscoDocument) -> list[CiscoNode]:
     后续接口分析和修改统一从这里取数，以免把已逻辑删除的块或普通顶层配置
     误当成接口处理。
     """
+    parser = document._parser
     return [
         block
         for block in document.root.children
-        if block.active and block.interface_name
+        if block.active and parser.interface_name(block.header)
     ]
 
 
@@ -42,9 +41,10 @@ def interface_specs(document: CiscoDocument) -> list[InterfaceSpec]:
     ``inner_vlan`` 只从唯一、无歧义的 bridge-domain 绑定中推导，避免 UNI
     迁移时把错误的 VLAN 当作需要保留的内层标签。
     """
+    parser = document._parser
     result: list[InterfaceSpec] = []
     for block in interface_nodes(document):
-        name = block.interface_name
+        name = parser.interface_name(block.header)
         require_invariant(
             name is not None,
             "Cisco 接口节点集合中的节点必须包含接口名",
@@ -68,14 +68,18 @@ def interface_specs(document: CiscoDocument) -> list[InterfaceSpec]:
                 parent=interface_parent(name),
                 unit=interface_unit(name),
                 vlan=vlan,
-                kind=_cisco_interface_kind(name),
+                kind=document.interface_kind(name),
                 inner_vlan=inner_vlan,
             )
         )
 
     # BVI 编号只是接口标识，不能当作 VLAN。仅当同一 bridge-domain 的
     # attachment circuit 给出唯一明确的标签时，才把它作为网关的内层业务 VLAN。
-    gateway_hints = _gateway_inner_vlan_hints(document, result)
+    gateway_hints = (
+        _gateway_inner_vlan_hints(document, result)
+        if any(spec.kind == InterfaceKind.GATEWAY for spec in result)
+        else {}
+    )
     for spec in result:
         if spec.kind == InterfaceKind.GATEWAY:
             spec.inner_vlan = gateway_hints.get(spec.name)
@@ -133,7 +137,7 @@ def _bridge_domain_bindings(
                         re.IGNORECASE,
                     )
                     if gateway_match:
-                        gateways.add(canonical_cisco_interface(gateway_match.group(1)))
+                        gateways.add(document.resolve_interface(gateway_match.group(1)))
                         continue
                     interface_match = re.match(
                         r"^interface\s+(.+)$",
@@ -141,7 +145,7 @@ def _bridge_domain_bindings(
                         re.IGNORECASE,
                     )
                     if interface_match:
-                        attachments.add(canonical_cisco_interface(interface_match.group(1)))
+                        attachments.add(document.resolve_interface(interface_match.group(1)))
                 result.append((attachments, gateways))
     return result
 
@@ -183,10 +187,10 @@ def _gateway_inner_vlan_hints(
 def interface_kind(document: CiscoDocument, name: str) -> InterfaceKind:
     """按 IOS XR 命名规则返回规范化接口的业务类别。
 
-    ``document`` 保留在签名中是为了实现统一的厂商接口协议；分类本身只依赖
-    接口名，供拓扑校验及物理口、聚合口、网关口分流使用。
+    分类本身只依赖接口名，复用当前文档的私有解析缓存，供拓扑校验及
+    物理口、聚合口、网关口分流使用。
     """
-    return _cisco_interface_kind(canonical_cisco_interface(name))
+    return document.interface_kind(name)
 
 
 def bundle_members(document: CiscoDocument) -> dict[str, str]:
@@ -195,14 +199,15 @@ def bundle_members(document: CiscoDocument) -> dict[str, str]:
     仅采集物理父口上的 ``bundle id``，不把子接口当成独立成员，供迁移流程在
     展平聚合配置时找到并清理真实成员口。
     """
+    parser = document._parser
     result: dict[str, str] = {}
     for block in interface_nodes(document):
-        name = block.interface_name
+        name = parser.interface_name(block.header)
         require_invariant(
             name is not None,
             "Cisco 接口节点集合中的节点必须包含接口名",
         )
-        if _cisco_interface_kind(name) != InterfaceKind.PHYSICAL or interface_unit(name) is not None:
+        if document.interface_kind(name) != InterfaceKind.PHYSICAL or interface_unit(name) is not None:
             continue
         for node in block.walk():
             match = re.match(r"bundle\s+id\s+(\d+)\b", node.header, re.IGNORECASE)
@@ -215,10 +220,10 @@ def bundle_members(document: CiscoDocument) -> dict[str, str]:
 def resolve_interface(document: CiscoDocument, value: str) -> str:
     """把外部输入的 IOS XR 接口别名转换为解析器使用的规范名称。
 
-    ``document`` 仅用于与其他厂商实现保持统一调用形式；名称统一后，拓扑数据
-    才能与配置中的接口块可靠匹配。
+    复用当前文档的私有解析缓存；名称统一后，拓扑数据才能与配置中的接口块
+    可靠匹配。
     """
-    return canonical_cisco_interface(value)
+    return document.resolve_interface(value)
 
 
 def logical_names_under(document: CiscoDocument, parent: str) -> list[str]:
@@ -227,9 +232,9 @@ def logical_names_under(document: CiscoDocument, parent: str) -> list[str]:
     返回完整接口树名称是为了在 NNI 克隆、重命名及审计映射时保留每个子接口
     的后缀，而集合去重可避免重复配置块产生重复记录。
     """
-    parent = canonical_cisco_interface(parent)
+    parent = document.resolve_interface(parent)
     return sorted(
-        {spec.name for spec in interface_specs(document) if spec.parent == parent},
+        {spec.name for spec in document.interface_specs() if spec.parent == parent},
         key=lambda value: (interface_unit(value) is not None, value),
     )
 
@@ -242,7 +247,8 @@ def business_interface_names(document: CiscoDocument) -> set[str]:
     bridge-domain 含有已激活接入电路时加入结果，防止仅因 BVI 自身有地址或
     编号而迁移与当前 UNI 无关的网关。
     """
-    specs = interface_specs(document)
+    parser = document._parser
+    specs = document.interface_specs()
     known = {spec.name for spec in specs}
     kinds = {spec.name: spec.kind for spec in specs}
     mappable_kinds = {InterfaceKind.PHYSICAL, InterfaceKind.BUNDLE}
@@ -253,12 +259,12 @@ def business_interface_names(document: CiscoDocument) -> set[str]:
         re.IGNORECASE,
     )
     for block in interface_nodes(document):
-        name = block.interface_name
+        name = parser.interface_name(block.header)
         if (
             name
             and kinds.get(name) in mappable_kinds
             and (
-                block.l2transport
+                parser.l2transport(block.header)
                 or any(direct.match(node.header) for node in block.walk())
             )
         ):
@@ -267,7 +273,7 @@ def business_interface_names(document: CiscoDocument) -> set[str]:
     external_text = "\n".join(
         text
         for block in document.root.children
-        if block.active and not block.interface_name
+        if block.active and not parser.interface_name(block.header)
         for text in [block.header, *(node.header for node in block.walk())]
     )
     referenced = referenced_interface_names(
@@ -295,12 +301,13 @@ def find_interface_node(document: CiscoDocument, name: str) -> CiscoNode | None:
     统一规范化调用方输入可兼容接口别名；忽略非活动块则确保后续修改不会落到
     已被逻辑删除的旧配置上。
     """
-    canonical = canonical_cisco_interface(name)
+    parser = document._parser
+    canonical = document.resolve_interface(name)
     return next(
         (
             block
             for block in interface_nodes(document)
-            if block.interface_name == canonical
+            if parser.interface_name(block.header) == canonical
         ),
         None,
     )
@@ -316,9 +323,10 @@ def remove_interface(
     方法通过设置 ``active=False`` 而非直接删除块，保留原始文档顺序和编辑上下文；
     ``include_children`` 用于父口迁移结束后一次清理整棵接口树。
     """
-    canonical = canonical_cisco_interface(name)
+    parser = document._parser
+    canonical = document.resolve_interface(name)
     for block in interface_nodes(document):
-        current = block.interface_name
+        current = parser.interface_name(block.header)
         if current == canonical or (
             include_children and current and current.startswith(canonical + ".")
         ):
@@ -336,16 +344,17 @@ def rename_interface_tree(
     ``strip_bundle`` 会移除聚合成员相关命令，因为迁移到普通目标口后这些属性已
     不再成立；若新名称已存在，则合并重复接口块，避免渲染出相互冲突的定义。
     """
-    source = canonical_cisco_interface(source)
-    target = canonical_cisco_interface(target)
+    parser = document._parser
+    source = document.resolve_interface(source)
+    target = document.resolve_interface(target)
     for block in list(interface_nodes(document)):
-        current = block.interface_name
+        current = parser.interface_name(block.header)
         if current != source and not (current and current.startswith(source + ".")):
             continue
         suffix = current[len(source) :] if current else ""
         new_name = target + suffix
         block.header = f"interface {new_name}" + (
-            " l2transport" if block.l2transport else ""
+            " l2transport" if parser.l2transport(block.header) else ""
         )
         if strip_bundle:
             block.children, _ = strip_matching_nodes(
@@ -367,14 +376,14 @@ def clone_interface_tree(
     聚合属性。源不存在时仍创建一个启用的空目标口，使后续迁移步骤有稳定落点；
     目标重名时则合并配置而非产生重复接口块。
     """
-    source = canonical_cisco_interface(source)
-    target = canonical_cisco_interface(target)
-    originals = [
-        block
-        for block in interface_nodes(document)
-        if block.interface_name == source
-        or (block.interface_name and block.interface_name.startswith(source + "."))
-    ]
+    parser = document._parser
+    source = document.resolve_interface(source)
+    target = document.resolve_interface(target)
+    originals: list[CiscoNode] = []
+    for block in interface_nodes(document):
+        name = parser.interface_name(block.header)
+        if name == source or (name and name.startswith(source + ".")):
+            originals.append(block)
     if not originals:
         document.root.children.append(
             CiscoNode(
@@ -388,10 +397,10 @@ def clone_interface_tree(
     clones: list[CiscoNode] = []
     for original in originals:
         clone = copy.deepcopy(original)
-        current = original.interface_name or source
+        current = parser.interface_name(original.header) or source
         new_name = target + current[len(source) :]
         clone.header = f"interface {new_name}" + (
-            " l2transport" if original.l2transport else ""
+            " l2transport" if parser.l2transport(original.header) else ""
         )
         if strip_bundle:
             clone.children, _ = strip_matching_nodes(
@@ -401,7 +410,7 @@ def clone_interface_tree(
         clones.extend([clone, CiscoNode(header="!")])
     document.root.children[insert_at:insert_at] = clones
     for clone in clones:
-        if clone.interface_name:
+        if parser.interface_name(clone.header):
             _merge_duplicate_interface(document, clone)
 
 
@@ -414,9 +423,10 @@ def _merge_duplicate_interface(
     接口改名或克隆可能与已有目标接口碰撞；集中合并既保留双方配置，也保证最终
     输出只有一个活动定义。子树按原文档中各块的出现顺序收集。
     """
-    name = preferred.interface_name
+    parser = document._parser
+    name = parser.interface_name(preferred.header)
     duplicates = [
-        block for block in interface_nodes(document) if block.interface_name == name
+        block for block in interface_nodes(document) if parser.interface_name(block.header) == name
     ]
     if len(duplicates) < 2:
         return
@@ -449,13 +459,14 @@ def map_uni(
     以避免新旧终结语义冲突；目标重名时合并配置。找不到源块时仅返回预期目标名，
     让上层流程仍可记录确定性的映射结果。
     """
-    source = canonical_cisco_interface(source)
-    target = f"{canonical_cisco_interface(target_parent)}.{vlan}"
+    parser = document._parser
+    source = document.resolve_interface(source)
+    target = f"{document.resolve_interface(target_parent)}.{vlan}"
     block = find_interface_node(document, source)
     if not block:
         return target
     block.header = f"interface {target}" + (
-        " l2transport" if block.l2transport else ""
+        " l2transport" if parser.l2transport(block.header) else ""
     )
     filtered, _ = strip_matching_nodes(
         block.children,
@@ -481,7 +492,7 @@ def ensure_parent_interface(document: CiscoDocument, name: str) -> None:
     UNI 业务通常只生成子接口，但设备配置仍需要显式、已启用的承载父口；已有
     接口保持原样，避免覆盖用户配置。
     """
-    canonical = canonical_cisco_interface(name)
+    canonical = document.resolve_interface(name)
     if find_interface_node(document, canonical):
         return
     document.root.children.append(

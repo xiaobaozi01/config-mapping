@@ -6,12 +6,13 @@ import copy
 import re
 from dataclasses import dataclass, field
 from functools import lru_cache
-from typing import Iterable
+from typing import Callable, Iterable
 
 from .empty_blocks import EmptyBlockPolicy, xrv9000_empty_block_policy
 from ..common.cleaning import matches_cleaning_path
 from ..common.contracts import VendorConfiguration
 from ..common.interface import InterfaceKind, InterfaceSpec, interface_parent
+from ..common.interface_cache import InterfaceAnalysisCache, copy_interface_specs
 from ..common.outcomes import (
     CleanupOutcome,
     GroupExpansionOutcome,
@@ -91,9 +92,7 @@ class CiscoNode:
     @property
     def is_preconfigured_interface(self) -> bool:
         """区分 IOS XR 的预配置模式与真实接口名。"""
-        return bool(
-            re.match(r"^interface\s+preconfigure(?:\s|$)", self.header, re.IGNORECASE)
-        )
+        return _is_preconfigured_interface_header(self.header)
 
     @property
     def l2transport(self) -> bool:
@@ -102,17 +101,33 @@ class CiscoNode:
         接口克隆、改名或 UNI 映射会重建 header，单独暴露模式标志可避免
         名称变更时丢失二层属性。
         """
-        return bool(re.match(r"interface\s+.+\s+l2transport\s*$", self.header, re.IGNORECASE))
+        return _is_l2transport_header(self.header)
 
 
-@lru_cache(maxsize=32_768)
+def _is_preconfigured_interface_header(header: str) -> bool:
+    """按 header 判断接口是否处于预配置模式。"""
+    return bool(re.match(r"^interface\s+preconfigure(?:\s|$)", header, re.IGNORECASE))
+
+
+def _is_l2transport_header(header: str) -> bool:
+    """按 header 判断接口是否显式启用二层模式。"""
+    return bool(re.match(r"interface\s+.+\s+l2transport\s*$", header, re.IGNORECASE))
+
+
+def _is_group_header(header: str) -> bool:
+    """按 header 判断顶层命令是否为 group 定义。"""
+    return bool(re.match(r"group\s+\S+", header, re.IGNORECASE))
+
+
 def _interface_name_from_header(header: str) -> str | None:
-    """按不可变 header 缓存接口名；节点改名后会自动使用新键。"""
+    """从不可变 header 解析接口名，缓存由 Document 实例持有。"""
+    if not header.lower().startswith("interface"):
+        return None
     match = re.match(r"^interface\s+(.+?)\s*$", header, re.IGNORECASE)
     if not match:
         return None
     value = match.group(1)
-    if re.match(r"^interface\s+preconfigure(?:\s|$)", header, re.IGNORECASE):
+    if _is_preconfigured_interface_header(header):
         preconfigured = re.match(
             r"^interface\s+preconfigure(?:\s+(.+?))?\s*$",
             header,
@@ -347,6 +362,26 @@ def _cisco_interface_kind(name: str) -> InterfaceKind:
     return InterfaceKind.UNKNOWN
 
 
+def _resolved_interface_kind(name: str) -> InterfaceKind:
+    """从外部接口写法解析类别，不在模块级保存配置数据。"""
+    return _cisco_interface_kind(canonical_cisco_interface(name))
+
+
+class _CiscoHeaderParser:
+    """单个文档持有的字符串解析器，缓存不引用文档或可修改节点。"""
+
+    def __init__(self) -> None:
+        self.canonical_interface = lru_cache(maxsize=32_768)(canonical_cisco_interface)
+        self.interface_kind = lru_cache(maxsize=32_768)(_resolved_interface_kind)
+        self.interface_name = lru_cache(maxsize=32_768)(_interface_name_from_header)
+        self.l2transport = lru_cache(maxsize=32_768)(_is_l2transport_header)
+        self.is_group = lru_cache(maxsize=32_768)(_is_group_header)
+
+    def __deepcopy__(self, memo: dict[int, object]) -> _CiscoHeaderParser:
+        """复制文档时创建空缓存，避免 deepcopy 复用 functools 的包装器。"""
+        return type(self)()
+
+
 class CiscoDocument(VendorConfiguration):
     """提供可修改 IOS XR 配置树及应用层所需的统一厂商门面。
 
@@ -362,9 +397,11 @@ class CiscoDocument(VendorConfiguration):
         构造时立即建立可修改树，使后续处理器共享同一文档状态；保留节点顺序是为了
         在删除或插入配置后仍尽量维持原配置的组织方式和确定性输出。
         """
+        self._parser = _CiscoHeaderParser()
         self.trailing_newline = text.endswith("\n")
         self.root = CiscoNode("<root>", is_block=True)
-        self.root.children = self._parse(text)
+        self.root.children = self._parse(text, group_header_test=self._parser.is_group)
+        self._interface_analysis_cache = InterfaceAnalysisCache()
 
     def hostname(self) -> str | None:
         """返回配置中最后一条有效的顶层 ``hostname`` 命令值，未配置时返回 ``None``。
@@ -389,7 +426,7 @@ class CiscoDocument(VendorConfiguration):
         解析器由 ``current`` 同时表示当前顶层块和 group 模式，避免再维护
         一个与它指向同一对象的 ``group_node`` 状态。
         """
-        return bool(re.match(r"group\s+\S+", node.header, re.IGNORECASE))
+        return _is_group_header(node.header)
 
     @staticmethod
     def _comment_parts(value: str) -> tuple[str, str | None]:
@@ -400,7 +437,11 @@ class CiscoDocument(VendorConfiguration):
         return stripped, None
 
     @staticmethod
-    def _parse(text: str) -> list[CiscoNode]:
+    def _parse(
+        text: str,
+        *,
+        group_header_test: Callable[[str], bool] = _is_group_header,
+    ) -> list[CiscoNode]:
         """把 IOS XR 文本解析成有序顶层块及持久化缩进 AST。
 
         普通配置由无缩进命令开始、无缩进 ``!`` 结束；group 是例外，其中看起来像
@@ -419,7 +460,7 @@ class CiscoDocument(VendorConfiguration):
 
             # group 的内部命令可能看起来像普通顶层 header，因此进入 group 后
             # 必须优先消费所有行，只允许 end-group 结束这个状态。
-            if current is not None and CiscoDocument._is_group_node(current):
+            if current is not None and group_header_test(current.header):
                 if stripped.lower() == "end-group":
                     current = None
                     stack = []
@@ -523,7 +564,12 @@ class CiscoDocument(VendorConfiguration):
         返回厂商无关的 ``InterfaceSpec``，使 NNI/UNI 规划无需理解 IOS XR 配置行；
         统一规格也是业务口筛选、VLAN 分配和审计映射共享同一事实来源的基础。
         """
-        return self._interfaces().interface_specs(self)
+        return self._interface_analysis_cache.read(
+            self.root,
+            "interface_specs",
+            lambda: self._interfaces().interface_specs(self),
+            copy_interface_specs,
+        )
 
     def interface_kind(self, name: str) -> InterfaceKind:
         """按 IOS XR 规则返回指定接口的厂商无关类别。
@@ -531,7 +577,7 @@ class CiscoDocument(VendorConfiguration):
         拓扑预检和配置扫描都通过同一入口分类，可避免一处把接口视为物理口、另一处
         又视为虚拟口，从而防止不合法端点参与 NNI 映射。
         """
-        return self._interfaces().interface_kind(self, name)
+        return self._parser.interface_kind(name)
 
     def bundle_members(self) -> dict[str, str]:
         """返回物理成员接口到 ``Bundle-Ether`` 聚合父口的映射。
@@ -539,7 +585,12 @@ class CiscoDocument(VendorConfiguration):
         NNI/UNI 扁平化需要从拓扑物理端点反查承载业务的逻辑聚合口，并在迁移完成后
         清理真实成员，因此统一暴露该方向的映射。
         """
-        return self._interfaces().bundle_members(self)
+        return self._interface_analysis_cache.read(
+            self.root,
+            "bundle_members",
+            lambda: self._interfaces().bundle_members(self),
+            dict,
+        )
 
     def resolve_interface(self, value: str) -> str:
         """把拓扑中的 IOS XR 接口写法转换成配置解析器的规范形式。
@@ -547,7 +598,7 @@ class CiscoDocument(VendorConfiguration):
         拓扑数据和设备配置可能使用不同缩写或空白格式；在所有查找前统一名称可避免
         同一接口被误认为两个端点，或因匹配失败而遗漏聚合关系。
         """
-        return self._interfaces().resolve_interface(self, value)
+        return self._parser.canonical_interface(value)
 
     def logical_names_under(self, parent: str) -> list[str]:
         """列出指定父接口自身及其所有已配置子接口名称。
@@ -565,7 +616,12 @@ class CiscoDocument(VendorConfiguration):
         BVI 不因自身有 IP 或编号类似 VLAN 就自动迁移，只有显式关联它的
         bridge-domain 仍包含活跃 attachment circuit 时才作为网关迁移。
         """
-        return self._interfaces().business_interface_names(self)
+        return self._interface_analysis_cache.read(
+            self.root,
+            "business_interface_names",
+            lambda: self._interfaces().business_interface_names(self),
+            set,
+        )
 
     def _find_interface_node(self, name: str) -> CiscoNode | None:
         """按规范化名称查找第一个有效 IOS XR 接口块。
@@ -756,7 +812,7 @@ class CiscoDocument(VendorConfiguration):
         if not replacements:
             return
         canonical = {
-            canonical_cisco_interface(source): list(dict.fromkeys(targets))
+            self.resolve_interface(source): list(dict.fromkeys(targets))
             for source, targets in replacements.items()
             if targets and targets != [source]
         }
@@ -814,7 +870,7 @@ class CiscoDocument(VendorConfiguration):
 
         rebuilt: list[CiscoNode] = []
         for block in self.root.children:
-            if not block.active or block.interface_name:
+            if not block.active or self._parser.interface_name(block.header):
                 if block.active:
                     block.children = expand_nodes(block.children)
                 rebuilt.append(block)

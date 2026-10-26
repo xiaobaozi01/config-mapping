@@ -45,6 +45,7 @@ def _adapt_interface_knobs(
     真机上的 speed/fec/carrier-delay 等物理参数在 XRv9000 镜像上可能无效；删除
     ``shutdown`` 并为物理口补 ``no shutdown``，避免迁移后接口仍处于关闭状态。
     """
+    parser = document._parser
     physical_knob = re.compile(
         r"^(?:speed|duplex|negotiation|fec|transceiver|carrier-delay|dampening)\b",
         re.IGNORECASE,
@@ -53,7 +54,7 @@ def _adapt_interface_knobs(
     no_shutdown = re.compile(r"^no\s+shutdown$", re.IGNORECASE)
 
     for block in document._interface_nodes():
-        name = block.interface_name
+        name = parser.interface_name(block.header)
         if not name or interface_parent(name) not in target_parents:
             continue
         if policy.remove_physical_interface_knobs:

@@ -625,12 +625,12 @@ class CiscoGroupExpander:
 
         # 配置中缺失的候选接口也要参与通配 group 匹配。
         existing_interface_names = {
-            node.interface_name
+            self._document._parser.interface_name(node.header)
             for node in working_root.children
-            if node.interface_name
+            if self._document._parser.interface_name(node.header)
         }
         for candidate_name in candidate_interface_names:
-            canonical_name = canonical_cisco_interface(candidate_name)
+            canonical_name = self._document.resolve_interface(candidate_name)
             if canonical_name in existing_interface_names:
                 continue
             working_root.children.append(
