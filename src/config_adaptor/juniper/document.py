@@ -6,9 +6,9 @@ import copy
 import re
 from dataclasses import dataclass
 from functools import lru_cache
-from typing import Iterable
+from typing import Iterable, Sequence
 
-from ..common.cleaning import matches_cleaning_path
+from ..common.cleaning import CleaningOperation, compile_cleaning_rules
 from ..common.contracts import VendorConfiguration
 from ..common.errors import require_invariant
 from ..common.interface import InterfaceKind, InterfaceSpec, interface_parent
@@ -760,32 +760,42 @@ class JunosDocument(VendorConfiguration):
         action: str,
         value: str | None,
     ) -> int:
-        """按完整父级路径遍历 Junos 配置树并执行一条清洗规则。"""
-        pattern = re.compile(match, re.IGNORECASE)
-        hits = 0
+        """通过批量执行器兼容单条删除或替换调用。"""
+        if action == "replace" and value is None:
+            value = ""
+        return self.apply_cleaning_rules([CleaningOperation(path, match, action, value)])[0]
 
-        def walk(node: JunosNode, ancestors: tuple[str, ...]) -> None:
-            nonlocal hits
-            if not self._parser.is_effective(node):
-                return
-            header = self._parser.base_header(node.header).rstrip(";").strip()
-            if matches_cleaning_path(ancestors, path) and pattern.search(header):
-                hits += 1
-                if action == "delete":
-                    node.active = False
+    def apply_cleaning_rules(self, operations: Sequence[CleaningOperation]) -> list[int]:
+        """先删除、后替换，每轮每个节点只执行首条匹配规则；返回原输入顺序的计数。"""
+        phases = compile_cleaning_rules(operations)
+        hits = [0] * len(operations)
+        parser = self._parser
+        for phase in phases:
+            def walk(node: JunosNode, ancestors: tuple[str, ...]) -> None:
+                if not parser.is_effective(node):
                     return
-                if action == "replace":
-                    suffix = "" if node.is_block else ";"
-                    node.header = pattern.sub(value or "", header) + suffix
-                elif action == "mask":
-                    node.header = "<masked>" + ("" if node.is_block else ";")
-                header = self._parser.base_header(node.header).rstrip(";").strip()
-            if node.children:
-                for child in node.children:
+                header = parser.base_header(node.header).rstrip(";").strip()
+                for operation in phase.candidates(ancestors):
+                    if not operation.pattern.search(header):
+                        continue
+                    hits[operation.index] += 1
+                    if phase.action == "delete":
+                        node.active = False
+                        return
+                    node.header = operation.pattern.sub(operation.value or "", header) + (
+                        "" if node.is_block else ";"
+                    )
+                    header = parser.base_header(node.header).rstrip(";").strip()
+                    break
+                for child in node.children or []:
                     walk(child, (*ancestors, header))
 
-        for block in self.root.children or []:
-            walk(block, ())
+            try:
+                for block in self.root.children or []:
+                    walk(block, ())
+            finally:
+                # 断开递归闭包自引用，调用结束后无需等待循环 GC 即可释放缓存。
+                del walk
         return hits
 
     def replace_references(self, replacements: dict[str, list[str]]) -> None:

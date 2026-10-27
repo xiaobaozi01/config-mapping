@@ -6,10 +6,10 @@ import copy
 import re
 from dataclasses import dataclass, field
 from functools import lru_cache
-from typing import Callable, Iterable
+from typing import Callable, Iterable, Sequence
 
 from .empty_blocks import EmptyBlockPolicy, xrv9000_empty_block_policy
-from ..common.cleaning import matches_cleaning_path
+from ..common.cleaning import CleaningOperation, compile_cleaning_rules
 from ..common.contracts import VendorConfiguration
 from ..common.interface import InterfaceKind, InterfaceSpec, interface_parent
 from ..common.interface_cache import InterfaceAnalysisCache, copy_interface_specs
@@ -776,30 +776,39 @@ class CiscoDocument(VendorConfiguration):
         action: str,
         value: str | None,
     ) -> int:
-        """按完整父级路径遍历 IOS XR 配置树并执行一条清洗规则。"""
-        pattern = re.compile(match, re.IGNORECASE)
-        hits = 0
+        """通过批量执行器兼容单条删除或替换调用。"""
+        if action == "replace" and value is None:
+            value = ""
+        return self.apply_cleaning_rules([CleaningOperation(path, match, action, value)])[0]
 
-        def walk(node: CiscoNode, ancestors: tuple[str, ...]) -> None:
-            nonlocal hits
-            if not node.active or node.is_formatting:
-                return
-            header = node.header.strip()
-            if matches_cleaning_path(ancestors, path) and pattern.search(header):
-                hits += 1
-                if action == "delete":
-                    node.active = False
+    def apply_cleaning_rules(self, operations: Sequence[CleaningOperation]) -> list[int]:
+        """先删除、后替换，每轮每个节点只执行首条匹配规则；返回原输入顺序的计数。"""
+        phases = compile_cleaning_rules(operations)
+        hits = [0] * len(operations)
+        for phase in phases:
+            def walk(node: CiscoNode, ancestors: tuple[str, ...]) -> None:
+                if not node.active or node.is_formatting:
                     return
-                if action == "replace":
-                    node.header = pattern.sub(value or "", node.header)
-                elif action == "mask":
-                    node.header = pattern.sub("<masked>", node.header)
                 header = node.header.strip()
-            for child in node.children:
-                walk(child, (*ancestors, header))
+                for operation in phase.candidates(ancestors):
+                    if not operation.pattern.search(header):
+                        continue
+                    hits[operation.index] += 1
+                    if phase.action == "delete":
+                        node.active = False
+                        return
+                    node.header = operation.pattern.sub(operation.value or "", node.header)
+                    header = node.header.strip()
+                    break
+                for child in node.children:
+                    walk(child, (*ancestors, header))
 
-        for block in self.root.children:
-            walk(block, ())
+            try:
+                for block in self.root.children:
+                    walk(block, ())
+            finally:
+                # 断开递归闭包自引用，调用结束后无需等待循环 GC 即可释放缓存。
+                del walk
         return hits
 
     def replace_references(self, replacements: dict[str, list[str]]) -> None:

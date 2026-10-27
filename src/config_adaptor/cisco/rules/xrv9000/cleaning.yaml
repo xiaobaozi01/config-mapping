@@ -141,12 +141,3 @@ rules:
     match: '^(?:flow\s+(?:ipv4|ipv6|mpls|datalinkframesection)\s+monitor|monitor-session)\b'
     action: delete
     reason: '删除接口下引用流量统计和镜像会话的配置'
-
-  - id: warn.telemetry
-    vendor: cisco_iosxr
-    enable: true
-    category: telemetry
-    path: []
-    match: '^telemetry\s+model-driven$'
-    action: warn
-    reason: '请确认目标 XRv9000 版本是否支持 telemetry'

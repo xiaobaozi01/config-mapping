@@ -15,6 +15,7 @@ from typing import ClassVar, Protocol
 import yaml
 
 from ..cisco.document import CiscoDocument
+from ..common.cleaning import CleaningOperation
 from ..common.contracts import VendorConfiguration
 from .models import ConversionContext, Vendor
 
@@ -275,7 +276,7 @@ class CleaningRulesHandler:
         Vendor.JUNIPER_JUNOS.value: "juniper",
     }
     # 声明式规则仅开放厂商文档已经实现且可统一审计的动作。
-    _ACTIONS = {"delete", "replace", "mask", "warn"}
+    _ACTIONS = {"delete", "replace"}
     # 点号分隔命名层级；每段允许小写字母、数字、下划线和中划线。
     _LOCAL_ID_PATTERN = re.compile(r"^[a-z0-9_-]+(?:\.[a-z0-9_-]+)*$")
 
@@ -291,18 +292,30 @@ class CleaningRulesHandler:
     def process(self, context: ConversionContext) -> None:
         """按设备执行属于当前点和厂商的已启用规则。
 
-        本方法只负责编排筛选、执行和失败短路；成功事件的字段构造交给
-        ``_record_result``，使主流程保持清晰。规则报告安全输入错误后立即返回，Pipeline
-        会看到 ``context.errors`` 并停止后续阶段。
+        YAML 固定先删除、后替换，每组保留配置顺序并一次提交给 Document。代码
+        规则随后独立执行；安全输入错误立即短路，Pipeline 会停止后续阶段。
         """
         for device_name in sorted(context.devices):
             device = context.devices[device_name]
-            for rule in self._rules:
-                if (
-                    not rule.enabled
-                    or rule.point != self.point
-                    or rule.vendor != device.device.vendor.value
-                ):
+            applicable = [
+                rule for rule in self._rules
+                if rule.enabled
+                and rule.point == self.point
+                and rule.vendor == device.device.vendor.value
+            ]
+            configured = [rule for rule in applicable if isinstance(rule, ConfiguredCleaningRule)]
+            configured.sort(key=lambda rule: rule.action != "delete")
+            if configured:
+                counts = device.document.apply_cleaning_rules([
+                    CleaningOperation(rule.path, rule.match, rule.action, rule.value)
+                    for rule in configured
+                ])
+                for rule, hits in zip(configured, counts, strict=True):
+                    if hits:
+                        self._record_result(context, device_name, rule, CleaningResult(changed=hits))
+
+            for rule in applicable:
+                if isinstance(rule, ConfiguredCleaningRule):
                     continue
                 try:
                     result = rule.apply(device.document)
@@ -418,6 +431,11 @@ class CleaningRulesHandler:
             raise ValueError(f"清洗规则 {rule_id} 的 value 必须是字符串")
         if action == "replace" and value is None:
             raise ValueError(f"清洗规则 {rule_id} 的 replace 动作必须提供 value")
+        if action == "replace":
+            try:
+                re.compile(match, re.IGNORECASE).sub(value, "")
+            except (re.error, IndexError) as exc:
+                raise ValueError(f"清洗规则 {rule_id} 包含无效替换模板: {exc}") from exc
         reason = cls._required_string(raw, "reason", rule_id)
 
         allowed = {
@@ -471,7 +489,8 @@ class CleaningRulesHandler:
         """按固定顺序合并 YAML 和代码规则，返回独立的规则列表。
 
         显式的协议列表让静态检查器逐项验证每种规则实现，也让各执行点拥有独立容器；
-        注册顺序仍然是唯一、可审计的执行顺序。
+        注册顺序决定 YAML 同动作内的优先级和代码规则的执行顺序；YAML 跨动作
+        固定先删除、后替换。
         """
         rules: list[ExecutableCleaningRule] = []
         rules.extend(cls._configured_rules())

@@ -6,8 +6,9 @@
 
 from __future__ import annotations
 
-from typing import Protocol, runtime_checkable
+from typing import Protocol, Sequence, runtime_checkable
 
+from .cleaning import CleaningOperation
 from .interface import InterfaceKind, InterfaceSpec
 from .outcomes import (
     CleanupOutcome,
@@ -89,5 +90,7 @@ class VendorConfiguration(Protocol):
         action: str,
         value: str | None,
     ) -> int: ...
+
+    def apply_cleaning_rules(self, operations: Sequence[CleaningOperation]) -> list[int]: ...
 
     def render(self) -> str: ...

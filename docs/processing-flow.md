@@ -852,7 +852,7 @@ rules:
 - `category`：报告中的清洗分类，不参与匹配。
 - `path`：目标节点的完整父级路径。`[]` 只匹配顶层，`*` 匹配恰好一级，`**` 匹配零级或多级。
 - `match`：匹配目标节点本身的正则表达式。
-- `action`：支持 `delete`、`replace`、`mask`、`warn`；`replace` 还必须提供 `value`。
+- `action`：仅支持 `delete`、`replace`；`replace` 还必须提供 `value`。旧的 `mask`、`warn` 清洗动作不再接受。
 
 `path` 的每个普通元素对应一级父节点。例如删除第四层的 `maximum-paths` 时，前三层全部写入路径：
 
@@ -922,14 +922,16 @@ Junos 会跳过 `interfaces` 定义本身，只递归更新其他层级中的引
 
 ## 10. 统一清洗规则
 
-`CleaningRulesHandler` 同时执行 YAML 规则和实现 `ExecutableCleaningRule` 的代码规则。YAML 规则固定在 `post_rewrite`，代码规则只能选择 `pre_analysis` 或 `post_rewrite`；同一执行点按内置注册顺序运行，因此认证替换晚于 YAML 清洗：
+`CleaningRulesHandler` 同时执行 YAML 规则和实现 `ExecutableCleaningRule` 的代码规则。YAML 规则固定在 `post_rewrite`，一次批量提交给 Document，最多遍历 AST 两轮。代码规则只能选择 `pre_analysis` 或 `post_rewrite`；banner 在分析前处理，认证替换晚于 YAML 清洗：
 
 ```text
-delete  → 删除匹配配置
-replace → 替换匹配内容
-mask    → 隐藏敏感内容
-warn    → 保留配置但记录告警
+第一轮 delete  → 每个节点只执行首条匹配的删除规则，命中后跳过子树
+第二轮 replace → 剩余节点只执行首条匹配的替换规则，不连续替换
 ```
+
+两组规则分别保留 YAML 内的相对顺序，跨动作固定删除在前。A→B、B→C 两条替换规则作用于 A 时只得到 B。替换父节点后使用新 header 匹配后代路径；审计事件按删除组、替换组、代码规则的顺序输出。路径候选列表只在本轮调用中复用，不保存为全局或 Document 长期缓存。
+
+可用 `PYTHONPATH=src python benchmarks/cleaning_rules.py --lines 40000 --rules 100` 对比旧逐规则遍历和新两轮遍历。基准包含编译时间，并独立统计节点访问、路径及命令正则搜索次数。
 
 示例：
 
