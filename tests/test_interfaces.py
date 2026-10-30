@@ -1,4 +1,4 @@
-"""验证接口识别、业务闭包分析与 UNI 迁移判定。"""
+"""验证接口识别、业务闭包分析与网关依赖判定。"""
 
 from __future__ import annotations
 
@@ -72,7 +72,7 @@ class CiscoInterfaceBusinessTest(unittest.TestCase):
         self.assertIn("ipv4 address 198.51.100.1/31", rendered)
 
     def test_unknown_l2_attachment_does_not_activate_gateway(self):
-        """未知接口即使带二层业务，也不能间接触发 BVI 的 UNI 迁移。"""
+        """未知接口即使带二层业务，也不能间接将 BVI 判定为有效业务。"""
         document = CiscoDocument(interface_config("cisco_unknown_l2_attachment.cfg"))
 
         business = document.business_interface_names()
@@ -94,20 +94,15 @@ class CiscoInterfaceBusinessTest(unittest.TestCase):
 
 
 class JunosInterfaceClassificationTest(unittest.TestCase):
-    def test_uni_shared_parent_uses_largest_source_media_mtu(self):
+    def test_nni_rename_keeps_media_mtu_on_parent(self):
         document = JunosDocument(
             "interfaces {"
-            " et-0/0/1 { mtu 9192; encapsulation ethernet-ccc; unit 0; }"
-            " et-0/0/2 { mtu 1500; encapsulation ethernet-ccc; unit 0; }"
+            " ae10 { mtu 9192; unit 0 { family inet { address 192.0.2.1/31; } } }"
             " }"
         )
-        document.map_uni("et-0/0/1.0", "ge-0/0/6", 18, 18)
-        document.map_uni("et-0/0/2.0", "ge-0/0/6", 19, 19)
-
-        target = next(
-            node for node in document._interface_nodes()
-            if document._interface_name(node) == "ge-0/0/6"
-        )
+        document.rename_interface_tree("ae10", "ge-0/0/0", strip_bundle=True)
+        target = document._interface_nodes()[0]
+        self.assertEqual(document._interface_name(target), "ge-0/0/0")
         self.assertEqual(
             [child.header for child in target.children or [] if child.header.startswith("mtu ")],
             ["mtu 9192;"],

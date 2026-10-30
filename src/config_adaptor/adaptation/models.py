@@ -114,15 +114,8 @@ class ImageProfile:
 
     @property
     def nni_interfaces(self) -> list[str]:
-        """除 UNI 专用口和最后两个预留口外，其余接口可分配给 NNI。"""
+        """最后三个接口空置或预留，其余接口可分配给 NNI。"""
         return self.interfaces[:-3]
-
-    @property
-    def uni_parent(self) -> str:
-        """倒数第三个接口统一承载所有 UNI 子接口。"""
-        if len(self.interfaces) < 4:
-            raise ValueError(f"{self.vendor}: 镜像没有 UNI 数据接口")
-        return self.interfaces[-3]
 
 
 @dataclass(slots=True)
@@ -133,19 +126,20 @@ class DeviceContext:
     document: VendorConfiguration
     profile: ImageProfile
     mappings: list[InterfaceMapping] = field(default_factory=list)
+    removed_interfaces: set[str] = field(default_factory=set)
     warnings: list[str] = field(default_factory=list)
     errors: list[str] = field(default_factory=list)
 
     @property
     def replacement_map(self) -> dict[str, list[str]]:
-        """汇总接口改名关系，同时支持 M-LAG 的一对多引用替换。
+        """汇总物理接口改名关系，排除保留的逻辑聚合自映射。
 
-        普通接口只有一个目标；同一 Bundle/ae 按不同对端拆分时，
-        每个目标都会保留且按映射生成顺序去重。
+        普通接口与选中成员映射到目标物理口；Bundle/ae 保持原名，
+        不参与全局引用替换。历史一对多记录仍按生成顺序去重。
         """
         result: dict[str, list[str]] = {}
         for item in self.mappings:
-            if not item.target_interface or item.action in {"remove", "remove-bare", "skip"}:
+            if not item.target_interface or item.action in {"remove", "remove-bare", "skip", "preserve"}:
                 continue
             targets = result.setdefault(item.source_interface, [])
             if item.target_interface not in targets:

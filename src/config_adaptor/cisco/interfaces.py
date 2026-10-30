@@ -38,8 +38,8 @@ def interface_specs(document: CiscoDocument) -> list[InterfaceSpec]:
     """提取接口名、父子关系、类型及 dot1q/QinQ 标签等规划信息。
 
     BVI 的编号只是接口标识，不能直接视为业务 VLAN；因此网关的
-    ``inner_vlan`` 只从唯一、无歧义的 bridge-domain 绑定中推导，避免 UNI
-    迁移时把错误的 VLAN 当作需要保留的内层标签。
+    ``inner_vlan`` 只从唯一、无歧义的 bridge-domain 绑定中推导，避免业务分析
+    把错误的 VLAN 当作内层标签。
     """
     parser = document._parser
     result: list[InterfaceSpec] = []
@@ -158,7 +158,7 @@ def _gateway_inner_vlan_hints(
 
     只有一个广播域内的物理口或 Bundle 口指向同一个业务标签，且同一 BVI 在
     所有关联广播域中也只得到一个候选值时才返回提示；歧义映射会被丢弃，以免
-    生成错误的 QinQ 配置。
+    推导错误的业务关联。
     """
     spec_by_name = {spec.name: spec for spec in specs}
     hints: dict[str, set[int]] = {}
@@ -245,7 +245,7 @@ def business_interface_names(document: CiscoDocument) -> set[str]:
     物理口和 Bundle 口若自身包含 IP、L2VPN 等业务命令，或被其他有效配置块
     显式引用，就视为活跃；父口的外部引用还会激活其整棵接口树。BVI 仅在其
     bridge-domain 含有已激活接入电路时加入结果，防止仅因 BVI 自身有地址或
-    编号而迁移与当前 UNI 无关的网关。
+    编号而激活与当前业务无关的网关。
     """
     parser = document._parser
     specs = document.interface_specs()
@@ -385,13 +385,10 @@ def clone_interface_tree(
         if name == source or (name and name.startswith(source + ".")):
             originals.append(block)
     if not originals:
-        document.root.children.append(
-            CiscoNode(
-                header=f"interface {target}",
-                children=[CiscoNode("no shutdown")],
-            )
-        )
-        document.root.children.append(CiscoNode(header="!"))
+        _insert_top_level_before_end(document, [
+            CiscoNode(header=f"interface {target}", children=[CiscoNode("no shutdown")]),
+            CiscoNode(header="!"),
+        ])
         return
     insert_at = max(document.root.children.index(block) for block in originals) + 1
     clones: list[CiscoNode] = []
@@ -445,60 +442,26 @@ def _merge_duplicate_interface(
     preferred.children = merged
 
 
-def map_uni(
-    document: CiscoDocument,
-    source: str,
-    target_parent: str,
-    vlan: int,
-    inner_vlan: int,
-) -> str:
-    """把一个源业务接口改写成目标 UNI 父口下的 QinQ 子接口。
-
-    外层 ``vlan`` 同时作为目标子接口号，``inner_vlan`` 保留原业务标签。方法会
-    删除旧封装、rewrite 和聚合命令，再把新的双层标签放在 description 之后，
-    以避免新旧终结语义冲突；目标重名时合并配置。找不到源块时仅返回预期目标名，
-    让上层流程仍可记录确定性的映射结果。
-    """
-    parser = document._parser
-    source = document.resolve_interface(source)
-    target = f"{document.resolve_interface(target_parent)}.{vlan}"
-    block = find_interface_node(document, source)
-    if not block:
-        return target
-    block.header = f"interface {target}" + (
-        " l2transport" if parser.l2transport(block.header) else ""
+def _insert_top_level_before_end(document: CiscoDocument, nodes: list[CiscoNode]) -> None:
+    """追加活动配置时保持 end 为最后一条配置终止命令。"""
+    index = next(
+        (index for index, node in enumerate(document.root.children)
+         if node.active and node.header.strip().lower() == "end"),
+        len(document.root.children),
     )
-    filtered, _ = strip_matching_nodes(
-        block.children,
-        re.compile(r"^(?:encapsulation\b|rewrite\b|bundle\b|lacp\b)", re.IGNORECASE),
-    )
-    insert_at = (
-        1
-        if filtered and re.match(r"description\b", filtered[0].header, re.IGNORECASE)
-        else 0
-    )
-    filtered.insert(
-        insert_at,
-        CiscoNode(f"encapsulation dot1q {vlan} second-dot1q {inner_vlan}"),
-    )
-    block.children = filtered
-    _merge_duplicate_interface(document, block)
-    return target
+    document.root.children[index:index] = nodes
 
 
 def ensure_parent_interface(document: CiscoDocument, name: str) -> None:
     """确保目标 IOS XR 父接口存在，不存在时创建并配置 ``no shutdown``。
 
-    UNI 业务通常只生成子接口，但设备配置仍需要显式、已启用的承载父口；已有
+    NNI 业务可能只包含子接口，但设备配置仍需要显式、已启用的承载父口；已有
     接口保持原样，避免覆盖用户配置。
     """
     canonical = document.resolve_interface(name)
     if find_interface_node(document, canonical):
         return
-    document.root.children.append(
-        CiscoNode(
-            header=f"interface {canonical}",
-            children=[CiscoNode("no shutdown")],
-        )
-    )
-    document.root.children.append(CiscoNode(header="!"))
+    _insert_top_level_before_end(document, [
+        CiscoNode(header=f"interface {canonical}", children=[CiscoNode("no shutdown")]),
+        CiscoNode(header="!"),
+    ])

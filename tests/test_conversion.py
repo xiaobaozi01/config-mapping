@@ -25,7 +25,7 @@ def conversion_fixture(name: str) -> tuple[Path, Path]:
 
 
 class ConversionTest(unittest.TestCase):
-    """覆盖两个厂商的 NNI、UNI、认证及 group 关键边界。"""
+    """覆盖两个厂商的 NNI、非 NNI 清理、认证及 group 关键边界。"""
 
     def test_iosxr_preconfigured_interfaces_are_ignored(self):
         topology, source_config_dir = conversion_fixture("iosxr_bundle")
@@ -105,17 +105,17 @@ class ConversionTest(unittest.TestCase):
                 1,
             )
 
-    def test_iosxr_bundle_nni_uni_and_auth(self):
+    def test_iosxr_bundle_nni_non_nni_cleanup_and_auth(self):
         topology, config_dir = conversion_fixture("iosxr_bundle")
         with tempfile.TemporaryDirectory() as directory:
             output = Path(directory) / "output"
             context = convert(topology, config_dir, output)
             self.assertFalse(context.has_errors)
-            self.assertEqual(context.devices["R1"].profile.uni_parent, "GigabitEthernet0/0/0/5")
+            self.assertNotIn("GigabitEthernet0/0/0/5", context.devices["R1"].profile.nni_interfaces)
             self.assertNotIn("GigabitEthernet0/0/0/6", context.devices["R1"].profile.nni_interfaces)
             self.assertNotIn("GigabitEthernet0/0/0/7", context.devices["R1"].profile.nni_interfaces)
             converted = (output / "configs" / "R1.cfg").read_text(encoding="utf-8")
-            self.assertNotIn("Bundle-Ether10", converted)
+            self.assertIn("interface Bundle-Ether10", converted)
             self.assertNotIn("old-user", converted)
             self.assertNotIn("tacacs-server", converted)
             self.assertNotIn("taskgroup OLD-TASKS", converted)
@@ -130,9 +130,9 @@ class ConversionTest(unittest.TestCase):
             self.assertIn("line template vty", converted)
             self.assertIn("exec-timeout 10 0", converted)
             self.assertIn("interface GigabitEthernet0/0/0/0", converted)
-            self.assertIn("interface GigabitEthernet0/0/0/5.2", converted)
+            self.assertNotIn("interface GigabitEthernet0/0/0/5", converted)
             self.assertNotIn("interface GigabitEthernet0/0/0/7", converted)
-            self.assertIn("encapsulation dot1q 2 second-dot1q 2", converted)
+            self.assertNotIn("second-dot1q 2", converted)
             self.assertNotIn("UNUSED-BARE-PORT", converted)
             self.assertIn("interface Loopback0", converted)
             self.assertLess(converted.index("username root"), converted.index("end"))
@@ -242,31 +242,31 @@ class ConversionTest(unittest.TestCase):
             )
             self.assertFalse((output / "configs").exists())
 
-    def test_junos_bundle_nni_uni_and_auth(self):
+    def test_junos_bundle_nni_non_nni_cleanup_and_auth(self):
         topology, config_dir = conversion_fixture("junos_bundle")
         with tempfile.TemporaryDirectory() as directory:
             output = Path(directory) / "output"
             context = convert(topology, config_dir, output)
             self.assertFalse(context.has_errors)
-            self.assertEqual(context.devices["J1"].profile.uni_parent, "ge-0/0/5")
+            self.assertNotIn("ge-0/0/5", context.devices["J1"].profile.nni_interfaces)
             self.assertNotIn("ge-0/0/6", context.devices["J1"].profile.nni_interfaces)
             self.assertNotIn("ge-0/0/7", context.devices["J1"].profile.nni_interfaces)
             converted = (output / "configs" / "J1.cfg").read_text(encoding="utf-8")
-            self.assertNotIn("ae0", converted)
+            self.assertIn("ae0", converted)
             self.assertNotIn("old-user", converted)
             self.assertNotIn("radius-server", converted)
             self.assertNotIn("ACCESS-UNI", converted)
             self.assertNotIn("user root", converted)
             self.assertIn("root-authentication encrypted-password", converted)
-            self.assertIn("ge-0/0/0.0", converted)
-            self.assertIn("ge-0/0/5", converted)
+            self.assertIn("interface ae0.0;", converted)
+            self.assertNotIn("ge-0/0/5", converted)
             self.assertNotIn("ge-0/0/7", converted)
-            self.assertIn("unit 100", converted)
-            self.assertIn("vlan-tags outer 100 inner 100;", converted)
+            self.assertNotIn("unit 100", converted)
+            self.assertNotIn("vlan-tags outer 100 inner 100;", converted)
             self.assertNotIn("UNUSED-BARE-PORT", converted)
             self.assertIn("lo0", converted)
 
-    def test_junos_evpn_vpws_uni_rebuilds_units_and_references(self):
+    def test_junos_non_nni_evpn_vpws_is_removed_with_references(self):
         topology, source_config_dir = conversion_fixture("junos_bundle")
         cases = {
             "leaf": ("unit 0;", ("0",)),
@@ -314,41 +314,19 @@ class ConversionTest(unittest.TestCase):
                 converted = (root / "output" / "configs" / "J1.cfg").read_text(
                     encoding="utf-8"
                 )
-                mappings = {
-                    item.source_interface: item.target_interface
-                    for item in context.devices["J1"].mappings
-                    if item.role == "UNI" and item.target_interface
-                }
-                self.assertEqual(mappings["et-12/0/3"], "ge-0/0/5")
-                document = context.devices["J1"].document
-                target_parent = next(
-                    node for node in document._interface_nodes()
-                    if document._interface_name(node) == "ge-0/0/5"
-                )
-                parent_headers = {child.header for child in target_parent.children or []}
-                self.assertIn("flexible-vlan-tagging;", parent_headers)
-                self.assertIn("encapsulation flexible-ethernet-services;", parent_headers)
-                self.assertIn("mtu 9192;", parent_headers)
-                for number in numbers:
-                    target = mappings[f"et-12/0/3.{number}"]
-                    unit_number = target.rsplit(".", 1)[1]
-                    unit = next(
-                        node for node in document._unit_nodes(target_parent)
-                        if document._unit_number(node) == unit_number
-                    )
-                    headers = {child.header for child in unit.children or []}
-                    self.assertIn(f"vlan-tags outer {unit_number} inner {unit_number};", headers)
-                    self.assertNotIn("mtu 9192;", headers)
-                    self.assertIn("encapsulation vlan-ccc;", headers)
-                    self.assertIn("family ccc;", headers)
-                    self.assertFalse(any(header.startswith("unit ") for header in headers))
-                    self.assertNotIn("encapsulation ethernet-ccc;", headers)
-                    self.assertEqual(converted.count(f"interface {target}"), 2)
                 self.assertNotIn("et-12/0/3", converted)
-                self.assertEqual(converted.count("local 999;"), len(numbers))
-                self.assertEqual(converted.count("remote 777;"), len(numbers))
-                self.assertEqual(converted.count("route-distinguisher 24208:210101;"), len(numbers))
-                self.assertEqual(converted.count("vrf-target target:24208:210101;"), len(numbers))
+                self.assertNotIn("ge-0/0/5", converted)
+                self.assertNotIn("local 999;", converted)
+                self.assertNotIn("remote 777;", converted)
+                self.assertNotIn("route-distinguisher 24208:210101;", converted)
+                self.assertNotIn("vrf-target target:24208:210101;", converted)
+                for number in numbers:
+                    self.assertNotIn(f"VPWS_{number}", converted)
+                self.assertIn("interface ae0.0;", converted)
+                self.assertFalse(any(
+                    mapping.target_interface and mapping.role != "NNI"
+                    for mapping in context.devices["J1"].mappings
+                ))
 
     def test_junos_inactive_children_follow_interface_migration_and_removal(self):
         topology, source_config_dir = conversion_fixture("junos_bundle")
@@ -374,7 +352,7 @@ class ConversionTest(unittest.TestCase):
             converted = (output / "configs" / "J1.cfg").read_text(encoding="utf-8")
             self.assertIn("inactive: description KEEP-WITH-NNI;", converted)
             self.assertNotIn("DROP-WITH-BARE", converted)
-            self.assertNotIn("ae0", converted)
+            self.assertIn("ae0", converted)
 
     def test_cross_vendor_iosxr_to_junos_nni_and_aggregate(self):
         """Cisco 与 Juniper 端点独立适配，并共同删除冗余聚合成员行。"""
@@ -385,21 +363,21 @@ class ConversionTest(unittest.TestCase):
             self.assertFalse(context.has_errors)
 
             cisco = (output / "configs" / "C1.cfg").read_text(encoding="utf-8")
-            self.assertNotIn("Bundle-Ether10", cisco)
+            self.assertIn("interface Bundle-Ether10", cisco)
             self.assertIn("interface GigabitEthernet0/0/0/0", cisco)
             self.assertIn("ipv4 address 10.0.0.1 255.255.255.252", cisco)
             self.assertIn("interface GigabitEthernet0/0/0/1", cisco)
             self.assertIn("ipv4 address 10.0.1.1 255.255.255.252", cisco)
-            self.assertIn("  interface GigabitEthernet0/0/0/0", cisco)
+            self.assertIn("  interface Bundle-Ether10", cisco)
             self.assertIn("  interface GigabitEthernet0/0/0/1", cisco)
 
             juniper = (output / "configs" / "J1.cfg").read_text(encoding="utf-8")
-            self.assertNotIn("ae20", juniper)
+            self.assertIn("ae20", juniper)
             self.assertIn("ge-0/0/0", juniper)
             self.assertIn("address 10.0.0.2/30;", juniper)
             self.assertIn("ge-0/0/1", juniper)
             self.assertIn("address 10.0.1.2/30;", juniper)
-            self.assertIn("interface ge-0/0/0.0;", juniper)
+            self.assertIn("interface ae20.0;", juniper)
             self.assertIn("interface ge-0/0/1.0;", juniper)
 
             adapted = load_workbook(output / "topology-adapted.xlsx")
@@ -417,7 +395,7 @@ class ConversionTest(unittest.TestCase):
                 any(
                     item["device"] == "C1"
                     and item["source_interface"] == "Bundle-Ether10"
-                    and item["target_interface"] == "GigabitEthernet0/0/0/0"
+                    and item["target_interface"] == "Bundle-Ether10"
                     for item in mappings
                 )
             )
@@ -425,7 +403,7 @@ class ConversionTest(unittest.TestCase):
                 any(
                     item["device"] == "J1"
                     and item["source_interface"] == "ae20"
-                    and item["target_interface"] == "ge-0/0/0"
+                    and item["target_interface"] == "ae20"
                     for item in mappings
                 )
             )
@@ -531,8 +509,7 @@ class ConversionTest(unittest.TestCase):
                 )
             )
 
-    def test_huawei_peer_bundle_is_flattened_on_supported_side(self):
-        """本端聚合连华为时，只在本端按 Bundle 扁平化并保留华为侧接口。"""
+    def test_external_peer_multiple_bundle_links_cannot_be_compressed_without_peer_config(self):
         topology, config_dir = conversion_fixture("iosxr_bundle")
         with tempfile.TemporaryDirectory() as directory:
             temporary_topology = Path(directory) / "topology.xlsx"
@@ -542,114 +519,67 @@ class ConversionTest(unittest.TestCase):
                     workbook["设备列表"].cell(row, 2).value = "Huawei"
                     workbook["设备列表"].cell(row, 3).value = None
             workbook.save(temporary_topology)
-
             output = Path(directory) / "output"
             context = convert(temporary_topology, config_dir, output)
-            self.assertFalse(context.has_errors, context.errors)
+            self.assertTrue(context.has_errors)
             self.assertEqual(set(context.devices), {"R1"})
+            self.assertFalse((output / "configs").exists())
+            self.assertTrue(any("外部对端" in error for error in context.errors))
+            self.assertIn("interface Bundle-Ether10", context.devices["R1"].document.render())
+            self.assertFalse(any(mapping.is_mlag_clone for mapping in context.mappings))
 
-            cisco = (output / "configs" / "R1.cfg").read_text(encoding="utf-8")
-            self.assertNotIn("Bundle-Ether10", cisco)
-            self.assertIn("interface GigabitEthernet0/0/0/0", cisco)
-            self.assertIn("ipv4 address 10.0.0.1 255.255.255.252", cisco)
-
-            adapted = load_workbook(output / "topology-adapted.xlsx")
-            links = adapted["链接表"]
-            self.assertEqual(links.max_row, 2)
-            self.assertEqual(links.cell(2, 2).value, "GigabitEthernet0/0/0/0")
-            self.assertEqual(links.cell(2, 4).value, "Gi0/0/0/0")
-
-            report = json.loads((output / "report.json").read_text(encoding="utf-8"))
-            self.assertEqual(report["status"], "success")
-            self.assertEqual(report["summary"]["active_links"], 1)
-            self.assertEqual(report["summary"]["skipped_links"], 1)
-            self.assertFalse(
-                any("成员关系不一致" in warning for warning in report["warnings"])
-            )
-
-    def test_iosxr_mlag_is_split_by_peer_and_references_are_cloned(self):
-        """同一 Bundle 跨对端时分配多个物理口，全局引用同步展开。"""
+    def test_iosxr_cross_peer_bundle_requires_explicit_mlag_support(self):
+        """不同设备不默认视作同一个聚合系统，不能复制逻辑业务。"""
         topology, config_dir = conversion_fixture("iosxr_mlag")
         with tempfile.TemporaryDirectory() as directory:
             output = Path(directory) / "output"
             context = convert(topology, config_dir, output)
-            self.assertFalse(context.has_errors)
-            converted = (output / "configs" / "A.cfg").read_text(encoding="utf-8")
-            self.assertNotIn("Bundle-Ether10", converted)
-            self.assertIn("interface GigabitEthernet0/0/0/0.100 l2transport", converted)
-            self.assertIn("interface GigabitEthernet0/0/0/1.100 l2transport", converted)
-            self.assertIn("interface GigabitEthernet0/0/0/5.2 l2transport", converted)
-            self.assertIn("encapsulation dot1q 2 second-dot1q 2", converted)
-            self.assertNotIn("rewrite egress tag", converted)
-            self.assertNotIn("UNUSED-BARE-PORT", converted)
-            self.assertNotIn("interface BVI300", converted)
-            self.assertNotIn("interface BVI400", converted)
-            self.assertIn("interface GigabitEthernet0/0/0/5.3", converted)
-            self.assertIn("encapsulation dot1q 3 second-dot1q 3", converted)
-            self.assertIn("ipv4 address 198.51.100.1 255.255.255.0", converted)
-            self.assertNotIn("203.0.113.1", converted)
-            self.assertTrue(
-                any(
-                    "BVI300" in warning and "不使用 BVI 编号" in warning
-                    for warning in context.devices["A"].warnings
-                )
-            )
-            self.assertIn("interface GigabitEthernet0/0/0/0.100", converted)
-            self.assertIn("interface GigabitEthernet0/0/0/1.100", converted)
+            self.assertTrue(context.has_errors)
+            self.assertFalse((output / "configs").exists())
+            self.assertFalse((output / "topology-adapted.xlsx").exists())
+            self.assertIn("interface Bundle-Ether10.100", context.devices["A"].document.render())
+            self.assertFalse(any(mapping.is_mlag_clone for mapping in context.mappings))
 
-            adapted = load_workbook(output / "topology-adapted.xlsx")
-            links = adapted["链接表"]
-            self.assertEqual(links.max_row, 3)
-            self.assertEqual(links.cell(2, 2).value, "GigabitEthernet0/0/0/0")
-            self.assertEqual(links.cell(3, 2).value, "GigabitEthernet0/0/0/1")
-
-    def test_junos_mlag_is_split_by_peer_and_uni_uses_qinq(self):
-        """Junos ae 跨对端拆分，且 UNI 的旧 VLAN 终结被统一清理。"""
+    def test_junos_l3_mlag_is_rejected_before_duplicate_addresses_are_generated(self):
+        """ae0.0 的同一三层地址不能复制到两个独立物理口。"""
         topology, config_dir = conversion_fixture("junos_mlag")
         with tempfile.TemporaryDirectory() as directory:
             output = Path(directory) / "output"
             context = convert(topology, config_dir, output)
-            self.assertFalse(context.has_errors)
-            converted = (output / "configs" / "JA.cfg").read_text(encoding="utf-8")
-            self.assertNotIn("ae0", converted)
-            self.assertIn("ge-0/0/0", converted)
-            self.assertIn("ge-0/0/1", converted)
-            self.assertIn("interface ge-0/0/0.0;", converted)
-            self.assertIn("interface ge-0/0/1.0;", converted)
-            self.assertIn("ge-0/0/5", converted)
-            self.assertNotIn("ge-0/0/7", converted)
-            self.assertIn("vlan-tags outer 2 inner 2;", converted)
-            self.assertNotIn("vlan-id-list", converted)
-            self.assertNotIn("input-vlan-map", converted)
-            self.assertNotIn("output-vlan-map", converted)
-            self.assertNotIn("interface-mode trunk", converted)
-            self.assertNotIn("UNUSED-BARE-PORT", converted)
-            self.assertNotIn("irb {", converted)
-            self.assertIn("unit 300", converted)
-            self.assertIn("address 198.51.100.1/24;", converted)
-            self.assertNotIn("203.0.113.1/24", converted)
+            self.assertTrue(context.has_errors)
+            self.assertFalse((output / "configs").exists())
+            self.assertFalse((output / "topology-adapted.xlsx").exists())
+            self.assertIn("ae0", context.devices["JA"].document.render())
+            self.assertIn("address 10.0.0.1/30;", context.devices["JA"].document.render())
+            report = json.loads((output / "report.json").read_text(encoding="utf-8"))
+            self.assertEqual(report["status"], "failed")
+            self.assertTrue(any("ae0" in error and "设备 JA" in error for error in report["errors"]))
+            self.assertFalse(any(mapping.is_mlag_clone for mapping in context.mappings))
             mappings = json.loads((output / "interface-mapping.json").read_text(encoding="utf-8"))
             removed_irb = next(item for item in mappings if item["source_interface"] == "irb.400")
-            self.assertEqual(removed_irb["action"], "remove-bare")
+            self.assertEqual(removed_irb["role"], "NON_NNI")
+            self.assertEqual(removed_irb["action"], "remove")
+            self.assertIsNone(removed_irb["target_interface"])
 
-    def test_duplicate_uni_vlan_is_reassigned_per_device(self):
+    def test_non_nni_duplicate_vlans_are_removed_without_reassignment(self):
         topology, config_dir = conversion_fixture("iosxr_duplicate_vlan")
         with tempfile.TemporaryDirectory() as directory:
             output = Path(directory) / "output"
             context = convert(topology, config_dir, output)
             self.assertFalse(context.has_errors)
             converted = (output / "configs" / "R1.cfg").read_text(encoding="utf-8")
-            self.assertIn("interface GigabitEthernet0/0/0/5.100", converted)
-            self.assertIn("interface GigabitEthernet0/0/0/5.2", converted)
-            self.assertEqual(converted.count("encapsulation dot1q 100"), 1)
-            self.assertEqual(converted.count("encapsulation dot1q 2"), 1)
-            self.assertIn("encapsulation dot1q 100 second-dot1q 201", converted)
-            self.assertIn("encapsulation dot1q 2 second-dot1q 100", converted)
+            self.assertIn("interface GigabitEthernet0/0/0/0", converted)
+            self.assertIn("ipv4 address 10.0.0.1 255.255.255.252", converted)
+            self.assertNotIn("192.0.2.1", converted)
+            self.assertNotIn("198.51.100.1", converted)
+            self.assertNotIn("second-dot1q", converted)
+            self.assertNotIn("interface GigabitEthernet0/0/0/5", converted)
+            self.assertFalse(any(mapping.role == "UNI" for mapping in context.mappings))
             report = json.loads((output / "report.json").read_text(encoding="utf-8"))
             self.assertGreaterEqual(report["summary"]["group_conflict_count"], 1)
             self.assertEqual(report["group_conflicts"][0]["winner_source"], "explicit")
 
-    def test_reserved_target_can_be_a_uni_source_but_is_never_used_as_target(self):
+    def test_business_on_reserved_interfaces_is_removed_without_target(self):
         topology, source_config_dir = conversion_fixture("iosxr_bundle")
         with tempfile.TemporaryDirectory() as directory:
             root = Path(directory)
@@ -672,13 +602,14 @@ class ConversionTest(unittest.TestCase):
             converted = (output / "configs" / "R1.cfg").read_text(encoding="utf-8")
             self.assertNotIn("interface GigabitEthernet0/0/0/6\n", converted)
             self.assertNotIn("interface GigabitEthernet0/0/0/7\n", converted)
-            self.assertIn("203.0.113.1", converted)
-            self.assertIn("203.0.114.1", converted)
+            self.assertNotIn("203.0.113.1", converted)
+            self.assertNotIn("203.0.114.1", converted)
             for number in (6, 7):
                 self.assertTrue(any(
                     mapping.source_interface == f"GigabitEthernet0/0/0/{number}"
-                    and mapping.role == "UNI"
-                    and mapping.target_interface.startswith("GigabitEthernet0/0/0/5.")
+                    and mapping.role == "NON_NNI"
+                    and mapping.action == "remove"
+                    and mapping.target_interface is None
                     for mapping in context.devices["R1"].mappings
                 ))
                 self.assertFalse(any(
@@ -694,7 +625,7 @@ class ConversionTest(unittest.TestCase):
             self.assertNotIn("GigabitEthernet0/0/0/6", adaptation["target_interfaces"])
             self.assertNotIn("GigabitEthernet0/0/0/7", adaptation["target_interfaces"])
 
-    def test_nni_capacity_excludes_uni_and_reserved_interfaces(self):
+    def test_nni_capacity_excludes_three_reserved_interfaces(self):
         topology, config_dir = conversion_fixture("iosxr_mlag")
         with tempfile.TemporaryDirectory() as directory:
             root = Path(directory)

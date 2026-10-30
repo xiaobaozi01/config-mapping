@@ -76,7 +76,7 @@ class InterfaceClassificationHandler:
 class ReferenceRewriteHandler:
     """在接口树迁移完成后修正配置其他位置保存的接口引用。
 
-    NNI/UNI 阶段只负责接口定义及映射记录，路由协议、策略、L2VPN 等配置仍可能
+    NNI 阶段只负责接口定义及映射记录，路由协议、策略、L2VPN 等配置仍可能
     引用旧名称。该处理器使用最终映射统一改写这些非接口定义，既避免在目标接口
     尚未确定时过早替换，也支持 M-LAG 将一个旧逻辑口展开到多个新接口。
     """
@@ -86,7 +86,7 @@ class ReferenceRewriteHandler:
 
         ``replacement_map`` 会过滤删除和跳过记录，同时保留同一源接口的一对多目标；
         厂商文档对象再按自身语法安全替换。按设备分别执行可防止跨设备同名接口互相
-        污染，并确保改写依据的是前序 NNI/UNI 阶段已经完整生成的映射结果。
+        污染，并确保改写依据的是前序 NNI 阶段已经完整生成的映射结果。
         """
         for device_name in sorted(context.devices):
             device = context.devices[device_name]

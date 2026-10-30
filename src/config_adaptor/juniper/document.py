@@ -16,6 +16,8 @@ from ..common.interface_cache import InterfaceAnalysisCache, copy_interface_spec
 from ..common.outcomes import (
     CleanupOutcome,
     GroupExpansionOutcome,
+    InterfaceAdaptationOutcome,
+    InterfacePruningOutcome,
     SimulationAdaptationOutcome,
 )
 from ..common.policies import SimulationAdaptationPolicy, WashingPolicy
@@ -175,7 +177,7 @@ class JunosNode:
     def clone(self) -> "JunosNode":
         """深拷贝当前节点及其完整子树。
 
-        M-LAG 拆分、引用一对多展开和 UNI unit 复制都需要从同一源配置生成多个目标；
+        M-LAG 拆分和引用一对多展开都需要从同一源配置生成多个目标；
         深拷贝可防止修改某个目标时连带改变原节点或其他副本。
         """
         return copy.deepcopy(self)
@@ -488,7 +490,7 @@ class JunosDocument(VendorConfiguration):
     def _unit_nodes(self, interface: JunosNode) -> list[JunosNode]:
         """列出接口节点下有效的 ``unit`` 子节点，包括空的叶子 unit。
 
-        Junos 把逻辑接口嵌套在父口内；集中枚举 unit 可让规格提取和 UNI 复制使用
+        Junos 把逻辑接口嵌套在父口内；集中枚举 unit 可让规格提取和 NNI 复制使用
         相同结构判定。``unit 0;`` 也是逻辑接口，不能被当作父口业务复制。
         """
         if interface.children is None:
@@ -510,7 +512,7 @@ class JunosDocument(VendorConfiguration):
     def _find_vlan(self, unit: JunosNode) -> int | None:
         """读取 unit 的单层 VLAN 或 QinQ 外层 VLAN，未配置时返回 ``None``。
 
-        UNI 规划需要一个可保留或重新分配的外层标签；同时识别 ``vlan-id`` 和
+        业务分析同时识别 ``vlan-id`` 和
         ``vlan-tags outer``，可让单层与双层终结使用同一 ``InterfaceSpec.vlan``。
         """
         if unit.children is None:
@@ -526,7 +528,7 @@ class JunosDocument(VendorConfiguration):
     def _find_inner_vlan(self, unit: JunosNode) -> int | None:
         """读取 ``vlan-tags`` 语句中的 QinQ 内层 VLAN。
 
-        内层标签代表原客户业务 VLAN，UNI 汇聚时应优先保留；单层或无标签 unit
+        内层标签代表原客户业务 VLAN；单层或无标签 unit
         返回 ``None``，让上层按明确的回退规则选择内层标签。
         """
         if unit.children is None:
@@ -556,7 +558,7 @@ class JunosDocument(VendorConfiguration):
     def interface_specs(self) -> list[InterfaceSpec]:
         """提取父接口或 unit 的关系、类型及 VLAN/QinQ 信息。
 
-        返回厂商无关的 ``InterfaceSpec``，使 NNI/UNI 规划无需遍历 Junos 节点；统一
+        返回厂商无关的 ``InterfaceSpec``，使 NNI 规划无需遍历 Junos 节点；统一
         规格也让业务筛选、VLAN 分配和审计映射共享同一事实来源。
         """
         return self._interface_analysis_cache.read(
@@ -588,7 +590,7 @@ class JunosDocument(VendorConfiguration):
     def bundle_members(self) -> dict[str, str]:
         """返回物理接口到 ``ae`` 聚合父口的映射。
 
-        NNI/UNI 扁平化需要从拓扑物理端点反查真正承载业务的逻辑聚合口，并在迁移后
+        NNI 扁平化需要从拓扑物理端点反查真正承载业务的逻辑聚合口，并在迁移后
         清理原成员，因此统一暴露该方向的关系。
         """
         return self._interface_analysis_cache.read(
@@ -618,7 +620,7 @@ class JunosDocument(VendorConfiguration):
         """识别承载三层、二层及活跃广播域网关的 Junos 接口。
 
         IRB 不因自身配置地址就自动迁移；只有 bridge-domain/vlan 中仍有
-        活跃接入口，或其 unit 命中活跃业务 VLAN 时才进入 UNI 计划。
+        活跃接入口，或其 unit 命中活跃业务 VLAN 时才视为关联业务。
         """
         return self._interface_analysis_cache.read(
             self.root,
@@ -646,7 +648,7 @@ class JunosDocument(VendorConfiguration):
     def rename_interface_tree(self, source: str, target: str, strip_bundle: bool = False) -> None:
         """重命名整个 Junos 接口节点，并可移除聚合相关 options。
 
-        父节点改名会自然携带全部 unit，适合 NNI/UNI 暂存与最终落位；迁出 ae 成员时
+        父节点改名会自然携带全部 unit，适合 NNI 暂存与最终落位；迁出 ae 成员时
         清除旧 options，可避免目标物理口继续引用已不存在的聚合关系。
         """
         self._interfaces().rename_interface_tree(self, source, target, strip_bundle)
@@ -667,45 +669,45 @@ class JunosDocument(VendorConfiguration):
         """
         self._interfaces()._merge_duplicate_interface(self, preferred)
 
-    def _strip_vlan_termination(self, nodes: list[JunosNode]) -> list[JunosNode]:
-        """复制节点树并递归删除旧 VLAN 匹配、标签模式及 rewrite 配置。
-
-        新 QinQ unit 不能与原 ``vlan-id``、``vlan-tags`` 或 map 规则并存；返回清洗后
-        的副本可保留地址、family 和 CCC 等业务，同时不修改仍供其他迁移读取的源树。
-        """
-        return self._interfaces()._strip_vlan_termination(self, nodes)
-
-    def _ensure_target_parent(self, target_parent: str) -> JunosNode:
-        """确保 UNI 目标父口存在并配置为支持灵活 QinQ unit。
-
-        方法保留已有 unit，清理冲突的父口 VLAN 终结，并补齐 flexible 封装；集中准备
-        父口可让所有新 unit 使用一致能力，又不覆盖目标口上已存在的业务。
-        """
-        return self._interfaces()._ensure_target_parent(self, target_parent)
-
-    def map_uni(self, source: str, target_parent: str, vlan: int, inner_vlan: int) -> str:
-        """复制源业务到目标父口，并重写成 QinQ ``vlan-tags`` unit。
-
-        外层 VLAN 用作实验网络运输标签，内层 VLAN 保留原业务语义；复制而不立即删除
-        源父口，是因为同一父口的其他 unit 可能仍需逐个迁移，最终再统一清理更安全。
-        """
-        return self._interfaces().map_uni(self, source, target_parent, vlan, inner_vlan)
-
-    def finalize_uni_source(self, source_parent: str) -> None:
-        """在全部 UNI unit 复制完成后停用源父接口子树。
-
-        延后清理可避免较早迁移的 unit 删除后续 unit 仍需读取的共同父节点，也确保
-        临时占位接口不会出现在最终 Junos 配置中。
-        """
-        self.remove_interface(source_parent, include_children=True)
-
     def ensure_parent_interface(self, name: str) -> None:
-        """确保 UNI 目标父接口存在并具备灵活 VLAN 封装能力。
-
-        即使迁移结果只有 unit，Junos 仍需要正确配置的承载父节点；复用统一准备逻辑
-        可避免不同入口生成不一致或无法承载 QinQ 的父口。
-        """
+        """确保 NNI 承载父接口存在，不改变现有封装。"""
         self._interfaces().ensure_parent_interface(self, name)
+
+    def bundle_mode(self, member: str) -> str:
+        """读取成员原协商方式，unknown 表示无法安全判定。"""
+        from .bundles import bundle_mode
+        return bundle_mode(self, member)
+
+    def adapt_bundle(self, name: str) -> InterfaceAdaptationOutcome:
+        """保留逻辑聚合，按单成员实验调整已有门限。"""
+        from .bundles import adapt_bundle
+        return adapt_bundle(self, name)
+
+    def validate_nni_clone(
+        self, source: str, target_interfaces: set[str],
+    ) -> InterfaceAdaptationOutcome:
+        """在源树复制前检查三层地址及单值协议源引用。"""
+        from .clone_constraints import validate_nni_clone
+
+        return validate_nni_clone(self, source, target_interfaces)
+
+    def prune_non_nni(self, protected_parents: set[str]) -> InterfacePruningOutcome:
+        """基于原始接口名裁剪接入接口及其可识别依赖。"""
+        from .pruning import prune_non_nni
+
+        return prune_non_nni(self, protected_parents)
+
+    def adapt_interfaces(self, target_interfaces: set[str]) -> InterfaceAdaptationOutcome:
+        """Junos NNI 保持原 unit 语义，不增加 QinQ 配置。"""
+        return InterfaceAdaptationOutcome()
+
+    def validate_interfaces(
+        self, target_interfaces: set[str], removed_interfaces: set[str]
+    ) -> InterfaceAdaptationOutcome:
+        """检查最终配置的接口引用及网关关系。"""
+        from .pruning import validate_pruned_references
+
+        return validate_pruned_references(self, removed_interfaces)
 
     def adapt_to_simulation(
         self,

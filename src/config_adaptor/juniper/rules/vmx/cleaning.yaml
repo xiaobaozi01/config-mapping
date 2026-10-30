@@ -2,7 +2,7 @@ rules:
   # 管理面认证（root-authentication、login、tacplus/radius、远程访问服务）的删除与
   # 实验账号写入由内置代码规则 juniper.replace.authentication 原子执行，无需在此配置。
 
-  # vMX 实验固定清理项。以下功能不参与路由协议验证；接口类型在 NNI/UNI
+  # vMX 实验固定清理项。以下功能不参与路由协议验证；接口类型在 NNI
   # 迁移后可能变化，残留在不支持的接口类型上会导致导入报错，因此统一删除。
   - id: remove.protocols.link.discovery
     vendor: juniper_junos

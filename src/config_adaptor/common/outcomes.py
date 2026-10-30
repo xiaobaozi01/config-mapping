@@ -65,3 +65,20 @@ class SimulationAdaptationOutcome:
 
 
 ParameterAdjustmentOutcome = SimulationAdaptationOutcome
+
+
+@dataclass(slots=True)
+class InterfaceAdaptationOutcome:
+    """接口迁移约束的审计结果；不携带厂商 AST。"""
+
+    changes: list[dict[str, object]] = field(default_factory=list)
+    errors: list[str] = field(default_factory=list)
+    warnings: list[str] = field(default_factory=list)
+
+
+@dataclass(slots=True)
+class InterfacePruningOutcome(InterfaceAdaptationOutcome):
+    """在源接口改名前删除的对象，供最终引用检查使用。"""
+
+    removed_interfaces: set[str] = field(default_factory=set)
+    removed_addresses: set[str] = field(default_factory=set)

@@ -67,12 +67,25 @@ def _adapt_interface_knobs(
             if policy.ensure_data_interfaces_enabled and token == "disable":
                 outcome.record("removed", "interface-disable")
                 continue
-            if policy.remove_physical_interface_knobs and (
-                knob_leaf_pattern.match(base)
-                or (child.is_block and base in knob_block_names)
-            ):
+            if policy.remove_physical_interface_knobs and knob_leaf_pattern.match(base):
                 outcome.record("removed", "physical-interface-knob")
                 continue
+            if policy.remove_physical_interface_knobs and child.is_block and base in knob_block_names:
+                # options 中的 802.3ad/lacp 是聚合语义，不能按硬件块整体删除。
+                def clean_options(node):
+                    kept = []
+                    for leaf in node.children or []:
+                        statement = parser.base_header(leaf.header).rstrip(";")
+                        if leaf.effective and knob_leaf_pattern.match(statement):
+                            outcome.record("removed", "physical-interface-knob")
+                        else:
+                            if leaf.children is not None:
+                                clean_options(leaf)
+                            kept.append(leaf)
+                    node.children = kept
+                clean_options(child)
+                if not child.children:
+                    continue
             retained.append(child)
         interface.children = retained
 

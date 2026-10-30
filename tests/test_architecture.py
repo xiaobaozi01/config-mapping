@@ -9,11 +9,9 @@ from types import SimpleNamespace
 
 from config_adaptor.adaptation.models import Link
 from config_adaptor.adaptation.nni import plan_nni_components
-from config_adaptor.adaptation.pipeline import ConversionPipeline
-from config_adaptor.adaptation.uni import allocate_uni_vlans
+from config_adaptor.adaptation.pipeline import ConversionPipeline, build_default_pipeline
 from config_adaptor.cisco import CiscoDocument
 from config_adaptor.common.contracts import VendorConfiguration
-from config_adaptor.common.interface import InterfaceKind, InterfaceSpec
 from config_adaptor.juniper import JunosDocument
 
 
@@ -56,23 +54,19 @@ class NniPlanningTest(unittest.TestCase):
         self.assertFalse(plan.warnings)
 
 
-class UniVlanAllocationTest(unittest.TestCase):
-    def test_duplicate_vlan_keeps_first_and_reassigns_second(self):
-        specs = [
-            InterfaceSpec("Gi0.100", "Gi0", "100", 100, InterfaceKind.PHYSICAL),
-            InterfaceSpec("Gi1.100", "Gi1", "100", 100, InterfaceKind.PHYSICAL),
-            InterfaceSpec("Gi2", "Gi2", None, None, InterfaceKind.PHYSICAL),
-        ]
-
-        allocated = allocate_uni_vlans(specs)
-
+class ConversionPipelineTest(unittest.TestCase):
+    def test_default_pipeline_cleans_before_mapping_and_validates_last(self):
         self.assertEqual(
-            allocated,
-            {"Gi0.100": 100, "Gi1.100": 2, "Gi2": 3},
+            [type(stage).__name__ for stage in build_default_pipeline().stages],
+            [
+                "CleaningRulesHandler", "TopologyPreflightHandler", "GroupExpansionHandler",
+                "PreconfiguredInterfaceCleanupHandler", "InterfaceClassificationHandler",
+                "NonNNICleanupHandler", "NNIHandler", "ReferenceRewriteHandler",
+                "CleaningRulesHandler", "InterfaceCompatibilityHandler",
+                "SimulationAdaptationHandler", "FinalInterfaceValidationHandler",
+            ],
         )
 
-
-class ConversionPipelineTest(unittest.TestCase):
     def test_pipeline_stops_after_first_error(self):
         calls: list[str] = []
 

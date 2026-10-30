@@ -5,7 +5,7 @@
 
 ## 1. 先用一句话理解项目
 
-本项目读取真实网络的 Excel 拓扑和 Cisco IOS XR / Juniper Junos 配置，把真实设备上的接口、聚合、UNI、认证等配置转换成可在 GNS3 的 XRv9000 / vMX 镜像中运行的一套拓扑与配置。
+本项目读取真实网络的 Excel 拓扑和 Cisco IOS XR / Juniper Junos 配置，把真实设备上的接口、聚合、非 NNI 清理、认证等配置转换成可在 GNS3 的 XRv9000 / vMX 镜像中运行的一套拓扑与配置。
 
 它不是通用的“任意厂商配置翻译器”，核心目标是解决下面这个具体问题：
 
@@ -47,42 +47,39 @@ flowchart LR
 - IOS、IOS XE、NX-OS 等其他 Cisco 操作系统的语法转换。
 - 校验链路两端的 IP、VLAN、MTU、封装是否一致。
 - 在 GNS3 中自动创建或启动节点。
-- 为 UNI 创建真实的外部 GNS3 链路。
+- 保留非 NNI 接入业务或为其创建外部 GNS3 链路。
 
 ### 2.2 核心术语
 
 | 术语 | 在本项目中的含义 | 如何识别 |
 | --- | --- | --- |
 | NNI | 网络设备之间的连接接口 | 以 Excel `链接表` 为权威来源 |
-| UNI | 未出现在链接表中、但承载有效用户业务的接口 | NNI 处理后，从剩余业务接口中识别 |
+| 非 NNI | 不属于拓扑 NNI 聚合与子接口闭包的物理、聚合接口 | Group 展开后按原始链接表判定，连同业务依赖删除 |
 | Loopback | 环回逻辑接口 | Cisco `Loopback*`，Junos `lo0.*`；原样保留 |
 | 管理口 | 设备管理接口 | Cisco `MgmtEth*`，Junos `fxp*`、`em*` 等；不参与业务映射 |
 | 聚合口 | 多个物理成员组成的逻辑接口 | Cisco `Bundle-Ether*`，Junos `ae*` |
-| 聚合扁平化 | 用一个模拟器物理口承载原聚合逻辑配置 | NNI/UNI 处理阶段完成 |
+| 聚合成员压缩 | 多条物理成员缩为一条，逻辑聚合及业务保持 | NNI 处理阶段完成 |
 | Group | 厂商配置中的继承/模板机制 | Cisco `group/apply-group`，Junos `groups/apply-groups` |
 | Profile | 目标虚拟镜像提供的接口和适配策略 | `config/image_profiles.yaml` |
 | Mapping | 一条源接口到目标接口的可审计记录 | 输出到 `interface-mapping.json` |
 
 ### 2.3 最重要的分类规则
 
-链接表决定 NNI，UNI 是在排除 NNI 之后识别出的剩余有效业务接口：
+链接表决定 NNI。Group 展开后先计算端点、聚合、成员和子接口的保留闭包，再清理其余物理、聚合接口，最后迁移 NNI。
 
 ```mermaid
 flowchart TD
-    All[配置中的全部接口] --> Special{特殊接口?}
-    Special -->|Loopback / 管理口 / 已知虚拟口| Preserve[保留，不参与物理端口映射]
-    Special -->|否| InTopology{出现在链接表，或属于其聚合闭包?}
-    InTopology -->|是| NNI[NNI]
-    InTopology -->|否| Business{有 IP、L2 绑定或业务引用?}
-    Business -->|是| UNI[UNI]
-    Business -->|否| Bare[裸口：删除并记录]
+    All[配置中的全部接口] --> Special{接口类型}
+    Special -->|Loopback / 管理口 / 控制虚拟口 / 未知口| Preserve[保守保留]
+    Special -->|物理或聚合| InTopology{属于原始 NNI 闭包?}
+    InTopology -->|是| NNI[NNI 迁移]
+    InTopology -->|否| Remove[删除接口与业务依赖]
+    Special -->|BVI / IRB| Dependency{剩余 NNI 桥域仍依赖?}
+    Dependency -->|是| Gateway[保留原网关类型]
+    Dependency -->|否| Remove
 ```
 
-因此处理顺序必须是 `Group → NNI → UNI`：
-
-1. Group 可能为接口继承地址、VLAN、聚合和认证配置，所以必须先展开。
-2. Excel 常记录聚合的物理成员，而业务配置实际在 Bundle/ae 上，所以 NNI 必须先闭包分析。
-3. UNI 是排除完整 NNI 集合之后的差集，不能提前处理。
+Group 必须先展开，否则聚合关系可能不完整。清理必须在接口改名前完成，否则源口和目标口重名会干扰保留范围。被预检跳过的明确 NNI 仍保留身份，不能误删。
 
 ## 3. 输入和输出
 
@@ -122,11 +119,10 @@ Excel 至少包含两个工作表：
 
 ```text
 interfaces[:-3]  = 按顺序分配给 NNI
-interfaces[-3]   = 专门承载所有 UNI 子接口
-interfaces[-2:]  = 预留，不参与目标端口分配
+interfaces[-3:]  = 三个空置预留口，不参与目标端口分配
 ```
 
-例如默认 Cisco Profile 有 8 个接口，前 5 个可分配给 NNI，倒数第三个作为 UNI 父接口，最后两个预留。
+例如默认 Cisco Profile 有 8 个接口，前 5 个可分配给 NNI，最后三个空置预留。
 
 ### 3.3 输出与失败语义
 
@@ -173,13 +169,15 @@ flowchart TD
     Preflight --> Groups[2. Group 展开]
     Groups --> Preconfigured[3. 忽略预配置接口]
     Preconfigured --> Classify[4. 接口分类]
-    Classify --> NNI[5. NNI 规划与改写]
-    NNI --> UNI[6. UNI 规划与改写]
-    UNI --> Rewrite[7. 全局引用更新]
+    Classify --> Cleanup[5. 非 NNI 清理]
+    Cleanup --> NNI[6. NNI 规划与改写]
+    NNI --> Rewrite[7. 全局引用更新]
     Rewrite --> Rules[8. 统一配置清洗规则]
     Rules --> Auth[9. 管理认证清洗]
-    Auth --> Simulation[10. 模拟参数适配]
-    Simulation --> HasError{存在错误?}
+    Auth --> Compatibility[10. 目标接口兼容]
+    Compatibility --> Simulation[11. 模拟参数适配]
+    Simulation --> Validation[12. 最终接口校验]
+    Validation --> HasError{存在错误?}
     HasError -->|是| Diagnostics[只写 mapping + report]
     HasError -->|否| Outputs[写拓扑、配置、mapping、report、README]
 ```
@@ -241,7 +239,7 @@ flowchart TB
     subgraph Domain[领域模型与纯规划]
         Models[adaptation/models.py]
         NniPlan[adaptation/nni.py]
-        Vlan[adaptation/uni.py]
+        Cleanup[adaptation/core_interfaces.py]
     end
 
     subgraph Port[厂商能力边界]
@@ -276,7 +274,7 @@ flowchart TB
     AppPipe --> Stages
     Stages --> Models
     Stages --> NniPlan
-    Stages --> Vlan
+    Stages --> Cleanup
     Stages --> API
     CiscoParser -->|显式继承| API
     JunosParser -->|显式继承| API
@@ -298,11 +296,11 @@ flowchart TB
 | --- | --- | --- |
 | `adaptation/cli.py` | 参数解析、退出码 | 是 |
 | `adaptation/service.py` | 准备上下文、执行流程、写输出 | 是 |
-| `adaptation/topology.py`、`groups.py`、`interfaces.py`、`nni.py`、`uni.py`、`cleaning_rules.py`、`simulation.py` | 十个业务阶段 | 是，核心 |
+| `adaptation/topology.py`、`groups.py`、`interfaces.py`、`nni.py`、`core_interfaces.py`、`cleaning_rules.py`、`simulation.py` | 十二个业务阶段 | 是，核心 |
 | `adaptation/models.py` | 设备、链路、映射、Profile、上下文 | 是 |
 | `adaptation/pipeline.py` | Stage 协议和停止规则 | 是 |
 | `adaptation/nni.py` | 聚合链路分组的纯计算 | NNI 业务时读 |
-| `adaptation/uni.py` | UNI VLAN 唯一分配 | UNI 业务时读 |
+| `adaptation/core_interfaces.py` | NNI 保留闭包与依赖裁剪 | 修改实验保留范围时读 |
 | `common/contracts.py` | 两家厂商显式实现、应用层依赖的能力协议 | 是，理解边界 |
 | `cisco/document.py、juniper/document.py` | AST、解析、渲染及兼容 Facade | 第二阶段读 |
 | `cisco/groups.py、juniper/groups.py` | 厂商 Group 事务式展开 | 专项阅读 |
@@ -323,7 +321,7 @@ flowchart TB
 - `CiscoDocument` / `JunosDocument` 是类：它们持有并修改一份配置 AST。
 - `ConversionContext` 等是 dataclass：它们表达一次转换过程中的领域数据。
 - `plan_nni_components()` 是函数：输入链路和聚合关系，输出不可变计划，不持有状态。
-- `allocate_uni_vlans()` 是函数：输入接口集合，稳定地产生 VLAN 分配。
+- `plan_nni_components()` 是函数：输入链路和聚合关系，稳定地产生组件计划。
 - `cisco/interfaces.py、juniper/interfaces.py`、`cleaning.py`、`simulation.py` 使用模块函数：这些操作依赖传入的 Document，但自身不需要额外对象生命周期。
 
 ## 6. 贯穿流程的核心数据
@@ -375,7 +373,6 @@ classDiagram
         <<Protocol>>
         expand_groups()
         interface_specs()
-        map_uni()
         replace_references()
         clean_management_access()
         render()
@@ -393,62 +390,42 @@ classDiagram
 
 1. `topology.links`：目标接口名、链路是否有效、被删除原因。
 2. `device.document`：设备配置 AST。
-3. `device.mappings`：每一次接口迁移、删除、扁平化或跳过。
+3. `device.mappings`：每一次接口迁移、删除、逻辑保留或跳过。
 4. `errors/warnings/events`：面向用户和审计系统的诊断信息。
 
 不要在 Stage 之间增加隐藏的全局变量。需要跨阶段传递的数据，应进入 Context、DeviceContext 或一个明确的计划对象。
 
 ### 6.3 `InterfaceMapping` 不只是改名字典
 
-映射支持一对多和删除语义。例如 M-LAG 中一个 Bundle 可能被复制到两个目标口：
+映射区分逻辑保留与物理成员：
 
 ```json
 [
-  {
-    "device": "R1",
-    "source_interface": "Bundle-Ether10",
-    "role": "NNI",
-    "action": "clone-flatten",
-    "target_interface": "GigabitEthernet0/0/0/0",
-    "link_rows": [2],
-    "reason": "M-LAG 按对端拆分"
-  },
-  {
-    "device": "R1",
-    "source_interface": "Bundle-Ether10",
-    "role": "NNI",
-    "action": "clone-flatten",
-    "target_interface": "GigabitEthernet0/0/0/1",
-    "link_rows": [3],
-    "reason": "M-LAG 按对端拆分"
-  }
+  {"source_interface":"Bundle-Ether10","role":"NNI","action":"preserve","target_interface":"Bundle-Ether10"},
+  {"source_interface":"HundredGigE0/0/0/0","role":"NNI","action":"map-member","target_interface":"GigabitEthernet0/0/0/0"}
 ]
 ```
 
-`DeviceContext.replacement_map` 会把这些记录聚合成：
+逻辑自映射不会生成 Bundle 到物理口的字符串替换。普通物理口和子接口仍按目标口重写引用。
 
-```python
-{"Bundle-Ether10": ["GigabitEthernet0/0/0/0", "GigabitEthernet0/0/0/1"]}
-```
+## 7. 十二个核心 Stage
 
-随后 `ReferenceRewriteHandler` 用它更新路由协议、L2VPN、策略等非接口定义中的引用。
+| 顺序 | Stage | 主要职责 |
+| --- | --- | --- |
+| 1 | `CleaningRulesHandler(pre_analysis)` | 清理完整 banner |
+| 2 | `TopologyPreflightHandler` | 校验链路端点、保留跳过端点的 NNI 身份 |
+| 3 | `GroupExpansionHandler` | 事务式展开并校验 Group |
+| 4 | `PreconfiguredInterfaceCleanupHandler` | 忽略未实例化候选接口 |
+| 5 | `InterfaceClassificationHandler` | 按厂商白名单分类 |
+| 6 | `NonNNICleanupHandler` | 计算原始 NNI 闭包，删除非 NNI 与业务依赖 |
+| 7 | `NNIHandler` | 分组、成员压缩、聚合保留、端口分配 |
+| 8 | `ReferenceRewriteHandler` | 更新保留 NNI 的全局引用 |
+| 9 | `CleaningRulesHandler(post_rewrite)` | 路径清洗与认证替换 |
+| 10 | `InterfaceCompatibilityHandler` | 按目标接口上下文处理已知限制 |
+| 11 | `SimulationAdaptationHandler` | 目标口启用、硬件参数清理和 BFD 稳定性调整 |
+| 12 | `FinalInterfaceValidationHandler` | 检查最终接口状态和已知非法残留 |
 
-## 7. 十个核心 Stage
-
-| 顺序 | Stage | 输入关注点 | 主要副作用 | 关键失败条件 |
-| --- | --- | --- | --- | --- |
-| 1 | `CleaningRulesHandler(pre_analysis)` | 早期代码规则 | 删除可能干扰分析的完整 banner | 缺少结束分隔符 |
-| 2 | `TopologyPreflightHandler` | 拓扑设备和链路端点 | 保留 Huawei 对端链路，仅跳过无法识别的链路并为本端保留 NNI 角色 | 端点设备不存在 |
-| 3 | `GroupExpansionHandler` | 活动 Group 引用、已知接口 | 事务式展开 Group，记录冲突 | 引用缺失、循环或无法静态求值 |
-| 4 | `PreconfiguredInterfaceCleanupHandler` | IOS XR 预配置接口 | 忽略未实例化接口候选块 | 本阶段一般不失败 |
-| 5 | `InterfaceClassificationHandler` | 厂商接口类型 | 未知接口告警并保留 | 本阶段一般不失败 |
-| 6 | `NNIHandler` | 活跃链路、聚合成员 | 分组、扁平化、M-LAG 拆分、端口分配 | 类型错误、成员歧义、端口不足 |
-| 7 | `UNIHandler` | 剩余业务接口 | 删除裸口、QinQ 迁移、VLAN 分配 | VLAN 空间耗尽 |
-| 8 | `ReferenceRewriteHandler` | 完整接口映射 | 更新全局接口引用 | 由厂商实现保证安全 |
-| 9 | `CleaningRulesHandler(post_rewrite)` | 已启用 YAML 规则和认证代码规则 | 先按路径清洗，再删除旧认证并配置实验登录凭据 | 规则文件先期校验；认证两步作为一次规则执行 |
-| 10 | `SimulationAdaptationHandler` | Profile 与已映射数据口 | 启用接口、去硬件参数、提高过低 BFD 值 | 非法 Profile 先期校验 |
-
-`ConversionPipeline` 每执行完一个 Stage 就检查 `context.has_errors`。一旦为真，后续 Stage 不再运行。
+任一阶段写入错误后，`ConversionPipeline` 停止后续阶段，不输出设备配置。目标兼容和最终校验不受模拟参数 `off` 模式影响。
 
 ## 8. Group 展开
 
@@ -500,137 +477,23 @@ flowchart LR
 
 Cisco 和 Junos 的语法、通配符和递归机制不同，因此 Group 算法分别位于两个厂商目录，而事务和优先级原则保持一致。
 
-## 9. NNI：物理链路与聚合扁平化
+## 9. NNI：物理成员映射与聚合保留
 
-### 9.1 普通 NNI
+Excel 只列物理链路。Group 展开后从成员绑定反查 Bundle/ae，再纳入其全部子接口和必要业务依赖。聚合逻辑接口无需出现在 Excel。
 
-普通链路按照 Excel 原始行号稳定排序。对链路两端分别使用本端 Profile 分配接口，因此跨厂商链路无需同名：
+同一对端经两端确认的聚合多链路缩减为最早一条，物理成员按 Profile 映射；逻辑聚合名、子接口、IP/VRF/封装和协议引用保持。成员使用 `bundle id` 或 `802.3ad` 重新关联原聚合，单成员门限定向调整。后续清洗和模拟适配必须保留绑定与原协商方式。
 
-```text
-Excel 源端：R1 Gi0/0/0/5  <->  J1 xe-1/2/0
-目标 Cisco：GigabitEthernet0/0/0/0
-目标 Junos： ge-0/0/0
-```
+跨对端同聚合默认失败，不猜测 MC-LAG 或复制逻辑业务。两端聚合/协商不一致、源成员混有独立业务、孤立有业务聚合无法确认归属时，均在迁移前报错。已跳过端点仍受保护，最后三个口继续预留。
 
-系统保证“相同输入产生相同分配”，不会依赖字典的偶然顺序。
+物理改名使用占位口避开源目标重名；业务主口始终保持 Bundle/ae 类型。
 
-Huawei 对端不加载配置：与 Huawei 相连的链路只解析 Cisco/Juniper 本端，仍按本端 Profile 分配目标口并改写本端配置，Huawei 侧接口名和拓扑行保持原样。Huawei 侧的聚合关系不可见，聚合扁平化只依据本端 `Bundle-Ether`/`ae`。
+## 10. 非 NNI 清理：保留闭包与依赖裁剪
 
-### 9.2 同一对端的聚合扁平化
+实验只展示并适配链接表中的 NNI。其他物理、聚合口及子接口即使有地址或 L2 业务，也不再迁移到共享子接口，不生成运输 VLAN 或 QinQ。
 
-```mermaid
-flowchart LR
-    subgraph Before[真实拓扑]
-        A1[A Gi0] --- B1[B Gi0]
-        A2[A Gi1] --- B2[B Gi1]
-        BA[Bundle-Ether10] -.成员.-> A1
-        BA -.成员.-> A2
-        BB[Bundle-Ether20] -.成员.-> B1
-        BB -.成员.-> B2
-    end
+保留范围由原始拓扑端点、聚合成员关系及逻辑父口/子接口共同决定。删除非 NNI 时，协议接口、VRF、L2VPN、bridge-domain、VLAN 和 routing-instance 中的引用同时删除。完全失去接入口的业务容器删除，混合容器保留其余 NNI 成员。BVI/IRB 只有仍被 NNI 桥域或 VLAN 依赖时才保持原网关类型。
 
-    subgraph After[GNS3 拓扑]
-        TA[A 目标口0<br/>承载原 Bundle10 配置] --- TB[B 目标口0<br/>承载原 Bundle20 配置]
-    end
-
-    Before -->|保留最早 Excel 行，删除冗余成员行| After
-```
-
-`plan_nni_components()` 只负责计算：
-
-- 哪些 Excel 行属于同一个聚合组件。
-- 每个组件保留哪一行。
-- 哪些行是冗余行。
-- 成员关系是否存在歧义。
-
-这个函数不修改 Link 或 AST。只有计划无错误后，`NNIHandler` 才应用计划。
-
-### 9.3 M-LAG 按对端拆分
-
-同一个 Bundle/ae 的成员若连接到不同对端，不能合并成一条链路：
-
-```mermaid
-flowchart LR
-    B[Bundle/ae 配置] --> P1[对端 B 的目标物理口]
-    B --> P2[对端 C 的目标物理口]
-    B --> P3[更多对端的目标物理口]
-
-    P1 --> R1[生成一份配置与引用]
-    P2 --> R2[生成一份配置与引用]
-    P3 --> R3[生成一份配置与引用]
-```
-
-实现使用占位接口完成两阶段改名：
-
-```text
-源 Bundle/ae
-  → ADAPT-NNI-0 / ADAPT-NNI-1（克隆）
-  → 删除原聚合与成员
-  → 最终目标物理口
-```
-
-这样可以避免目标名与源名重叠，以及第一个目标处理后丢失后续克隆源。
-
-## 10. UNI：业务闭包、QinQ 与 VLAN 分配
-
-### 10.1 什么是有效 UNI
-
-一个接口不是因为“存在配置块”就自动成为 UNI。它至少应满足一种业务证据：
-
-- 配置 IP 地址。
-- 承载 L2VC/L2Circuit、L2 transport、CCC 或 bridge。
-- 被 L2VPN、bridge-domain、VLAN、routing-instance 或路由协议引用。
-
-只有 description、MTU 等非业务属性的接口是裸口，会删除并写入 `remove-bare` 映射。
-
-### 10.2 网关接口为什么需要业务闭包
-
-Cisco BVI 或 Junos IRB 即使有 IP，也不一定仍有用户业务。系统会沿广播域关系确认它是否与活跃 UNI 关联：
-
-```mermaid
-flowchart TD
-    Access[活跃 UNI 接口] --> Domain[Bridge Domain / VLAN]
-    Domain --> Gateway[BVI / IRB]
-    Gateway --> Active{广播域仍包含活跃 UNI?}
-    Active -->|是| Move[迁移网关逻辑接口]
-    Active -->|否| Remove[作为无效 UNI 删除]
-```
-
-对 Cisco 而言，`BVI300` 中的 `300` 只是接口编号，不自动等于 VLAN 300。
-系统只从同一 bridge-domain 的显式 attachment circuit 推导业务 VLAN；关系缺失
-或标签不唯一时不猜测，由目标运输 VLAN 分配器选择空闲值。
-
-### 10.3 VLAN 分配算法
-
-VLAN 分配范围是 `2..4094`，并在每台设备内保证唯一：
-
-1. 按稳定顺序遍历 UNI。
-2. 原 VLAN 合法且尚未使用时保留。
-3. 原 VLAN 缺失、非法或重复时，从 2 开始选择最小空闲值。
-4. 目标子接口/unit 编号等于外层 VLAN。
-
-```text
-源 UNI-A，VLAN 100 → 目标 .100，外层 100
-源 UNI-B，VLAN 100 → 目标 .2，  外层 2
-源 UNI-C，无 VLAN  → 目标 .3，  外层 3
-```
-
-`allocate_uni_vlans()` 是纯函数，可以不构造完整配置文档就独立测试。
-
-### 10.4 QinQ 改写
-
-所有有效 UNI 汇聚到 Profile 的倒数第三个物理接口：
-
-```text
-多个源物理口 / Bundle / ae
-          ↓
-目标 UNI 父接口的多个子接口或 unit
-          ↓
-outer VLAN = 设备内唯一的目标编号
-inner VLAN = 优先保留可识别的原业务 VLAN
-```
-
-迁移时会清除旧标签匹配、VLAN rewrite、接口模式等配置，再写入厂商对应的 QinQ 表达；`vlan-ccc` 等代表业务类型的语义会保留。
+每条接口删除使用 `role=NON_NNI`、`action=remove`、空目标接口写入 mapping/report。NNI 分配仍只使用前 n-3 个数据口；最后三个接口全部空置预留。
 
 ## 11. 厂商实现如何隔离
 
@@ -641,13 +504,13 @@ inner VLAN = 优先保留可识别的原业务 VLAN
 - `expand_groups()`
 - `interface_specs()` / `business_interface_names()`
 - `clone_interface_tree()` / `rename_interface_tree()`
-- `map_uni()`
+- `prune_non_nni()` / `adapt_interfaces()` / `validate_interfaces()`
 - `replace_references()`
 - `clean_management_access()`
 - `adapt_to_simulation()`
 - `render()`
 
-这使相同的 NNI/UNI 流程可以同时调度 Cisco 与 Juniper，而厂商语法差异留在各自实现中。
+这使相同的 NNI 与非 NNI 清理流程可以同时调度 Cisco 与 Juniper，而厂商语法差异留在各自实现中。
 
 ### 11.2 Cisco 文档模型
 
@@ -691,7 +554,7 @@ interfaces {
 5. 在 `parse_document()` 中注册解析器。
 6. 增加独立 fixture 与端到端测试。
 
-不要在 `NNIHandler` 或 `UNIHandler` 中加入大量 `if vendor == ...`。如果差异属于语法或配置树操作，应下沉到厂商模块；只有真正跨厂商的业务策略才留在应用层。
+不要在 `NNIHandler` 或 `NonNNICleanupHandler` 中加入大量 `if vendor == ...`。如果差异属于语法或配置树操作，应下沉到厂商模块；只有真正跨厂商的业务策略才留在应用层。
 
 ## 12. 清洗与模拟适配
 
@@ -722,7 +585,7 @@ YAML 规则的本地 `id` 使用点号划分命名层级，每一段可由小写
 
 YAML 规则固定先删除、后替换，最多两轮 AST 遍历。每个节点只采用该轮首条匹配的规则；删除时跳过后代，替换后不再对该节点级联匹配，但子节点会使用更新后的父级路径。审计事件按删除组、替换组顺序输出，认证代码规则最后独立执行。`mask`、`warn` 不再是清洗动作；这不影响 group 语义冲突的告警策略。
 
-把规则放到核心接口分类之后，是为了防止清洗意外删除分类依据，改变 NNI/UNI 的核心语义。默认保留未知配置仍是项目的保守原则。
+把规则放到核心接口分类之后，是为了防止清洗意外删除分类依据，改变 NNI 保留闭包的核心语义。默认保留未知配置仍是项目的保守原则。
 
 ### 12.3 模拟参数模式
 
@@ -740,7 +603,7 @@ YAML 规则固定先删除、后替换，最多两轮 AST 遍历。每个节点�
 
 | 类型 | 含义 | 是否阻断 |
 | --- | --- | --- |
-| `event` | 正常转换事实，如扁平化、Group 冲突、认证清洗 | 否 |
+| `event` | 正常转换事实，如成员压缩、Group 冲突、认证清洗 | 否 |
 | `warning` | 保守保留或跳过，结果仍可用 | 否 |
 | `error` | 无法保证结果完整正确 | 是 |
 
@@ -757,7 +620,7 @@ YAML 规则固定先删除、后替换，最多两轮 AST 遍历。每个节点�
 - NNI 目标物理接口不足。
 - 聚合成员关系存在歧义。
 - Group 无法安全展开。
-- UNI VLAN 空间耗尽。
+- 已知目标接口冲突无法转换或最终校验失败。
 - 配置语法无法安全解析。
 
 ### 13.2 `report.json` 阅读顺序
@@ -848,8 +711,8 @@ flowchart TD
 | 接口被当成未知类型 | 对应解析器的 `interface_kind` |
 | 聚合链路被错误合并 | `adaptation/nni.py` |
 | M-LAG 少了一个目标 | `NNIHandler` 的 `plans_by_logical` 和 mappings |
-| UNI 被删除 | `business_interface_names()` 与 `remove-bare` mapping |
-| UNI VLAN 与预期不同 | `adaptation/uni.py` |
+| 非 NNI 删除范围异常 | 原始拓扑、聚合闭包与 `NON_NNI` mapping |
+| 目标接口导入失败 | 接口兼容/最终校验事件与真实设备诊断 |
 | 协议仍引用旧接口 | `replacement_map` 和 `replace_references()` |
 | 某配置被意外删除 | mandatory/optional cleaning 事件与外部 rule 事件 |
 | BFD 值发生变化 | Profile 的 `simulation_adaptation` 与对应事件 |
@@ -862,7 +725,7 @@ flowchart TD
 原始配置接口名
   → resolve_interface() 后的规范名
   → interface_specs() 中的 kind/parent/unit/vlan
-  → NNI component plan 或 UNI vlan plan
+  → NNI component plan 或非 NNI 保留闭包
   → InterfaceMapping
   → replacement_map
   → render() 后的最终配置
@@ -882,13 +745,14 @@ flowchart TD
 
 1. 修改 `<厂商>/interfaces.py` 的业务闭包分析。
 2. 确认它是否会激活 BVI/IRB 网关。
-3. 同时添加“应迁移”和“不应迁移”的测试，避免把所有有 IP 网关都误判为活跃。
+3. 同时添加“NNI 仍依赖网关”和“仅非 NNI 依赖网关”的测试，避免误删或误保留。
 
-### 16.3 调整 VLAN 分配策略
+### 16.3 增加目标接口兼容规则
 
-1. 优先修改纯函数 `allocate_uni_vlans()`。
-2. 用小型单元测试覆盖边界和确定性。
-3. 再用 Cisco、Junos 各一个端到端测试确认语法落地。
+1. 明确目标镜像和接口上下文，区分物理父口、L3 子接口与 L2 子接口。
+2. 对已知限制选择安全删除、调整位置或阻断转换，并记录原因。
+3. 添加转换前后测试和最终校验反例，保留无关路由协议配置。
+4. 使用实际镜像版本补做 load/commit 验收；静态规则没有覆盖的命令不能宣称已验证。
 
 ### 16.4 增加一个 Pipeline 阶段
 
@@ -924,11 +788,11 @@ flowchart TB
 
 | 目录 | 主要覆盖 |
 | --- | --- |
-| `iosxr_bundle` | Cisco 聚合 NNI、UNI、认证清洗 |
-| `junos_bundle` | Junos 聚合 NNI、UNI、认证清洗 |
-| `iosxr_duplicate_vlan` | UNI VLAN 冲突重分配 |
-| `iosxr_mlag` | Cisco 聚合跨对端拆分、QinQ、一对多引用 |
-| `junos_mlag` | Junos ae 跨对端拆分、裸口与 QinQ |
+| `iosxr_bundle` | Cisco 聚合 NNI、非 NNI 清理、认证清洗 |
+| `junos_bundle` | Junos 聚合 NNI、非 NNI 清理、认证清洗 |
+| `iosxr_duplicate_vlan` | 重复 VLAN 的非 NNI 裁剪 |
+| `iosxr_mlag` | Cisco 聚合跨对端拆分、非 NNI 裁剪、一对多引用 |
+| `junos_mlag` | Junos ae 跨对端拆分、非 NNI 与网关清理 |
 | `cross_vendor` | Cisco/Juniper 普通及聚合互联 |
 | `huawei_peer` | Huawei 只作为对端，Cisco/Juniper 端仍完成 NNI 适配 |
 | `junos_unresolved` | Group 无法解析时回滚和失败输出 |
@@ -987,14 +851,14 @@ git diff --check
 1. 本文第 1～4 节，建立业务和总流程。
 2. `adaptation/models.py`，认识 Context、Link、Mapping 和 Profile。
 3. `adaptation/service.py` 的 `convert()`。
-4. `adaptation/pipeline.py` 的 `build_default_pipeline()` 和九个 Stage 类名。
+4. `adaptation/pipeline.py` 的 `build_default_pipeline()` 和十二个 Stage 类名。
 5. 选一个 `tests/test_conversion.py` 的端到端用例，从输入断言看到输出。
 
 如果有半天：
 
 1. 按上面的 30 分钟路径阅读。
-2. 详细阅读 `NNIHandler`、`UNIHandler`。
-3. 阅读 `adaptation/nni.py` 和 `adaptation/uni.py`。
+2. 详细阅读 `NNIHandler`、`NonNNICleanupHandler`。
+3. 阅读 NNI、非 NNI 清理及接口兼容模块。
 4. 只选择自己更熟悉的一个厂商，阅读其 parser 和 `<厂商>/interfaces.py`。
 5. 本地运行一个 fixture，并对照输出 mapping/report。
 
@@ -1029,7 +893,7 @@ config_adaptor.adaptation.cli.main
 
 ### 为什么不直接做字符串替换？
 
-因为接口映射可能一对多，配置具有层级，聚合需要克隆和删除，Group 有继承优先级。简单字符串替换会误改描述、丢失上下文，也无法安全处理 M-LAG。
+因为配置具有层级，物理成员映射与逻辑聚合保留必须分开，Group 还存在继承优先级。简单字符串替换会破坏接口类型及成员绑定。
 
 ### 为什么不先把所有配置统一成一个巨大通用 AST？
 
@@ -1041,7 +905,7 @@ Cisco 块结构和 Junos 树结构差异很大。当前设计只统一应用层�
 
 ### 为什么清洗规则在接口转换之后？
 
-核心分类需要完整的原始业务依据。先运行清洗删除规则，可能让一个有效接口失去 IP、VLAN 或引用，从而改变 NNI/UNI 决策。
+核心分类需要完整的原始业务依据。先运行清洗删除规则，可能让一个有效接口失去 IP、VLAN 或引用，从而改变 NNI 保留闭包决策。
 
 ### 为什么失败还会创建输出目录？
 
@@ -1061,3 +925,7 @@ Cisco 块结构和 Junos 树结构差异很大。当前设计只统一应用层�
 - `src/config_adaptor/juniper/rules/vmx/cleaning.yaml`：vMX 配置清洗规则。
 
 建议把本文作为第一入口，把 `requirements.md` 当作“系统必须满足什么”，把 `processing-flow.md` 当作“具体语法如何改写”。
+
+## 23. 自动测试与实际设备验收
+
+本地测试覆盖 AST、转换、依赖裁剪、接口规则和模拟 Console 交互。当前未连接真实 XRv9000，自动测试通过不代表已验证目标镜像 CLI 支持。实际验收必须记录镜像版本并确认配置 load/commit 成功、NNI 父口/子接口状态和所需路由邻接；设备失败回显应脱敏后转成回归样例。

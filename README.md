@@ -16,7 +16,7 @@ group 展开是事务式的，并遵循显式配置、嵌套层级和 group 列�
 - `adaptation/groups.py`：Group 展开的跨设备调度和诊断汇总。
 - `adaptation/interfaces.py`：接口分类及最终引用改写。
 - `adaptation/nni.py`：NNI 聚合规划、M-LAG 边界、端口分配和配置迁移。
-- `adaptation/uni.py`：UNI 候选识别、VLAN 分配和 QinQ 汇聚。
+- `adaptation/core_interfaces.py`：删除未被拓扑闭包保留的物理、聚合接口及业务引用；目标兼容与最终校验阶段按接口上下文检查转换结果。
 - `adaptation/cleaning_rules.py`：声明式与代码型清洗规则、内置注册表及固定执行点调度。
 - `adaptation/input_normalization.py`：按厂商规则删除原始配置两端的采集回显，再交给语法解析器。
 - `adaptation/simulation.py`：模拟参数适配调度。
@@ -29,11 +29,11 @@ group 展开是事务式的，并遵循显式配置、嵌套层级和 group 列�
 
 单元测试按关注点拆分到独立的 `tests/test_*.py` 文件（端到端转换、Cisco/Junos group 展开、AST、清洗、模拟适配与接口业务分析），设备配置一律以 `.cfg` 文件放在 `tests/fixtures/`，拓扑以双 sheet 的 `topology.xlsx` 表达，不嵌入 Python 代码：
 
-- `iosxr_bundle/`：IOS XR 聚合 NNI、UNI、group 和认证清洗样例。
-- `junos_bundle/`：Junos 聚合 NNI、UNI、groups 和认证清洗样例。
-- `iosxr_duplicate_vlan/`：UNI VLAN 冲突重新分配样例。
-- `iosxr_mlag/`：IOS XR 同一 Bundle 跨对端拆分、一对多引用与 QinQ UNI 样例。
-- `junos_mlag/`：Junos ae 跨对端拆分、裸口清理与 QinQ UNI 样例。
+- `iosxr_bundle/`：IOS XR 聚合 NNI、非 NNI 清理、group 和认证清洗样例。
+- `junos_bundle/`：Junos 聚合 NNI、非 NNI 清理、groups 和认证清洗样例。
+- `iosxr_duplicate_vlan/`：带重复 VLAN 的非 NNI 业务裁剪样例。
+- `iosxr_mlag/`：IOS XR 同一 Bundle 跨对端拆分、一对多引用与非 NNI 业务裁剪样例。
+- `junos_mlag/`：Junos ae 跨对端拆分、非 NNI 接口与网关清理样例。
 - `cross_vendor/`：Cisco XRv9000 与 Juniper vMX 互联时，普通 NNI 和 `Bundle-Ether`/`ae` 聚合两端独立适配样例。
 - `huawei_peer/`：华为设备只作为拓扑对端，Cisco/Juniper 端仍完成 NNI 适配的样例。
 - `junos_unresolved/`：无法解析 group 时事务回滚样例。
@@ -58,13 +58,13 @@ config-adaptor convert \
   --profiles config/image_profiles.yaml
 ```
 
-`--profiles` 可配置镜像名称/版本、数据接口列表和模拟参数适配策略；列表倒数第三个接口用于 UNI，最后两个接口预留，其余接口可分配给 NNI。清洗规则随程序发布，按厂商分别位于 `config_adaptor/cisco/rules/xrv9000/cleaning.yaml` 和 `config_adaptor/juniper/rules/vmx/cleaning.yaml`，转换时不接受外部规则文件。
+`--profiles` 可配置镜像名称/版本、数据接口列表和模拟参数适配策略；列表最后三个接口全部空置预留，其余接口可分配给 NNI（默认八口中的前五口）。清洗规则随程序发布，按厂商分别位于 `config_adaptor/cisco/rules/xrv9000/cleaning.yaml` 和 `config_adaptor/juniper/rules/vmx/cleaning.yaml`，转换时不接受外部规则文件。
 
 原始采集文本的输入整理规则分别位于两家厂商镜像目录的 `input_normalization.yaml`。每条规则的 `match` 都是逐行正则列表；单项匹配一行，多项匹配连续多行。`region` 只能是 `leading` 或 `trailing`，匹配后的动作固定为删除。规则 `id` 可只写局部名称，加载时自动补上 `cisco.` 或 `juniper.` 前缀；已带本厂商前缀的 ID 原样使用。规则只从文件两端向内删除完整匹配的行序列；正文中的匹配内容原样保留，清理后只剩空白也直接返回。Juniper 默认规则识别 `show configuration` 回显、`Last commit`、常见尾部提示符、采集分隔符和三行 `{ / master / }` 尾块；Cisco 规则文件默认留空，待确认具体采集格式后添加。输入整理命中情况写入 `report.json` 的 `input-normalization` 事件，不记录被删除的原文。
 
 每个镜像 Profile 的 `simulation_adaptation.mode` 支持 `off`、`compatible` 和 `stable`。默认 `stable` 仅保证已映射数据口启用、删除这些目标口上的物理硬件属性，并将配置中已经存在且低于安全下限的 BFD interval/multiplier 调高；不会自动开启 BFD，也不会修改 OSPF、IS-IS 或 BGP 的业务定时器。全部修改写入 `report.json` 的 `simulation-adaptation` 事件。旧 `param_adjustment` YAML 节点仍兼容读取，但不能与新节点同时配置。
 
-管理账号、AAA/TACACS/RADIUS、SSH/Telnet 网络管理服务、SSH 信任、SNMP 以及聚合扁平化后的 LACP/门限属性始终清理。简单清洗由 YAML 描述，banner、认证替换等复杂清洗由代码规则实现，两类规则统一由 `CleaningRulesHandler` 在固定执行点调度并按 `category` 报告。协议认证、PKI、硬件、NAT、流量统计等 YAML 规则默认启用，可按 `enable` 单独关闭。
+管理账号、AAA/TACACS/RADIUS、SSH/Telnet 网络管理服务、SSH 信任、SNMP 始终清理；聚合成员绑定与 LACP 模式保留，缩减成员时单独适配门限。简单清洗由 YAML 描述，banner、认证替换等复杂清洗由代码规则实现，两类规则统一由 `CleaningRulesHandler` 在固定执行点调度并按 `category` 报告。协议认证、PKI、硬件、NAT、流量统计等 YAML 规则默认启用，可按 `enable` 单独关闭。
 
 group 统一采用全量处理：静态展开并校验所有活动的 group 引用及其依赖，成功后移除 group 定义和控制语句。未被活动配置引用的模板不参与求值；缺失引用、循环依赖或无法安全静态解释的活动 group 会使转换整体回滚。Junos 的 `inactive:` 配置不参与求值，若父节点保留则随之保留；重复的顶层 `groups {}` 容器及同名定义会先合并再求值。
 
@@ -74,7 +74,13 @@ Cisco 与 Juniper 的跨厂商 NNI 会按链路两端各自的厂商语法和镜
 
 华为设备只作为拓扑对端：转换器不读取、不解析、不生成华为配置，也不要求提供华为配置文件。与华为相连的 Cisco/Juniper 端点仍按本端镜像 Profile 分配 NNI 目标口并改写本端配置和拓扑接口，华为侧设备行和接口名保持原样。华为与华为之间的链路同样保留在适配拓扑中，但不产生接口映射；未知厂商仍按不支持处理。
 
-UNI 只迁移有 IP、L2VC/L2Circuit、L2 绑定或全局业务引用的接口；裸口删除。Cisco 会沿 `bridge-domain` 关联活跃 attachment circuit 与 BVI，Juniper 会沿 `bridge-domains`/`vlans` 关联活跃接口、VLAN 与 IRB；未关联活跃业务的 BVI/IRB 不迁移。目标 UNI 统一重写为 QinQ，旧标签匹配和 VLAN rewrite 清除，外层 VLAN 是设备内唯一的目标子接口编号，内层优先保留可识别的原 VLAN。
+实验只适配 Excel 中的 NNI 及其聚合、子接口闭包。其他物理、聚合接口及子接口连同协议、VRF、桥域中的引用一并删除，不再汇聚到 UNI 或生成 QinQ。BVI/IRB 仅在剩余 NNI 桥域仍依赖它时保留原有网关类型。Loopback、管理口以及未识别接口仍遵循保守保留策略。
+
+目标接口兼容处理独立于模拟参数策略运行，不能通过 `simulation_adaptation.mode: off` 关闭。已知不适用于物理口或子接口的命令按规则清理或调整，无法安全转换的已知冲突使转换失败；报告记录处理原因。静态校验只覆盖已建模规则，自动测试通过不等于已在真实 XRv9000 上验证。当前未连接实机，交付后还须在实际镜像版本上完成 load/commit、接口与路由邻接验收。
+
+被删除接口的 BGP 本地源、显式出接口静态路由和业务绑定会同步裁剪；未知活动依赖使转换失败，不输出成功配置。跳过链路的端点受保护，其占用端口也不会重新分配给其他 NNI。接口名先按厂商规范化，Profile 中使用全名和缩写重复指定同一端口会报错。Cisco 的已确认接口约束不受模拟阶段 `remove_physical_interface_knobs` 开关影响。
+
+裁剪按 VRF／routing-instance 区分地址与 VLAN 作用域，BGP 邻居的有效显式本地源不会因组默认源失效而被误删。聚合 NNI 保留 Bundle/ae 及子接口，只映射物理成员并压缩同一对端的冗余链路；跨不同对端的聚合当前明确拒绝，不再克隆业务或展开本地源。Profile 中所有数据接口（包括预留口）必须是可识别的物理父口。
 
 也可以不安装直接运行：
 
@@ -99,3 +105,9 @@ XRv9000 7.11.1 的默认适配会识别 IOS XR `interface preconfigure`，并在
 - `interface-mapping.json`
 - `report.json`
 - `README.txt`
+
+同目录重跑时，先前发布的配置、拓扑和说明会隔离到 `.previous-outputs/`，其位置记入报告；本次加载或校验失败时不会继续留下可被当成本次成果的旧导出。内部 `.generated-artifacts.json` 记录本程序负责的文件，额外的用户文件保持原位。
+
+聚合识别从拓扑物理口的成员绑定出发，聚合及子接口不需要出现在 Excel 中。逻辑接口 `action=preserve` 自映射；成员 `action=map-member` 映射物理口。归属不明且有业务的聚合报错，不按表外接口直接裁剪。Junos 模拟适配按叶子清理硬件属性，保留 `802.3ad` 和 ae 的必要 options；Cisco 保留成员 `bundle id`。静态/LACP 模式不单边更改。
+
+XRv9000 保留 Bundle 时还需在实际镜像核验 Bundle MAC 与虚拟网卡的聚合支持。Cisco 输入未显式设置 Bundle MAC 时会给出核验告警，不自动编造 MAC 或更改全局 LACP 标识；自动测试不替代聚合 up、commit 和邻居建立验证。

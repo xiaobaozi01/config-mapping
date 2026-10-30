@@ -119,17 +119,17 @@ class InputNormalizationTest(unittest.TestCase):
             )
 
     def test_conversion_records_removed_lines_without_raw_content(self):
-        root = FIXTURES / "junos_mlag"
+        root = FIXTURES / "junos_bundle"
         with tempfile.TemporaryDirectory() as directory:
             workspace = Path(directory)
             config_dir = workspace / "configs"
             shutil.copytree(root / "configs", config_dir)
-            source_path = config_dir / "JA.cfg"
+            source_path = config_dir / "J1.cfg"
             source = source_path.read_text(encoding="utf-8")
             source_path.write_text(
-                "<JA>show configuration\n## Last commit: secret operator\n"
+                "<J1>show configuration\n## Last commit: secret operator\n"
                 + source
-                + "{\n master\n}\nuser@JA>\n",
+                + "{\n master\n}\nuser@J1>\n",
                 encoding="utf-8",
             )
 
@@ -137,7 +137,7 @@ class InputNormalizationTest(unittest.TestCase):
             context = convert(root / "topology.xlsx", config_dir, output)
 
             self.assertFalse(context.has_errors, context.errors)
-            rendered = (output / "configs" / "JA.cfg").read_text(encoding="utf-8")
+            rendered = (output / "configs" / "J1.cfg").read_text(encoding="utf-8")
             self.assertNotIn("master", rendered)
             self.assertNotIn("show configuration", rendered)
             report = json.loads((output / "report.json").read_text(encoding="utf-8"))

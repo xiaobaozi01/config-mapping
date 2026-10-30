@@ -126,7 +126,7 @@ class ConfiguredCleaningRule:
     def point(self) -> CleaningPoint:
         """把 YAML 规则固定到引用改写后的安全执行点。
 
-        YAML 不开放阶段配置，可防止简单删除规则提前改变接口分类、NNI 或 UNI 决策。
+        YAML 不开放阶段配置，可防止简单删除规则提前改变接口分类及 NNI 决策。
         """
         return CleaningPoint.POST_REWRITE
 

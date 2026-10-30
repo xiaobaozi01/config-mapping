@@ -16,6 +16,8 @@ from ..common.interface_cache import InterfaceAnalysisCache, copy_interface_spec
 from ..common.outcomes import (
     CleanupOutcome,
     GroupExpansionOutcome,
+    InterfaceAdaptationOutcome,
+    InterfacePruningOutcome,
     SimulationAdaptationOutcome,
 )
 from ..common.policies import SimulationAdaptationPolicy, WashingPolicy
@@ -98,7 +100,7 @@ class CiscoNode:
     def l2transport(self) -> bool:
         """判断接口节点头是否显式启用 ``l2transport`` 模式。
 
-        接口克隆、改名或 UNI 映射会重建 header，单独暴露模式标志可避免
+        接口克隆、改名或映射会重建 header，单独暴露模式标志可避免
         名称变更时丢失二层属性。
         """
         return _is_l2transport_header(self.header)
@@ -294,6 +296,10 @@ _CISCO_PREFIXES = {
     "loopback": "Loopback",
     "mgmteth": "MgmtEth",
 }
+
+_CISCO_INTERFACE_TOKEN = re.compile(
+    r"(?<![\w./-])(?:[A-Za-z][A-Za-z-]*\s*\d[\d/]*(?:\.\d+)?)(?![\w./-])"
+)
 
 
 def canonical_cisco_interface(value: str) -> str:
@@ -561,7 +567,7 @@ class CiscoDocument(VendorConfiguration):
     def interface_specs(self) -> list[InterfaceSpec]:
         """提取接口父子关系、类型及 VLAN/QinQ 信息。
 
-        返回厂商无关的 ``InterfaceSpec``，使 NNI/UNI 规划无需理解 IOS XR 配置行；
+        返回厂商无关的 ``InterfaceSpec``，使 NNI 规划无需理解 IOS XR 配置行；
         统一规格也是业务口筛选、VLAN 分配和审计映射共享同一事实来源的基础。
         """
         return self._interface_analysis_cache.read(
@@ -582,7 +588,7 @@ class CiscoDocument(VendorConfiguration):
     def bundle_members(self) -> dict[str, str]:
         """返回物理成员接口到 ``Bundle-Ether`` 聚合父口的映射。
 
-        NNI/UNI 扁平化需要从拓扑物理端点反查承载业务的逻辑聚合口，并在迁移完成后
+        NNI 扁平化需要从拓扑物理端点反查承载业务的逻辑聚合口，并在迁移完成后
         清理真实成员，因此统一暴露该方向的映射。
         """
         return self._interface_analysis_cache.read(
@@ -613,8 +619,8 @@ class CiscoDocument(VendorConfiguration):
 
         直接业务包括 IPv4/IPv6、l2transport、xconnect 等；此外，
         被 L2VPN、bridge-domain、路由协议等全局配置引用的接口也视为活跃业务口。
-        BVI 不因自身有 IP 或编号类似 VLAN 就自动迁移，只有显式关联它的
-        bridge-domain 仍包含活跃 attachment circuit 时才作为网关迁移。
+        BVI 不因自身有 IP 或编号类似 VLAN 就被视为活跃，只有显式关联它的
+        bridge-domain 仍包含活跃 attachment circuit 时才作为活跃网关。
         """
         return self._interface_analysis_cache.read(
             self.root,
@@ -678,7 +684,7 @@ class CiscoDocument(VendorConfiguration):
     def rename_interface_tree(self, source: str, target: str, strip_bundle: bool = False) -> None:
         """重命名源接口树，并可移除不再适用的聚合成员属性。
 
-        NNI/UNI 暂存与最终落位都需要父口和子接口保持相同后缀；统一树级改名还能在
+        NNI 暂存与最终落位都需要父口和子接口保持相同后缀；统一树级改名还能在
         目标重名时复用接口模块的合并规则，避免重复定义。
         """
         self._interfaces().rename_interface_tree(self, source, target, strip_bundle)
@@ -699,29 +705,52 @@ class CiscoDocument(VendorConfiguration):
         """
         self._interfaces()._merge_duplicate_interface(self, preferred)
 
-    def map_uni(self, source: str, target_parent: str, vlan: int, inner_vlan: int) -> str:
-        """把源 UNI 业务改写到目标父口的 QinQ 子接口并返回目标名。
+    def bundle_mode(self, member: str) -> str:
+        """读取成员原协商方式，unknown 表示无法安全判定。"""
+        from .bundles import bundle_mode
+        return bundle_mode(self, member)
 
-        外层 VLAN 用作实验网络运输标签，内层 VLAN 保留原业务语义；由厂商接口模块
-        统一移除冲突的旧封装，可确保生成的 IOS XR 终结配置只有一套标签规则。
-        """
-        return self._interfaces().map_uni(self, source, target_parent, vlan, inner_vlan)
+    def adapt_bundle(self, name: str) -> InterfaceAdaptationOutcome:
+        """保留逻辑聚合，按单成员实验调整已有门限。"""
+        from .bundles import adapt_bundle
+        return adapt_bundle(self, name)
 
-    def finalize_uni_source(self, source_parent: str) -> None:
-        """在所有 UNI 业务复制完成后停用源父接口及其子接口。
+    def validate_nni_clone(
+        self, source: str, target_interfaces: set[str],
+    ) -> InterfaceAdaptationOutcome:
+        """在源树复制前检查三层地址及单值协议源引用。"""
+        from .clone_constraints import validate_nni_clone
 
-        清理必须延后到全部子接口映射完成，否则较早迁移的 unit 可能删除后续 unit
-        仍需读取的共同父树；集中收尾也可避免临时占位接口进入最终输出。
-        """
-        self.remove_interface(source_parent, include_children=True)
+        return validate_nni_clone(self, source, target_interfaces)
 
     def ensure_parent_interface(self, name: str) -> None:
-        """确保 UNI 目标父接口存在，并在新建时默认启用。
-
-        迁移结果可能只生成 QinQ 子接口，但 IOS XR 仍需要明确的承载父口；已有父口
-        保持原配置，新建父口则以可工作的最小状态出现。
-        """
+        """确保 NNI 承载父接口存在，不改变现有封装。"""
         self._interfaces().ensure_parent_interface(self, name)
+
+    def prune_non_nni(self, protected_parents: set[str]) -> InterfacePruningOutcome:
+        """基于原始接口名裁剪接入接口及其可识别依赖。"""
+        from .pruning import prune_non_nni
+
+        return prune_non_nni(self, protected_parents)
+
+    def adapt_interfaces(self, target_interfaces: set[str]) -> InterfaceAdaptationOutcome:
+        """按目标接口类型规范化迁移后的配置。"""
+        from .compatibility import adapt_interfaces
+
+        return adapt_interfaces(self, target_interfaces)
+
+    def validate_interfaces(
+        self, target_interfaces: set[str], removed_interfaces: set[str]
+    ) -> InterfaceAdaptationOutcome:
+        """在最终配置上校验类型约束和接入业务裁剪结果。"""
+        from .compatibility import validate_interfaces
+        from .pruning import validate_pruned_references
+
+        result = validate_interfaces(self, target_interfaces)
+        references = validate_pruned_references(self, removed_interfaces)
+        result.errors.extend(references.errors)
+        result.warnings.extend(references.warnings)
+        return result
 
     def adapt_to_simulation(
         self,
@@ -827,10 +856,7 @@ class CiscoDocument(VendorConfiguration):
         }
         if not canonical:
             return
-        names = sorted(canonical, key=len, reverse=True)
-        pattern = re.compile(
-            r"(?<![A-Za-z0-9_.-])(" + "|".join(map(re.escape, names)) + r")(?![A-Za-z0-9_.-])"
-        )
+        source_keys = {name.lower(): name for name in canonical}
 
         def expand(value: str) -> list[str]:
             """基于原始文本的所有命中位置生成去重后的替换变体。
@@ -838,7 +864,10 @@ class CiscoDocument(VendorConfiguration):
             先收集匹配再组合目标可支持一个源接口映射到多个 M-LAG 端口，并避免已
             替换出的目标名称再次作为源名称参与级联替换。
             """
-            matches = list(pattern.finditer(value))
+            matches = [
+                match for match in _CISCO_INTERFACE_TOKEN.finditer(value)
+                if self.resolve_interface(match.group()).lower() in source_keys
+            ]
             if not matches:
                 return [value]
             variants = [""]
@@ -848,7 +877,7 @@ class CiscoDocument(VendorConfiguration):
                 variants = [
                     current + prefix + target
                     for current in variants
-                    for target in canonical[match.group(1)]
+                    for target in canonical[source_keys[self.resolve_interface(match.group()).lower()]]
                 ]
                 cursor = match.end()
             return list(dict.fromkeys(current + value[cursor:] for current in variants))

@@ -3,14 +3,17 @@
 from __future__ import annotations
 
 from pathlib import Path
+import re
 
 import yaml
 
+from ..common.interface import InterfaceKind, interface_parent
 from ..common.policies import SimulationAdaptationPolicy
+from .factory import parse_document
 from .models import ImageProfile, Vendor
 
 
-# 未提供 YAML 时使用的默认值；倒数第三个数据口专用于 UNI，最后两个预留。
+# 未提供 YAML 时使用的默认值；倒数第三个数据口空置，最后两个预留。
 DEFAULT_INTERFACES = {
     Vendor.CISCO_IOSXR: [f"GigabitEthernet0/0/0/{index}" for index in range(8)],
     Vendor.JUNIPER_JUNOS: [f"ge-0/0/{index}" for index in range(8)],
@@ -28,6 +31,30 @@ _SIMULATION_ADAPTATION_KEYS = {
     "bfd_minimum_interval_ms",
     "bfd_minimum_multiplier",
 }
+
+
+def normalize_data_interfaces(vendor: Vendor, interfaces: list[str]) -> list[str]:
+    """镜像端口表只能包含物理父口；名称别名不产生额外端口。"""
+    if any(not isinstance(name, str) or not name.strip() for name in interfaces):
+        raise ValueError(f"{vendor.value} 镜像接口名称必须是非空字符串")
+    document = parse_document(vendor.value, "")
+    normalized = [document.resolve_interface(name) for name in interfaces]
+    # 分类器负责厂商接口族；完整形态约束防止前缀匹配把垃圾后缀当作物理口。
+    shape = (
+        r"[A-Za-z-]+\d+(?:/\d+)*(?::\d+)?" if vendor == Vendor.CISCO_IOSXR
+        else r"[A-Za-z0-9]+-\d+/\d+/\d+(?::\d+)?"
+    )
+    invalid = [
+        name for name in normalized
+        if document.interface_kind(name) != InterfaceKind.PHYSICAL
+        or interface_parent(name) != name
+        or re.fullmatch(shape, name) is None
+    ]
+    if invalid:
+        raise ValueError(f"{vendor.value} 镜像接口必须是可识别的物理父口: {', '.join(invalid)}")
+    if len(set(normalized)) != len(normalized):
+        raise ValueError(f"{vendor.value} 镜像接口列表规范化后存在重复项")
+    return normalized
 
 
 def _load_simulation_adaptation(
@@ -88,8 +115,7 @@ def load_profiles(path: Path | None) -> dict[Vendor, ImageProfile]:
         interfaces = list(configured) if configured else list(DEFAULT_INTERFACES[vendor])
         if len(interfaces) < 4:
             raise ValueError(f"{vendor.value} 镜像接口列表至少需要四个接口")
-        if len(set(interfaces)) != len(interfaces):
-            raise ValueError(f"{vendor.value} 镜像接口列表存在重复项")
+        interfaces = normalize_data_interfaces(vendor, interfaces)
         image = item.get("image", DEFAULT_IMAGES[vendor])
         version = item.get("version")
         if not isinstance(image, str) or not image.strip():

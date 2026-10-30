@@ -102,30 +102,28 @@ class SimulationAdaptationTest(unittest.TestCase):
             legacy = load_profiles(legacy_profile)
             self.assertEqual(legacy[Vendor.CISCO_IOSXR].simulation_adaptation.mode, "off")
 
-    def test_profile_requires_nni_uni_and_reserved_interfaces(self):
+    def test_profile_requires_nni_and_three_reserved_interfaces(self):
         defaults = load_profiles(None)
         for vendor in (Vendor.CISCO_IOSXR, Vendor.JUNIPER_JUNOS):
             with self.subTest(vendor=vendor):
                 profile = defaults[vendor]
                 self.assertEqual(profile.nni_interfaces, profile.interfaces[:5])
-                self.assertEqual(profile.uni_parent, profile.interfaces[5])
-                self.assertTrue(set(profile.interfaces[6:]).isdisjoint(profile.nni_interfaces))
+                self.assertTrue(set(profile.interfaces[5:]).isdisjoint(profile.nni_interfaces))
 
         with tempfile.TemporaryDirectory() as directory:
             profile_path = Path(directory) / "profile.yaml"
             profile_path.write_text(
-                "profiles:\n  cisco_iosxr:\n    interfaces: [NNI, UNI, RESERVED_A, RESERVED_B]\n",
+                "profiles:\n  cisco_iosxr:\n    interfaces: [Gi0/0/0/0, Gi0/0/0/5, Gi0/0/0/6, Gi0/0/0/7]\n",
                 encoding="utf-8",
             )
             profile = load_profiles(profile_path)[Vendor.CISCO_IOSXR]
-            self.assertEqual(profile.nni_interfaces, ["NNI"])
-            self.assertEqual(profile.uni_parent, "UNI")
-            self.assertNotIn("RESERVED_A", profile.nni_interfaces)
-            self.assertNotIn("RESERVED_B", profile.nni_interfaces)
-            self.assertNotIn(profile.uni_parent, {"RESERVED_A", "RESERVED_B"})
+            self.assertEqual(profile.nni_interfaces, ["GigabitEthernet0/0/0/0"])
+            self.assertNotIn("GigabitEthernet0/0/0/5", profile.nni_interfaces)
+            self.assertNotIn("GigabitEthernet0/0/0/6", profile.nni_interfaces)
+            self.assertNotIn("GigabitEthernet0/0/0/7", profile.nni_interfaces)
 
             profile_path.write_text(
-                "profiles:\n  cisco_iosxr:\n    interfaces: [NNI, UNI, RESERVED_A]\n",
+                "profiles:\n  cisco_iosxr:\n    interfaces: [Gi0/0/0/0, Gi0/0/0/6, Gi0/0/0/7]\n",
                 encoding="utf-8",
             )
             with self.assertRaisesRegex(ValueError, "至少需要四个接口"):

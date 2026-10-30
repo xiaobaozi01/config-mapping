@@ -12,7 +12,7 @@ rules:
     action: delete
     reason: 'XRv9000 实验不使用 PTP 虚拟接口'
 
-  # 以下功能不参与路由协议验证；接口类型在 NNI/UNI 迁移后可能变化，
+  # 以下功能不参与路由协议验证；接口类型在 NNI 迁移后可能变化，
   # 残留在不支持的接口类型上会导致导入报错，因此统一删除。
   - id: remove.interface.link.discovery
     vendor: cisco_iosxr
