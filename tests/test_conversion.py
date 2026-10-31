@@ -11,8 +11,8 @@ from unittest.mock import patch
 
 from openpyxl import load_workbook
 
-from config_adaptor.adaptation.service import convert
-from config_adaptor.common.errors import InvariantViolation
+from adaptation.service import convert
+from impl.common.errors import InvariantViolation
 
 
 FIXTURES = Path(__file__).parent / "fixtures"
@@ -667,7 +667,7 @@ class ConversionTest(unittest.TestCase):
         with tempfile.TemporaryDirectory() as directory:
             output = Path(directory) / "output"
             with patch(
-                "config_adaptor.adaptation.service.build_default_pipeline",
+                "adaptation.service.build_default_pipeline",
                 return_value=BrokenPipeline(),
             ):
                 with self.assertRaisesRegex(
@@ -704,7 +704,7 @@ class ConversionTest(unittest.TestCase):
         with tempfile.TemporaryDirectory() as directory:
             output = Path(directory) / "output"
             with patch(
-                "config_adaptor.adaptation.service.build_default_pipeline",
+                "adaptation.service.build_default_pipeline",
                 return_value=CorruptingPipeline(),
             ):
                 with self.assertRaisesRegex(

@@ -5,10 +5,10 @@ from __future__ import annotations
 import unittest
 from pathlib import Path
 
-from config_adaptor.adaptation.cleaning_rules import CleaningRulesHandler
-from config_adaptor.cisco.document import CiscoDocument
-from config_adaptor.common.interface import referenced_interface_names
-from config_adaptor.juniper.document import JunosDocument
+from adaptation.cleaning_rules import CleaningRulesHandler
+from impl.cisco.document import CiscoDocument
+from impl.common.interface import referenced_interface_names
+from impl.juniper.document import JunosDocument
 
 
 FIXTURES = Path(__file__).parent / "fixtures" / "interfaces"
@@ -36,7 +36,7 @@ class CiscoInterfaceBusinessTest(unittest.TestCase):
             "interface preconfigure HundredGigE 0/3/0/2\n"
             " ipv4 address 192.0.2.1/31\n!\n"
         )
-        block = document.root.children[0]
+        block = document.root.nodes[0]
         self.assertTrue(block.is_preconfigured_interface)
         self.assertEqual(block.interface_name, "HundredGigE0/3/0/2")
         self.assertEqual(document.interface_kind(block.interface_name), "physical")
@@ -50,7 +50,7 @@ class CiscoInterfaceBusinessTest(unittest.TestCase):
             "frequency-synchronization\n"
             " synchronous-ethernet prefer-interface ptp-receiver\n!\n"
         )
-        ptp_block = document.root.children[2]
+        ptp_block = document.root.nodes[2]
         self.assertEqual(document.interface_kind("PTP0/RP0/CPU0/0"), "virtual")
         rule = next(
             item for item in CleaningRulesHandler._configured_rules()
@@ -64,7 +64,7 @@ class CiscoInterfaceBusinessTest(unittest.TestCase):
         )
         rendered = document.render()
         self.assertEqual(hits, 1)
-        self.assertFalse(ptp_block.active)
+        self.assertNotIn(ptp_block, document.root.nodes)
         self.assertNotIn("PTP0/RP0/CPU0/0", rendered)
         self.assertIn("ptp\n clock", rendered)
         self.assertIn("profile timing", rendered)

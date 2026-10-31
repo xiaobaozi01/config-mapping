@@ -3,8 +3,8 @@
 from pathlib import Path
 import unittest
 
-from config_adaptor.adaptation.service import prepare_context
-from config_adaptor.adaptation.pipeline import build_default_pipeline
+from adaptation.service import prepare_context
+from adaptation.pipeline import build_default_pipeline
 
 FIXTURES = Path(__file__).parent / "fixtures"
 

@@ -140,7 +140,7 @@ NNI 中的聚合链路识别先由纯函数 `plan_nni_components()` 生成不可
 
 `InterfaceClassificationHandler` 使用厂商物理接口白名单分类接口。已知虚拟接口和未知接口均不参与 NNI 物理端口分配；未知接口原样保留并写入告警，若链接表把非物理接口作为端点则转换失败。
 
-`interface preconfigure` 表示源设备硬件尚未插入时保存的物理接口候选配置。系统按“当前设备已经实例化并生效的配置”生成 GNS3 实验，因此 Group 展开后，`PreconfiguredInterfaceCleanupHandler` 在接口分类前通过 `active=False` 忽略整个候选块。预配置接口不会进入 NNI、接口引用改写或目标端口分配，输出中也不会出现 `interface preconfigure`。
+`interface preconfigure` 表示源设备硬件尚未插入时保存的物理接口候选配置。系统按“当前设备已经实例化并生效的配置”生成 GNS3 实验，因此 Group 展开后，`PreconfiguredInterfaceCleanupHandler` 在接口分类前通过 ANTLR 重写事务删除整个候选块。预配置接口不会进入 NNI、接口引用改写或目标端口分配，输出中也不会出现 `interface preconfigure`。
 
 `CleaningRulesHandler` 在两个固定点运行。`pre_analysis` 的 `cisco.remove.banner` 在任何业务分析前按分隔符停用完整 exec/login banner；`post_rewrite` 先执行两家目标镜像目录下 `cleaning.yaml` 中 `enable: true` 的规则，再原子执行管理认证替换。默认启用的 `cisco.remove.ptp.interface` 只将 `interface PTP...` 虚拟接口块标记为非活动；全局 `ptp`、普通数据口下的 `ptp` 及频率同步配置不命中该规则。同样默认启用的还有接口类型约束清理规则：删除 LLDP/CDP、以太网 CFM/OAM、非 Bundle-Ether 接口上的 `bfd`、接口 QoS 挂载以及 Junos 服务链（`service-set`、接口服务挂载、服务接口），避免这些与路由验证无关、且受接口类型限制的配置在迁移后导致导入报错。Junos 容器被删空时按 `empty_blocks.yaml` 省略输出。
 
@@ -188,6 +188,8 @@ R1 Gi0/0/0/0 ←→ R2 Gi0/0/0/1
 
 当链路连接 Cisco 与 Juniper 时，两端分别使用本端解析器和镜像 Profile 完成接口分配及引用改写，因此无需目标接口同名。该阶段只执行端口自适应，不比较两端的 IP、VLAN、MTU 或封装；业务一致性由输入配置负责。
 
+物理父口与已有子接口/unit 分别生成名称映射，即使 Junos 父口只配置了 unit，也保留父口映射。引用改写覆盖协议、策略、接口内部及 CoS 中的旧名称；Junos 仅跳过根 `interfaces` 下已迁移的接口定义名称，继续处理其内部的 `unnumbered-address`、`underlying-interface` 等引用。`inactive:` 配置中的引用同样更新，独立注释和逻辑删除节点不改写。
+
 ## 5. 为什么先计算 NNI 闭包，再删除非 NNI
 
 Excel 的物理成员可能只承载 `bundle id` 或 `802.3ad`，地址、封装和协议引用实际位于 Bundle/ae 及其子接口。必须在 Group 展开后，以原始端点为起点保留父口、成员、逻辑聚合及其子接口，随后清理集合之外的物理/聚合接口。
@@ -195,6 +197,10 @@ Excel 的物理成员可能只承载 `bundle id` 或 `802.3ad`，地址、封装
 清理发生在 NNI 改名前，避免目标口恰好也是被删除源接口时覆盖错误。停用链路端点的 NNI 身份也保留，不能因没有目标映射被当作非 NNI。非 NNI 业务不再迁移为 QinQ，不使用最后三个预留口。
 
 删除接口后，同步删除业务引用和完全失去接入口的容器；混合桥域保留剩余 NNI 成员和仍需要的 BVI/IRB 网关。
+
+聚合缩减还会在 NNI 阶段删除冗余物理成员。此时再次清理这些成员的已知接口依赖，再落位新目标口，避免旧成员名被目标重用时混淆新旧引用。清理结果记录为 `redundant-member-cleanup`。Cisco 已知绑定包括路由协议、MPLS、RSVP、EVPN、DHCP relay 和带内管理接口；镜像目的接口被删除时移除对应镜像会话。桥组、桥域名称即使与 BVI 名相同也不作为接口引用。
+
+依赖裁剪按已建模的命令和路径处理，不保证覆盖全部厂商语法。单一 `type line-protocol state` track 的监控接口被删除时，删除该 track 定义和所有 VRRP `track object` 语句，保留 VRRP 组、优先级及地址。该行为以 `cisco.prune.track_dependencies` 注册在 `PRUNE_RULES` 中；非 NNI 裁剪和 NNI 冗余成员缩减共用此注册表。前序规则产生删除集合，track 规则清理对象依赖，最后由接口绑定规则清理其他已知引用。监控接口只是改名时，保留 track 对象和 VRRP 跟踪关系，只改写接口引用。存在未知消费者、重复定义或不支持的 track 类型时保留相关对象并报错；隧道仍不自动级联删除。`end` 后存在配置、业务聚合无可解析成员仍属于失败条件，不通过忽略错误继续输出。
 
 ## 6. 公共 Group 处理原则
 
@@ -235,13 +241,13 @@ interface GigabitEthernet0/0/0/0
 
 ```text
 CiscoDocument.root
-├── CiscoNode: interface GigabitEthernet0/0/0/0
-│   ├── CiscoNode: description TO-R2
-│   └── CiscoNode: ipv4 address 10.0.0.1 255.255.255.252
-└── CiscoNode: !
+├── NodeContext: interface GigabitEthernet0/0/0/0
+│   ├── NodeContext: description TO-R2
+│   └── NodeContext: ipv4 address 10.0.0.1 255.255.255.252
+└── NodeContext: !
 ```
 
-顶层和嵌套配置都使用 `CiscoNode`。每个节点包含 `active` 状态，逻辑删除的节点及子树在最终渲染时被跳过。
+顶层和嵌套配置使用 ANTLR4 生成的 Context，业务查询通过只读的 `nodes`、`header`、`path` 和源码范围进行。修改交给 TokenStreamRewriter，候选文本重新解析成功后原子发布；后续阶段读取新快照。具体机制见 [ANTLR4 说明](antlr-cisco.md)。
 
 ### 7.2 接口名规范化
 
@@ -328,7 +334,7 @@ interface 'GigabitEthernet0/0/0/.*'
 
 #### 语义冲突
 
-冲突键由 `cisco/rules/xrv9000/` 下的路径感知规则生成。规则区分单值、带 key 的可重复集合、方向属性和 presence 命令；未命中语句使用完整文本保守保留。
+冲突键由 `config/rules/cisco/xrv9000/` 下的路径感知规则生成。规则区分单值、带 key 的可重复集合、方向属性和 presence 命令；未命中语句使用完整文本保守保留。
 
 系统不会只比较第一个单词。
 
@@ -570,7 +576,7 @@ Group 定义内可以继续应用其他 Group。系统递归求取依赖闭包�
 
 #### 语义冲突
 
-冲突键由 `juniper/rules/vmx/` 下的路径感知规则生成，因此 `peer-as`、`interface-mode`、同一前缀的 `address` 等可以按实际槽位进行覆盖，不同地址则继续并存。
+冲突键由 `config/rules/juniper/vmx/` 下的路径感知规则生成，因此 `peer-as`、`interface-mode`、同一前缀的 `address` 等可以按实际槽位进行覆盖，不同地址则继续并存。
 
 典型单值语句：
 
@@ -669,7 +675,7 @@ system {
 
 ### 8.6 统一配置清洗规则
 
-PTP、协议认证、PKI、硬件、NAT、流量统计和镜像扩展清洗按厂商分别定义在随程序发布的 `config_adaptor/cisco/rules/xrv9000/cleaning.yaml` 和 `config_adaptor/juniper/rules/vmx/cleaning.yaml` 中。转换时固定合并加载这两份文件，不接受外部规则路径。
+PTP、协议认证、PKI、硬件、NAT、流量统计和镜像扩展清洗按厂商分别定义在项目配置目录的 `config/rules/cisco/xrv9000/cleaning.yaml` 和 `config/rules/juniper/vmx/cleaning.yaml` 中。转换时固定合并加载这两份文件，不接受外部规则路径。
 
 ```yaml
 rules:

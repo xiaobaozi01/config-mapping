@@ -3,16 +3,18 @@
 from __future__ import annotations
 
 import ast
+import importlib.util
+import tomllib
 import unittest
 from pathlib import Path
 from types import SimpleNamespace
 
-from config_adaptor.adaptation.models import Link
-from config_adaptor.adaptation.nni import plan_nni_components
-from config_adaptor.adaptation.pipeline import ConversionPipeline, build_default_pipeline
-from config_adaptor.cisco import CiscoDocument
-from config_adaptor.common.contracts import VendorConfiguration
-from config_adaptor.juniper import JunosDocument
+from adaptation.models import Link
+from adaptation.nni import plan_nni_components
+from adaptation.pipeline import ConversionPipeline, build_default_pipeline
+from impl.cisco import CiscoDocument
+from impl.common.contracts import VendorConfiguration
+from impl.juniper import JunosDocument
 
 
 class NniPlanningTest(unittest.TestCase):
@@ -97,8 +99,19 @@ class VendorConfigurationContractTest(unittest.TestCase):
 
 
 class PackageDependencyTest(unittest.TestCase):
+    def test_vendor_implementations_live_under_impl(self):
+        source_root = Path(__file__).parents[1] / "src"
+
+        self.assertFalse((source_root / "config_adaptor").exists())
+        self.assertIsNone(importlib.util.find_spec("config_adaptor"))
+        for package in ("adaptation", "impl"):
+            self.assertIsNotNone(importlib.util.find_spec(package))
+        for package in ("cisco", "common", "juniper"):
+            self.assertFalse((source_root / package).exists())
+            self.assertIsNotNone(importlib.util.find_spec(f"impl.{package}"))
+
     def test_lower_level_packages_do_not_import_orchestration(self):
-        package_root = Path(__file__).parents[1] / "src" / "config_adaptor"
+        package_root = Path(__file__).parents[1] / "src"
         forbidden = {
             "common": {"adaptation", "cisco", "juniper"},
             "cisco": {"adaptation", "juniper"},
@@ -106,15 +119,15 @@ class PackageDependencyTest(unittest.TestCase):
         }
 
         for package, blocked in forbidden.items():
-            for source_path in (package_root / package).rglob("*.py"):
+            for source_path in (package_root / "impl" / package).rglob("*.py"):
                 tree = ast.parse(source_path.read_text(encoding="utf-8"))
                 imported = {
-                    node.module.split(".", 1)[0]
+                    node.module.removeprefix("impl.").split(".", 1)[0]
                     for node in ast.walk(tree)
                     if isinstance(node, ast.ImportFrom) and node.module
                 }
                 imported.update(
-                    alias.name.removeprefix("config_adaptor.").split(".", 1)[0]
+                    alias.name.removeprefix("impl.").split(".", 1)[0]
                     for node in ast.walk(tree)
                     if isinstance(node, ast.Import)
                     for alias in node.names
@@ -123,6 +136,68 @@ class PackageDependencyTest(unittest.TestCase):
                     imported & blocked,
                     f"{source_path} 违反依赖方向: {sorted(imported & blocked)}",
                 )
+
+
+class ProjectConfigLayoutTest(unittest.TestCase):
+    def test_vendor_rule_yaml_lives_under_project_config(self):
+        project_root = Path(__file__).parents[1]
+        locations = (
+            ("cisco", "xrv9000"),
+            ("juniper", "vmx"),
+        )
+        for vendor, image in locations:
+            with self.subTest(vendor=vendor):
+                target = project_root / "config" / "rules" / vendor / image
+                self.assertTrue((target / "manifest.yaml").is_file())
+                self.assertFalse((project_root / "src" / "impl" / vendor / "rules" / image).exists())
+
+        from impl.common.config_paths import config_path
+
+        for vendor, image in locations:
+            with self.subTest(vendor=vendor, helper=True):
+                self.assertEqual(
+                    config_path("rules", vendor, image),
+                    project_root / "config" / "rules" / vendor / image,
+                )
+
+
+class InterfaceModuleLayoutTest(unittest.TestCase):
+    def test_interface_handlers_are_owned_by_interfaces_module(self):
+        from adaptation import interfaces
+
+        for name in (
+            "_report",
+            "NonNNICleanupHandler",
+            "InterfaceCompatibilityHandler",
+            "FinalInterfaceValidationHandler",
+        ):
+            with self.subTest(name=name):
+                self.assertTrue(hasattr(interfaces, name), name)
+                if hasattr(interfaces, name):
+                    self.assertEqual(getattr(interfaces, name).__module__, interfaces.__name__)
+        self.assertIsNone(importlib.util.find_spec("adaptation.core_interfaces"))
+
+
+class CleaningScopeModuleLayoutTest(unittest.TestCase):
+    def test_cleaning_scope_helpers_are_owned_by_cleaning_rules(self):
+        from adaptation import cleaning_rules
+
+        self.assertTrue(hasattr(cleaning_rules, "CLEANING_SCOPES"))
+        for name in ("target_parents", "resolve_cleaning_scope"):
+            with self.subTest(name=name):
+                self.assertTrue(hasattr(cleaning_rules, name), name)
+                if hasattr(cleaning_rules, name):
+                    self.assertEqual(getattr(cleaning_rules, name).__module__, cleaning_rules.__name__)
+        self.assertIsNone(importlib.util.find_spec("adaptation.cleaning_scopes"))
+
+
+class NoCliLayoutTest(unittest.TestCase):
+    def test_adaptation_has_no_cli_module_or_console_script(self):
+        project_root = Path(__file__).parents[1]
+        self.assertFalse((project_root / "src" / "adaptation" / "cli.py").exists())
+        self.assertFalse((project_root / "src" / "adaptation" / "__main__.py").exists())
+        payload = tomllib.loads((project_root / "pyproject.toml").read_text(encoding="utf-8"))
+        self.assertNotIn("config-adaptor", payload.get("project", {}).get("scripts", {}))
 
 
 if __name__ == "__main__":

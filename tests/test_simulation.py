@@ -6,11 +6,13 @@ import tempfile
 import unittest
 from pathlib import Path
 
-from config_adaptor.adaptation.models import Vendor
-from config_adaptor.adaptation.profiles import load_profiles
-from config_adaptor.cisco.document import CiscoDocument
-from config_adaptor.common.policies import SimulationAdaptationPolicy
-from config_adaptor.juniper.document import JunosDocument
+from cleaning_support import clean_hardware
+
+from adaptation.models import Vendor
+from adaptation.profiles import load_profiles
+from impl.cisco.document import CiscoDocument
+from impl.common.policies import SimulationAdaptationPolicy
+from impl.juniper.document import JunosDocument
 
 
 FIXTURES = Path(__file__).parent / "fixtures"
@@ -27,6 +29,7 @@ class SimulationAdaptationTest(unittest.TestCase):
         """只调整映射目标口，并放宽已存在的激进 BFD 参数。"""
         policy = SimulationAdaptationPolicy()
         document = CiscoDocument(simulation_config("iosxr.cfg"))
+        clean_hardware(document, {"GigabitEthernet0/0/0/0"}, policy)
         first = document.adapt_to_simulation(policy, {"GigabitEthernet0/0/0/0"})
         rendered = document.render()
 
@@ -49,6 +52,7 @@ class SimulationAdaptationTest(unittest.TestCase):
         """Junos 目标口清除物理属性，非目标口保持不变。"""
         policy = SimulationAdaptationPolicy()
         document = JunosDocument(simulation_config("junos.cfg"))
+        clean_hardware(document, {"ge-0/0/0"}, policy)
         first = document.adapt_to_simulation(policy, {"ge-0/0/0"})
         rendered = document.render()
 

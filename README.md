@@ -1,6 +1,8 @@
 # GNS3 配置自适应
 
-将 IOS XR 和 Junos 大括号配置转换为适用于 GNS3 XRv9000/vMX 的配置。第一次接触项目请从 [新人导读](docs/onboarding-guide.md) 开始；需求基线见 [docs/requirements.md](docs/requirements.md)，完整转换过程见 [docs/processing-flow.md](docs/processing-flow.md)，新增 group 语义规则见 [语义 identity 规则编写指南](docs/semantic-rule-authoring.md)。
+将 IOS XR 和 Junos 大括号配置转换为适用于 GNS3 XRv9000/vMX 的配置。第一次接触项目请从 [新人导读](docs/onboarding-guide.md) 开始；需求基线见 [docs/requirements.md](docs/requirements.md)，完整转换过程见 [docs/processing-flow.md](docs/processing-flow.md)，新增 group 语义规则见 [语义 identity 规则编写指南](docs/semantic-rule-authoring.md)。裁剪、适配、模拟与校验的扩展方式见 [配置处理规则指南](docs/configuration-rule-authoring.md)。
+
+Cisco 配置底层使用 [ANTLR4 解析与原子文本重写](docs/antlr-cisco.md)。裁剪、接口适配、兼容校验、最终校验和模拟适配代码规则统一通过 `CiscoVisitorRule` 声明范围和条件，Visitor 编写匹配或跨对象分析，执行器统一管理事务、失败恢复及结果；四类可运行模板位于 `impl/cisco/rules/examples.py`，交给内网大模型补充业务规则时可使用[规则编写提示词](docs/rule-templates/internal-model-prompt.md)。简单清洗继续使用现有 YAML。
 
 拓扑预检后会展开常见的 IOS XR `group/apply-group` 和 Junos `groups/apply-groups` 配置，使继承的接口及认证配置进入后续转换。已应用 group 无法静态求值时转换失败，不输出可能不完整的设备配置。
 
@@ -8,22 +10,19 @@ group 展开是事务式的，并遵循显式配置、嵌套层级和 group 列�
 
 ## 代码边界
 
-- `cisco/`：IOS XR AST、解析/渲染、Group、接口、清洗、模拟适配及 XRv9000 规则。
-- `juniper/`：Junos AST、解析/渲染、Group、接口、清洗、模拟适配及 vMX 规则。
-- `common/`：两家厂商共享的接口类型、操作结果、策略、不变量和语义 identity 引擎。
-- `common/contracts.py`：Cisco 与 Juniper 显式实现的稳定厂商能力协议，厂商 AST 不向流程层泄漏。
+- `impl/cisco/`：IOS XR AST、解析/渲染、Group、接口、清洗、模拟适配及 XRv9000 规则。
+- `impl/juniper/`：Junos AST、解析/渲染、Group、接口、清洗、模拟适配及 vMX 规则。
+- `impl/common/`：两家厂商共享的接口类型、操作结果、策略、不变量和语义 identity 引擎。
+- `impl/common/contracts.py`：Cisco 与 Juniper 显式实现的稳定厂商能力协议，厂商 AST 不向流程层泄漏。
 - `adaptation/topology.py`：Excel 拓扑读取、预检和输出。
 - `adaptation/groups.py`：Group 展开的跨设备调度和诊断汇总。
-- `adaptation/interfaces.py`：接口分类及最终引用改写。
+- `adaptation/interfaces.py`：接口预清理、分类、非 NNI 裁剪、引用改写、目标兼容与最终校验。
 - `adaptation/nni.py`：NNI 聚合规划、M-LAG 边界、端口分配和配置迁移。
-- `adaptation/core_interfaces.py`：删除未被拓扑闭包保留的物理、聚合接口及业务引用；目标兼容与最终校验阶段按接口上下文检查转换结果。
 - `adaptation/cleaning_rules.py`：声明式与代码型清洗规则、内置注册表及固定执行点调度。
 - `adaptation/input_normalization.py`：按厂商规则删除原始配置两端的采集回显，再交给语法解析器。
 - `adaptation/simulation.py`：模拟参数适配调度。
 - `adaptation/pipeline.py`：显式组合转换阶段，并在首次错误后停止。
 - `adaptation/service.py`：组织输入加载、完整转换和最终输出。
-
-配置转换只使用以上四个业务目录。独立的 `src/config_importer/` 负责把已转换的单台设备配置导入 GNS3，不依赖转换流程；接入契约见 [配置导入说明](docs/config-importer.md)。
 
 ## 测试数据
 
@@ -40,7 +39,7 @@ group 展开是事务式的，并遵循显式配置、嵌套层级和 group 列�
 - `group_configs/`：独立的厂商 group 优先级、通配、`inactive`/`protect`、引号组名与 `apply-groups-except` 配置。
 - `washing_configs/`：管理面必清项、默认保留项及五类扩展清洗样例。
 - `simulation_adaptation/`：目标镜像模拟参数适配与幂等性样例。
-- `cisco_ast/`：IOS XR 持久 AST 层级、`!` 边界与编辑样例。
+- `cisco_ast/`：IOS XR 配置层级、`!` 边界与编辑样例；ANTLR 原文保留及事务样例另见 `antlr_cisco/`。
 - `junos_ast/`：Junos 行内块、注释、hostname 与括号边界样例。
 - `semantic_identity/`：规则 identity 覆盖关系与未知语句降级样例。
 - `interfaces/`：接口识别、业务闭包分析与 BVI/VLAN 推断样例。
@@ -51,14 +50,24 @@ group 展开是事务式的，并遵循显式配置、嵌套层级和 group 列�
 
 ```bash
 python3 -m pip install -e .
-config-adaptor convert \
-  --topology topology.xlsx \
-  --config-dir configs \
-  --output-dir output \
-  --profiles config/image_profiles.yaml
 ```
 
-`--profiles` 可配置镜像名称/版本、数据接口列表和模拟参数适配策略；列表最后三个接口全部空置预留，其余接口可分配给 NNI（默认八口中的前五口）。清洗规则随程序发布，按厂商分别位于 `config_adaptor/cisco/rules/xrv9000/cleaning.yaml` 和 `config_adaptor/juniper/rules/vmx/cleaning.yaml`，转换时不接受外部规则文件。
+```python
+from pathlib import Path
+
+from adaptation.service import convert
+
+context = convert(
+    topology_path=Path("topology.xlsx"),
+    config_dir=Path("configs"),
+    output_dir=Path("output"),
+    profiles_path=Path("config/image_profiles.yaml"),
+)
+if context.has_errors:
+    raise RuntimeError(context.errors)
+```
+
+`profiles_path` 可配置镜像名称/版本、数据接口列表和模拟参数适配策略；列表最后三个接口全部空置预留，其余接口可分配给 NNI（默认八口中的前五口）。清洗规则位于项目配置目录，按厂商分别位于 `config/rules/cisco/xrv9000/cleaning.yaml` 和 `config/rules/juniper/vmx/cleaning.yaml`，转换时不接受外部规则文件。
 
 原始采集文本的输入整理规则分别位于两家厂商镜像目录的 `input_normalization.yaml`。每条规则的 `match` 都是逐行正则列表；单项匹配一行，多项匹配连续多行。`region` 只能是 `leading` 或 `trailing`，匹配后的动作固定为删除。规则 `id` 可只写局部名称，加载时自动补上 `cisco.` 或 `juniper.` 前缀；已带本厂商前缀的 ID 原样使用。规则只从文件两端向内删除完整匹配的行序列；正文中的匹配内容原样保留，清理后只剩空白也直接返回。Juniper 默认规则识别 `show configuration` 回显、`Last commit`、常见尾部提示符、采集分隔符和三行 `{ / master / }` 尾块；Cisco 规则文件默认留空，待确认具体采集格式后添加。输入整理命中情况写入 `report.json` 的 `input-normalization` 事件，不记录被删除的原文。
 
@@ -82,17 +91,11 @@ Cisco 与 Juniper 的跨厂商 NNI 会按链路两端各自的厂商语法和镜
 
 裁剪按 VRF／routing-instance 区分地址与 VLAN 作用域，BGP 邻居的有效显式本地源不会因组默认源失效而被误删。聚合 NNI 保留 Bundle/ae 及子接口，只映射物理成员并压缩同一对端的冗余链路；跨不同对端的聚合当前明确拒绝，不再克隆业务或展开本地源。Profile 中所有数据接口（包括预留口）必须是可识别的物理父口。
 
-也可以不安装直接运行：
-
-```bash
-PYTHONPATH=src python3 -m config_adaptor convert --topology topology.xlsx --config-dir configs --output-dir output
-```
-
 实验密码为 `admin123`。IOS XR 使用 `root` 本地用户，Junos 仅设置 root 认证；仅用于隔离的 GNS3 实验环境。
 
 IOS XR 认证清洗同时删除自定义 `usergroup`、`taskgroup` 以及 `line` 下对旧认证、授权、计费和用户组的引用；`exec-timeout` 等非认证终端参数保留。删除结果写入 `cisco.replace.authentication` 清洗事件的 `removed_by_type`。
 
-XRv9000 7.11.1 的默认适配会识别 IOS XR `interface preconfigure`，并在接口分类前通过 `active=False` 忽略这些尚未实例化的接口候选配置。默认启用的 `cisco.remove.ptp.interface` 规则会在接口迁移和引用改写完成后停用实验不需要的 `interface PTP...` 虚拟接口块。
+XRv9000 7.11.1 的默认适配会识别 IOS XR `interface preconfigure`，并在接口分类前通过原子文本重写删除这些尚未实例化的接口候选配置。默认启用的 `cisco.remove.ptp.interface` 规则会在接口迁移和引用改写完成后删除实验不需要的 `interface PTP...` 虚拟接口块。
 
 ## 默认 Excel 列
 
@@ -108,6 +111,6 @@ XRv9000 7.11.1 的默认适配会识别 IOS XR `interface preconfigure`，并在
 
 同目录重跑时，先前发布的配置、拓扑和说明会隔离到 `.previous-outputs/`，其位置记入报告；本次加载或校验失败时不会继续留下可被当成本次成果的旧导出。内部 `.generated-artifacts.json` 记录本程序负责的文件，额外的用户文件保持原位。
 
-聚合识别从拓扑物理口的成员绑定出发，聚合及子接口不需要出现在 Excel 中。逻辑接口 `action=preserve` 自映射；成员 `action=map-member` 映射物理口。归属不明且有业务的聚合报错，不按表外接口直接裁剪。Junos 模拟适配按叶子清理硬件属性，保留 `802.3ad` 和 ae 的必要 options；Cisco 保留成员 `bundle id`。静态/LACP 模式不单边更改。
+聚合识别从拓扑物理口的成员绑定出发，聚合及子接口不需要出现在 Excel 中。逻辑接口 `action=preserve` 自映射；成员 `action=map-member` 映射物理口。归属不明且有业务的聚合报错，不按表外接口直接裁剪。Junos 硬件清洗按叶子匹配，保留 `802.3ad` 和 ae 的必要 options；Cisco 保留成员 `bundle id`。静态/LACP 模式不单边更改。
 
 XRv9000 保留 Bundle 时还需在实际镜像核验 Bundle MAC 与虚拟网卡的聚合支持。Cisco 输入未显式设置 Bundle MAC 时会给出核验告警，不自动编造 MAC 或更改全局 LACP 标识；自动测试不替代聚合 up、commit 和邻居建立验证。

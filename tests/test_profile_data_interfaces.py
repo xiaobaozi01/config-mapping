@@ -6,8 +6,8 @@ import unittest
 
 import yaml
 
-from config_adaptor.adaptation.models import Vendor
-from config_adaptor.adaptation.profiles import load_profiles, normalize_data_interfaces
+from adaptation.models import Vendor
+from adaptation.profiles import load_profiles, normalize_data_interfaces
 
 
 class ProfileDataInterfaceTest(unittest.TestCase):

@@ -4,16 +4,16 @@ from __future__ import annotations
 
 import unittest
 
-from config_adaptor.adaptation.cleaning_rules import (
+from adaptation.cleaning_rules import (
     AuthenticationCleaningRule,
     CiscoBannerCleaningRule,
     CleaningPoint,
     CleaningRuleError,
     CleaningRulesHandler,
 )
-from config_adaptor.cisco.document import CiscoDocument
-from config_adaptor.common.cleaning import matches_cleaning_path
-from config_adaptor.juniper.document import JunosDocument
+from impl.cisco.document import CiscoDocument
+from impl.common.cleaning import matches_cleaning_path
+from impl.juniper.document import JunosDocument
 
 
 class CleaningPathTest(unittest.TestCase):
@@ -80,8 +80,8 @@ class CleaningRuleLoadingTest(unittest.TestCase):
         )
         self.assertEqual(cisco_vendor.value, "cisco_iosxr")
         self.assertEqual(juniper_vendor.value, "juniper_junos")
-        self.assertEqual(cisco_path.parts[-4:], ("cisco", "rules", "xrv9000", "cleaning.yaml"))
-        self.assertEqual(juniper_path.parts[-4:], ("juniper", "rules", "vmx", "cleaning.yaml"))
+        self.assertEqual(cisco_path.parts[-4:], ("rules", "cisco", "xrv9000", "cleaning.yaml"))
+        self.assertEqual(juniper_path.parts[-4:], ("rules", "juniper", "vmx", "cleaning.yaml"))
         rules = CleaningRulesHandler._configured_rules()
         self.assertTrue(
             all(rule.vendor == "cisco_iosxr" for rule in rules if rule.rule_id.startswith("cisco."))
@@ -152,9 +152,8 @@ class ProgrammaticCleaningRuleTest(unittest.TestCase):
         self.assertEqual(document.render(), "hostname XR\n")
 
     def test_banner_rule_rejects_missing_terminator(self):
-        document = CiscoDocument("banner exec ^\nunterminated\nhostname XR\n")
-        with self.assertRaisesRegex(CleaningRuleError, "缺少结束分隔符"):
-            CiscoBannerCleaningRule().apply(document)
+        with self.assertRaisesRegex(ValueError, "缺少结束分隔符"):
+            CiscoDocument("banner exec ^\nunterminated\nhostname XR\n")
 
     def test_authentication_rule_uses_post_rewrite_point(self):
         rule = AuthenticationCleaningRule(

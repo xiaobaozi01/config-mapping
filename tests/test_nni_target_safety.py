@@ -4,14 +4,14 @@ from pathlib import Path
 import tempfile
 import unittest
 
-from config_adaptor.adaptation.core_interfaces import NonNNICleanupHandler
-from config_adaptor.adaptation.models import (
+from adaptation.interfaces import NonNNICleanupHandler
+from adaptation.models import (
     ConversionContext, Device, DeviceContext, Link, TopologyWorkbook, Vendor,
 )
-from config_adaptor.adaptation.nni import NNIHandler
-from config_adaptor.adaptation.factory import parse_document
-from config_adaptor.adaptation.profiles import load_profiles
-from config_adaptor.adaptation.topology import TopologyPreflightHandler
+from adaptation.nni import NNIHandler
+from adaptation.factory import parse_document
+from adaptation.profiles import load_profiles
+from adaptation.topology import TopologyPreflightHandler
 
 
 FIXTURES = Path(__file__).parent / "fixtures" / "interface_compatibility"

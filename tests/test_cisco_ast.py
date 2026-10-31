@@ -2,11 +2,12 @@
 
 from __future__ import annotations
 
+from cisco_support import replace_header, delete_context
 import unittest
 from pathlib import Path
 
-from config_adaptor.adaptation.cleaning_rules import CleaningRulesHandler
-from config_adaptor.cisco.document import CiscoDocument, CiscoNode
+from adaptation.cleaning_rules import CleaningRulesHandler
+from impl.cisco.document import CiscoDocument, CiscoContext
 
 
 FIXTURES = Path(__file__).parent / "fixtures" / "cisco_ast"
@@ -22,22 +23,23 @@ class CiscoAstTest(unittest.TestCase):
 
     def test_interface_name_reflects_header_edits(self):
         document = CiscoDocument("interface GigabitEthernet0/0/0/1\n description old\n!\n")
-        interface = document.root.children[0]
+        interface = document.root.nodes[0]
 
         self.assertEqual(interface.interface_name, "GigabitEthernet0/0/0/1")
-        interface.header = "interface GigabitEthernet0/0/0/2"
+        replace_header(document, interface, "interface GigabitEthernet0/0/0/2")
+        interface = document.root.nodes[0]
         self.assertEqual(interface.interface_name, "GigabitEthernet0/0/0/2")
 
     def test_group_accepts_unindented_children_until_end_group(self):
         """Group 内的无缩进命令不应被误判为新顶层块。"""
         document = CiscoDocument(cisco_config("group_unindented_children.cfg"))
-        group = document.root.children[0]
+        group = document.root.nodes[0]
 
         self.assertEqual(group.header, "group COMMON")
-        self.assertEqual(group.children[0].header, "interface 'GigabitEthernet.*'")
-        self.assertEqual(group.children[0].children[0].header, "mtu 9000")
-        self.assertEqual(document.root.children[1].header, "end-group")
-        self.assertEqual(document.root.children[3].header, "hostname XR")
+        self.assertEqual(group.nodes[0].header, "interface 'GigabitEthernet.*'")
+        self.assertEqual(group.nodes[0].nodes[0].header, "mtu 9000")
+        self.assertIn("end-group", group.text)
+        self.assertEqual(document.root.nodes[2].header, "hostname XR")
 
     def test_hostname_returns_last_active_top_level_value(self):
         """多条 hostname 时应返回文档顺序中最后一条生效值。"""
@@ -56,7 +58,7 @@ class CiscoAstTest(unittest.TestCase):
         document = CiscoDocument(cisco_config("empty_interface_inherits_group.cfg"))
         interface = next(
             node
-            for node in document.root.children
+            for node in document.root.nodes
             if node.header.startswith("interface ")
         )
 
@@ -70,18 +72,18 @@ class CiscoAstTest(unittest.TestCase):
         """缩进 ``!`` 应位于被关闭层级的父节点下，并且不接管后续命令。"""
         source = cisco_config("indented_bang_levels.cfg")
         document = CiscoDocument(source)
-        block = document.root.children[0]
-        area = block.children[0]
-        interface = area.children[0]
+        block = document.root.nodes[0]
+        area = block.nodes[0]
+        interface = area.nodes[0]
 
-        self.assertIsInstance(block, CiscoNode)
-        self.assertIsInstance(area, CiscoNode)
+        self.assertIsInstance(block, CiscoContext)
+        self.assertIsInstance(area, CiscoContext)
         self.assertEqual(area.header, "area 0")
         self.assertEqual(interface.header, "interface GigabitEthernet0/0/0/0")
-        self.assertEqual(interface.children[0].header, "bfd fast-detect")
-        self.assertEqual(interface.children[1].header, "!")
-        self.assertEqual(area.children[1].header, "!")
-        self.assertEqual(block.children[1].header, "!")
+        self.assertEqual(interface.nodes[0].header, "bfd fast-detect")
+        self.assertEqual(interface.nodes[1].header, "!")
+        self.assertEqual(area.nodes[1].header, "!")
+        self.assertEqual(block.nodes[1].header, "!")
         self.assertEqual(document.render(), source)
 
     def test_render_collapses_separators_left_by_inactive_blocks(self):
@@ -90,8 +92,10 @@ class CiscoAstTest(unittest.TestCase):
             "interface Loopback0\n ipv4 address 192.0.2.1 255.255.255.255\n!\nend\n"
         )
         document = CiscoDocument(source)
-        document.root.children[2].active = False
-        document.root.children[4].active = False
+        transaction = document.rewrite()
+        transaction.delete(document.root.nodes[2], "test")
+        transaction.delete(document.root.nodes[4], "test")
+        transaction.commit()
 
         self.assertEqual(
             document.render(),
@@ -108,7 +112,7 @@ class CiscoAstTest(unittest.TestCase):
 
         self.assertEqual(document.render(), source)
 
-        document.root.children[0].children[0].children[2].active = False
+        delete_context(document, document.root.nodes[0].nodes[0].nodes[2])
         self.assertEqual(
             document.render(),
             "router ospf CORE\n area 0\n  interface Loopback0\n  !\n !\n!\n!\nend\n",
@@ -121,7 +125,7 @@ class CiscoAstTest(unittest.TestCase):
         )
         document = CiscoDocument(source)
 
-        self.assertEqual(document.root.children[2].comment, "!! GigabitEthernet0/0/0/1")
+        self.assertEqual(document.root.nodes[2].comment, "!! GigabitEthernet0/0/0/1")
         self.assertEqual(document.business_interface_names(), set())
         self.assertEqual(
             document.apply_cleaning_rule((), "^!!", "delete", None),
@@ -151,9 +155,9 @@ class CiscoAstTest(unittest.TestCase):
             "   cost 10\n  ! note\n   hello-interval 5\n"
             "  !\n !\n!\n"
         )
-        interface = document.root.children[0].children[0].children[0]
+        interface = document.root.nodes[0].nodes[0].nodes[0]
 
-        self.assertEqual(interface.children[-1].header, "hello-interval 5")
+        self.assertEqual(interface.nodes[-1].header, "hello-interval 5")
         self.assertIn("  ! note\n", document.render())
 
     def test_nested_cleanup_removes_complete_subtree(self):

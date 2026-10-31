@@ -3,7 +3,7 @@
 from pathlib import Path
 import unittest
 
-from config_adaptor.juniper.document import JunosDocument
+from impl.juniper.document import JunosDocument
 
 
 FIXTURES = Path(__file__).parent / "fixtures" / "core_pruning"

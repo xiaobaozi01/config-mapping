@@ -8,22 +8,16 @@ version = "0.1.0"
 description = "Adapt IOS XR and Junos configurations for GNS3 XRv9000 and vMX images"
 requires-python = ">=3.11"
 dependencies = [
+  "antlr4-python3-runtime==4.13.2",
   "openpyxl>=3.1,<4",
   "PyYAML>=6,<7",
-  "standard-telnetlib==3.13.0; python_version >= '3.13'",
 ]
-
-[project.scripts]
-config-adaptor = "config_adaptor.adaptation.cli:main"
 
 [tool.setuptools.packages.find]
 where = ["src"]
 
 [tool.setuptools.package-data]
-config_adaptor = [
-    "cisco/rules/xrv9000/*.yaml",
-    "juniper/rules/vmx/*.yaml",
-]
+"impl.cisco" = ["antlr/*.g4"]
 
 [tool.pytest.ini_options]
 pythonpath = ["src"]

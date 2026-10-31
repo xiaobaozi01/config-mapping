@@ -6,8 +6,8 @@ import unittest
 from pathlib import Path
 from unittest.mock import patch
 
-from config_adaptor.juniper.document import JunosDocument, JunosNode
-from config_adaptor.juniper.empty_blocks import EmptyBlockPolicy
+from impl.juniper.document import JunosDocument, JunosNode
+from impl.juniper.empty_blocks import EmptyBlockPolicy
 
 
 FIXTURES = Path(__file__).parent / "fixtures" / "junos_ast"
@@ -208,7 +208,7 @@ class JunosAstTest(unittest.TestCase):
         document = JunosDocument("security {\n}\n")
         policy = EmptyBlockPolicy("semicolon", ((("security",), "braces"),))
 
-        with patch("config_adaptor.juniper.document.vmx_empty_block_policy", return_value=policy):
+        with patch("impl.juniper.document.vmx_empty_block_policy", return_value=policy):
             self.assertEqual(document.render(), "security {\n}\n")
 
     def test_empty_block_policy_controls_shape_when_only_comments_remain(self):
@@ -222,7 +222,7 @@ class JunosAstTest(unittest.TestCase):
             with self.subTest(action=action):
                 policy = EmptyBlockPolicy(action, ())
                 with patch(
-                    "config_adaptor.juniper.document.vmx_empty_block_policy",
+                    "impl.juniper.document.vmx_empty_block_policy",
                     return_value=policy,
                 ):
                     self.assertEqual(document.render(), rendered)
@@ -232,7 +232,7 @@ class JunosAstTest(unittest.TestCase):
         document.root.children.append(JunosNode("generated", [JunosNode("", comment="# note")]))
         policy = EmptyBlockPolicy("braces", ())
 
-        with patch("config_adaptor.juniper.document.vmx_empty_block_policy", return_value=policy):
+        with patch("impl.juniper.document.vmx_empty_block_policy", return_value=policy):
             self.assertEqual(document.render(), "\n")
 
     def test_group_expansion_keeps_comments_outside_group_definition(self):

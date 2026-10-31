@@ -1,0 +1,28 @@
+"""加载 vMX Junos 原配置空容器的输出策略。"""
+
+from __future__ import annotations
+
+from functools import lru_cache
+from pathlib import Path
+
+from impl.common.config_paths import config_path
+from impl.common.empty_blocks import (
+    EmptyBlockPolicy,
+    load_empty_block_policy as _load_empty_block_policy,
+)
+
+
+_RULE_FILE = config_path("rules", "juniper", "vmx", "empty_blocks.yaml")
+_ACTIONS = ("omit", "semicolon", "braces")
+
+
+def load_empty_block_policy(path: Path) -> EmptyBlockPolicy:
+    """按本厂商的目标镜像和动作集合加载策略，保留原单参数入口。"""
+    return _load_empty_block_policy(
+        path, vendor="juniper_junos", image="vmx", actions=_ACTIONS
+    )
+
+
+@lru_cache(maxsize=1)
+def vmx_empty_block_policy() -> EmptyBlockPolicy:
+    return load_empty_block_policy(_RULE_FILE)

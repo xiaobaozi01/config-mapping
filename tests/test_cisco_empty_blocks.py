@@ -7,9 +7,9 @@ from unittest.mock import patch
 
 import yaml
 
-from config_adaptor.cisco.document import CiscoDocument
-from config_adaptor.common.empty_blocks import EmptyBlockPolicy as CommonEmptyBlockPolicy
-from config_adaptor.cisco.empty_blocks import (
+from impl.cisco.document import CiscoDocument
+from impl.common.empty_blocks import EmptyBlockPolicy as CommonEmptyBlockPolicy
+from impl.cisco.empty_blocks import (
     EmptyBlockPolicy,
     load_empty_block_policy,
     xrv9000_empty_block_policy,
@@ -77,7 +77,7 @@ class CiscoEmptyBlockRulesTest(unittest.TestCase):
 class CiscoEmptyBlockRenderingTest(unittest.TestCase):
     def render_with_policy(self, document, default="omit", rules=()):
         with patch(
-            "config_adaptor.cisco.document.xrv9000_empty_block_policy",
+            "impl.cisco.document.xrv9000_empty_block_policy",
             return_value=EmptyBlockPolicy(default, rules),
         ):
             return document.render()
@@ -100,7 +100,7 @@ class CiscoEmptyBlockRenderingTest(unittest.TestCase):
         document.apply_cleaning_rule(("**",), "^authentication", "delete", None)
         self.assertEqual(self.render_with_policy(document), "!\nend\n")
         # 策略仅控制输出，后续仍可修改或以另一策略渲染原树。
-        self.assertTrue(document.root.children[0].active)
+        self.assertTrue(document.root.nodes[0].active)
         self.assertIn("area 0", document.render())
 
     def test_comments_and_formatting_do_not_keep_empty_block(self):

@@ -154,7 +154,7 @@ output/
 
 ```mermaid
 flowchart TD
-    CLI[CLI: config-adaptor convert] --> Prepare[prepare_context]
+    Entry[调用 adaptation.service.convert] --> Prepare[prepare_context]
     Prepare --> Excel[读取和校验 Excel]
     Prepare --> Profiles[加载镜像 Profile]
     Prepare --> Policy[加载 Group 策略]
@@ -187,7 +187,6 @@ flowchart TD
 ```mermaid
 sequenceDiagram
     actor User as 操作者
-    participant CLI as adaptation/cli.py
     participant Entry as adaptation/service.py
     participant IO as topology / profiles / washing
     participant Parser as adaptation/factory.py
@@ -196,8 +195,7 @@ sequenceDiagram
     participant Doc as VendorConfiguration
     participant Output as write_outputs
 
-    User->>CLI: config-adaptor convert ...
-    CLI->>Entry: convert(...)
+    User->>Entry: convert(...)
     Entry->>IO: 加载拓扑、Profile、策略
     loop 每台受支持设备
         Entry->>Parser: parse_document(vendor, text)
@@ -215,7 +213,7 @@ sequenceDiagram
     end
     Entry->>Output: write_outputs(context, output_dir)
     Output-->>CLI: ConversionContext
-    CLI-->>User: 退出码 0 或 2
+    Entry-->>User: ConversionContext
 ```
 
 清洗规则已经是核心 Pipeline 的一个 Stage。前序 Stage 报错时不会继续清洗；`write_outputs()` 无论成功失败都会执行，以确保失败报告可用。
@@ -226,8 +224,8 @@ sequenceDiagram
 
 ```mermaid
 flowchart TB
-    subgraph Delivery[入口层]
-        CLI[adaptation/cli.py]
+    subgraph Delivery[调用入口]
+        API[adaptation.service.convert]
     end
 
     subgraph Orchestration[编排层]
@@ -239,27 +237,27 @@ flowchart TB
     subgraph Domain[领域模型与纯规划]
         Models[adaptation/models.py]
         NniPlan[adaptation/nni.py]
-        Cleanup[adaptation/core_interfaces.py]
+        Cleanup[adaptation/interfaces.py]
     end
 
     subgraph Port[厂商能力边界]
-        API[common/contracts.py<br/>VendorConfiguration Protocol]
+        API[impl/common/contracts.py<br/>VendorConfiguration Protocol]
     end
 
     subgraph Cisco[Cisco 实现]
-        CiscoParser[cisco/document.py]
-        CiscoGroups[cisco/groups.py]
-        CiscoInterfaces[cisco/interfaces.py]
-        CiscoCleaning[cisco/cleaning.py]
-        CiscoSimulation[cisco/simulation.py]
+        CiscoParser[impl/cisco/document.py]
+        CiscoGroups[impl/cisco/groups.py]
+        CiscoInterfaces[impl/cisco/interfaces.py]
+        CiscoCleaning[impl/cisco/cleaning.py]
+        CiscoSimulation[impl/cisco/rules/simulation.py]
     end
 
     subgraph Juniper[Juniper 实现]
-        JunosParser[juniper/document.py]
-        JunosGroups[juniper/groups.py]
-        JunosInterfaces[juniper/interfaces.py]
-        JunosCleaning[juniper/cleaning.py]
-        JunosSimulation[juniper/simulation.py]
+        JunosParser[impl/juniper/document.py]
+        JunosGroups[impl/juniper/groups.py]
+        JunosInterfaces[impl/juniper/interfaces.py]
+        JunosCleaning[impl/juniper/cleaning.py]
+        JunosSimulation[impl/juniper/rules/simulation.py]
     end
 
     subgraph IO[基础设施]
@@ -294,23 +292,22 @@ flowchart TB
 
 | 路径 | 职责 | 新人是否应先读 |
 | --- | --- | --- |
-| `adaptation/cli.py` | 参数解析、退出码 | 是 |
 | `adaptation/service.py` | 准备上下文、执行流程、写输出 | 是 |
-| `adaptation/topology.py`、`groups.py`、`interfaces.py`、`nni.py`、`core_interfaces.py`、`cleaning_rules.py`、`simulation.py` | 十二个业务阶段 | 是，核心 |
+| `adaptation/topology.py`、`groups.py`、`interfaces.py`、`nni.py`、`cleaning_rules.py`、`simulation.py` | 十二个业务阶段 | 是，核心 |
 | `adaptation/models.py` | 设备、链路、映射、Profile、上下文 | 是 |
 | `adaptation/pipeline.py` | Stage 协议和停止规则 | 是 |
 | `adaptation/nni.py` | 聚合链路分组的纯计算 | NNI 业务时读 |
-| `adaptation/core_interfaces.py` | NNI 保留闭包与依赖裁剪 | 修改实验保留范围时读 |
-| `common/contracts.py` | 两家厂商显式实现、应用层依赖的能力协议 | 是，理解边界 |
-| `cisco/document.py、juniper/document.py` | AST、解析、渲染及兼容 Facade | 第二阶段读 |
-| `cisco/groups.py、juniper/groups.py` | 厂商 Group 事务式展开 | 专项阅读 |
-| `cisco/interfaces.py、juniper/interfaces.py` | 业务接口分析和配置树修改 | 专项阅读 |
-| `cisco/cleaning.py、juniper/cleaning.py` | 强制管理面清洗 | 专项阅读 |
-| `cisco/simulation.py、juniper/simulation.py` | 镜像运行参数适配 | 专项阅读 |
+| `adaptation/interfaces.py` | 接口预清理、分类、NNI 保留闭包、引用改写、目标兼容与最终校验 | 修改接口保留范围时读 |
+| `impl/common/contracts.py` | 两家厂商显式实现、应用层依赖的能力协议 | 是，理解边界 |
+| `impl/cisco/document.py、impl/juniper/document.py` | AST、解析、渲染及兼容 Facade | 第二阶段读 |
+| `impl/cisco/groups.py、impl/juniper/groups.py` | 厂商 Group 事务式展开 | 专项阅读 |
+| `impl/cisco/interfaces.py、impl/juniper/interfaces.py` | 业务接口分析和配置树修改 | 专项阅读 |
+| `impl/cisco/cleaning.py、impl/juniper/cleaning.py` | 强制管理面清洗 | 专项阅读 |
+| `impl/cisco/rules/simulation.py、impl/juniper/rules/simulation.py` | 镜像运行参数适配 | 专项阅读 |
 | `adaptation/topology.py` | Excel 读写和列别名处理 | 输入问题时读 |
 | `adaptation/profiles.py` | 镜像 Profile 加载与校验 | Profile 问题时读 |
 | `adaptation/cleaning_rules.py` | 统一清洗规则加载与调度 | 修改清洗框架时读 |
-| `cisco/rules/xrv9000/cleaning.yaml`、`juniper/rules/vmx/cleaning.yaml` | 各厂商的 PTP、接口类型约束及扩展清洗规则 | 增删清洗项时读 |
+| `config/rules/cisco/xrv9000/cleaning.yaml`、`config/rules/juniper/vmx/cleaning.yaml` | 各厂商的 PTP、接口类型约束及扩展清洗规则 | 增删清洗项时读 |
 
 ### 5.3 为什么有些东西是类，有些是函数
 
@@ -322,7 +319,7 @@ flowchart TB
 - `ConversionContext` 等是 dataclass：它们表达一次转换过程中的领域数据。
 - `plan_nni_components()` 是函数：输入链路和聚合关系，输出不可变计划，不持有状态。
 - `plan_nni_components()` 是函数：输入链路和聚合关系，稳定地产生组件计划。
-- `cisco/interfaces.py、juniper/interfaces.py`、`cleaning.py`、`simulation.py` 使用模块函数：这些操作依赖传入的 Document，但自身不需要额外对象生命周期。
+- `impl/cisco/interfaces.py、impl/juniper/interfaces.py`、`cleaning.py`、`simulation.py` 使用模块函数：这些操作依赖传入的 Document，但自身不需要额外对象生命周期。
 
 ## 6. 贯穿流程的核心数据
 
@@ -523,7 +520,7 @@ interface GigabitEthernet0/0/0/0
 !
 ```
 
-主要对象是 `CiscoNode`。`CiscoDocument.root` 是不参与渲染的虚拟根，顶层命令和任意深度的子命令都使用同一节点类型。`CiscoDocument` 负责解析、保存节点顺序、提供 Facade 方法和最终渲染；接口、Group、清洗、模拟适配的具体算法放在 `cisco/`。
+Cisco 使用 ANTLR4 生成的 Context：`CiscoDocument.root` 是完整配置的解析根，通过 `root.nodes` 和 `context.nodes` 查询语义子节点。源码和解析快照是唯一当前状态，规则通过文本重写事务修改，重新解析成功后才发布；不再直接修改节点字段。Document 保留 Facade 方法，具体算法位于 `impl/cisco/`。开发方式见 [ANTLR4 说明](antlr-cisco.md)。
 
 ### 11.3 Junos 文档模型
 
@@ -541,7 +538,7 @@ interfaces {
 }
 ```
 
-主要对象是 `JunosNode`。`JunosDocument` 管理整棵树并提供相同的 Facade 能力，具体算法位于 `juniper/`。
+主要对象是 `JunosNode`。`JunosDocument` 管理整棵树并提供相同的 Facade 能力，具体算法位于 `impl/juniper/`。
 
 ### 11.4 新增厂商时应遵循的边界
 
@@ -651,27 +648,20 @@ python3 -m pip install -e .
 
 ### 14.2 执行转换
 
-```bash
-config-adaptor convert \
-  --topology topology.xlsx \
-  --config-dir configs \
-  --output-dir output \
-  --profiles config/image_profiles.yaml
+```python
+from pathlib import Path
+
+from adaptation.service import convert
+
+context = convert(
+    topology_path=Path("topology.xlsx"),
+    config_dir=Path("configs"),
+    output_dir=Path("output"),
+    profiles_path=Path("config/image_profiles.yaml"),
+)
 ```
 
-也可不安装直接执行：
-
-```bash
-PYTHONPATH=src python3 -m config_adaptor convert \
-  --topology topology.xlsx \
-  --config-dir configs \
-  --output-dir output
-```
-
-退出码：
-
-- `0`：成功。
-- `2`：参数、加载、转换或输出失败。
+`convert()` 返回 `ConversionContext`。调用方应检查 `context.has_errors`；失败详情同时写入输出目录的 `report.json`。
 
 ### 14.3 运行测试
 
@@ -864,7 +854,7 @@ git diff --check
 
 如果准备开始开发：
 
-1. 阅读 `common/contracts.py`，明确跨厂商能力边界。
+1. 阅读 `impl/common/contracts.py`，明确跨厂商能力边界。
 2. 阅读相关业务 fixture 和已有断言。
 3. 阅读目标厂商的 Group、接口、清洗或模拟适配模块。
 4. 先补失败测试，再做最小实现。
@@ -872,19 +862,18 @@ git diff --check
 
 ## 20. 一条建议的代码跟踪路线
 
-以命令行转换为例，从以下符号依次跳转，能够完整走通主干：
+以 Python API 转换为例，从以下符号依次跳转，能够完整走通主干：
 
 ```text
-config_adaptor.adaptation.cli.main
-  → config_adaptor.adaptation.service.convert
-  → config_adaptor.adaptation.service.prepare_context
-  → config_adaptor.adaptation.topology.load_topology
-  → config_adaptor.adaptation.factory.parse_document
-  → config_adaptor.adaptation.pipeline.build_default_pipeline
+adaptation.service.convert
+  → adaptation.service.prepare_context
+  → adaptation.topology.load_topology
+  → adaptation.factory.parse_document
+  → adaptation.pipeline.build_default_pipeline
   → ConversionPipeline.execute
   → 各 Handler.process
   → CleaningRulesHandler / VendorConfiguration 的厂商实现
-  → config_adaptor.adaptation.service.write_outputs
+  → adaptation.service.write_outputs
 ```
 
 在 IDE 中建议先沿这条主干走一遍，再深入 Group 或 AST。直接从 500 行左右的厂商算法开始读，容易知道“怎么实现”，却不知道“为什么此时调用”。
@@ -921,8 +910,8 @@ Cisco 块结构和 Junos 树结构差异很大。当前设计只统一应用层�
 - `docs/requirements.md`：需求与验收基线。
 - `docs/processing-flow.md`：Cisco/Junos 配置改写的详细规则。
 - `config/image_profiles.yaml`：镜像 Profile 示例。
-- `src/config_adaptor/cisco/rules/xrv9000/cleaning.yaml`：XRv9000 配置清洗规则。
-- `src/config_adaptor/juniper/rules/vmx/cleaning.yaml`：vMX 配置清洗规则。
+- `config/rules/cisco/xrv9000/cleaning.yaml`：XRv9000 配置清洗规则。
+- `config/rules/juniper/vmx/cleaning.yaml`：vMX 配置清洗规则。
 
 建议把本文作为第一入口，把 `requirements.md` 当作“系统必须满足什么”，把 `processing-flow.md` 当作“具体语法如何改写”。
 

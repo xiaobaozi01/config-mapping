@@ -6,7 +6,7 @@ import shutil
 import tempfile
 import unittest
 
-from config_adaptor.adaptation.service import convert
+from adaptation.service import convert
 from openpyxl import load_workbook
 
 

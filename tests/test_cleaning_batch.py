@@ -13,24 +13,27 @@ from pathlib import Path
 from types import SimpleNamespace
 from unittest.mock import Mock, patch
 
-from config_adaptor.adaptation.cleaning_rules import (
+from adaptation.cleaning_rules import (
     CleaningPoint,
     CleaningResult,
     CleaningRulesHandler,
     ConfiguredCleaningRule,
 )
-from config_adaptor.adaptation.models import ConversionContext, Vendor
-from config_adaptor.cisco.document import CiscoDocument, CiscoNode
-from config_adaptor.common.cleaning import (
+from adaptation.models import ConversionContext, Vendor
+from cisco_support import nodes
+from impl.cisco.document import CiscoDocument, CiscoContext
+from impl.common.cleaning import (
     CleaningOperation,
     compile_cleaning_rules,
     matches_cleaning_path,
 )
-from config_adaptor.juniper.document import JunosDocument
+from impl.juniper.document import JunosDocument
 
 
 def reference_clean(document, operations):
     """朴素两轮参考：每个节点逐条检查规则，不使用编译路径或候选缓存。"""
+    if isinstance(document, CiscoDocument):
+        return reference_cisco_clean(document, operations)
     counts = [0] * len(operations)
     is_cisco = isinstance(document, CiscoDocument)
 
@@ -73,6 +76,60 @@ def reference_clean(document, operations):
     return counts
 
 
+def reference_cisco_clean(document, operations):
+    """独立字符切片 oracle：不使用实际批量执行器或 TokenStreamRewriter。"""
+    from impl.cisco.antlr.parsing import CiscoSnapshot
+    counts = [0] * len(operations)
+    for action in ("delete", "replace"):
+        edits = []
+
+        def visit(node, ancestors):
+            if node.is_formatting:
+                return
+            header = node.header
+            for index, operation in enumerate(operations):
+                if operation.action != action or not matches_cleaning_path(ancestors, operation.path):
+                    continue
+                pattern = re.compile(operation.match, re.I)
+                if not pattern.search(header):
+                    continue
+                counts[index] += 1
+                start = node.start.start
+                if action == "delete":
+                    edits.append((start, node.stop.stop + 1, ""))
+                    return
+                header = pattern.sub(operation.value or "", header)
+                raw = node.raw_header
+                prefix = raw[:len(raw) - len(raw.lstrip())]
+                edits.append((start, start + len(raw), prefix + header))
+                break
+            for child in node.nodes:
+                visit(child, (*ancestors, header))
+
+        for node in document.root.nodes:
+            visit(node, ())
+        if action == "delete":
+            _reference_separator_edits(document.root.nodes, edits)
+        text = document.source
+        for start, stop, replacement in sorted(edits, reverse=True):
+            text = text[:start] + replacement + text[stop:]
+        document._publish(CiscoSnapshot(text, document.revision + 1))
+    return counts
+
+
+def _reference_separator_edits(siblings, edits):
+    removed = {start for start, stop, value in edits if not value}
+    extras = []
+    for index, node in enumerate(siblings):
+        if node.start.start in removed and 0 < index < len(siblings) - 1:
+            previous, following = siblings[index - 1], siblings[index + 1]
+            if previous.header == following.header == "!" and previous.indent == following.indent:
+                extras.append((following.start.start, following.stop.stop + 1, ""))
+        if node.start.start not in removed:
+            _reference_separator_edits(node.nodes, edits)
+    edits.extend(extras)
+
+
 class CleaningBatchTest(unittest.TestCase):
     def test_delete_precedes_replace_and_counts_follow_original_input_order(self):
         operations = [
@@ -103,9 +160,12 @@ class CleaningBatchTest(unittest.TestCase):
             with self.subTest(vendor=cls.vendor):
                 document = cls(source)
                 self.assertEqual(document.apply_cleaning_rules(operations), [0, 1, 0])
-                parent = document.root.children[0]
-                self.assertFalse(parent.active)
-                self.assertTrue(parent.children[0].active)
+                if isinstance(document, CiscoDocument):
+                    self.assertEqual(document.root.nodes, ())
+                else:
+                    parent = nodes(document)[0]
+                    self.assertFalse(parent.active)
+                    self.assertTrue(parent.children[0].active)
 
     def test_replacement_stops_on_first_match_even_when_value_is_unchanged(self):
         for cls, source in [(CiscoDocument, "A\n"), (JunosDocument, "A;")]:
@@ -136,8 +196,8 @@ class CleaningBatchTest(unittest.TestCase):
 
     def test_phase_caches_release_without_waiting_for_cyclic_gc(self):
         for cls, source, module in [
-            (CiscoDocument, "A\nOLD\n", "config_adaptor.cisco.document"),
-            (JunosDocument, "A; OLD;", "config_adaptor.juniper.document"),
+            (CiscoDocument, "A\nOLD\n", "impl.cisco.document"),
+            (JunosDocument, "A; OLD;", "impl.juniper.document"),
         ]:
             with self.subTest(vendor=cls.vendor):
                 references = []
@@ -203,17 +263,17 @@ class CleaningBatchTest(unittest.TestCase):
             for action in ("warn", "mask", "unknown"):
                 with self.subTest(vendor=cls.vendor, action=action):
                     document = cls(source)
-                    before = copy.deepcopy(document.root)
+                    before = document.snapshot if isinstance(document, CiscoDocument) else copy.deepcopy(document.root)
                     with self.assertRaisesRegex(ValueError, "不支持的清洗动作"):
                         document.apply_cleaning_rules([
                             CleaningOperation((), "old", "delete"),
                             CleaningOperation((), "old", action),
                         ])
-                    self.assertEqual(document.root, before)
+                    self.assertEqual(document.snapshot if isinstance(document, CiscoDocument) else document.root, before)
             document = cls(source)
             with self.assertRaisesRegex(ValueError, "必须提供 value"):
                 document.apply_cleaning_rules([CleaningOperation((), "old", "replace")])
-            self.assertTrue(document.root.children[0].active)
+            self.assertTrue(nodes(document)[0].active)
             self.assertEqual(document.apply_cleaning_rules([]), [])
 
     def test_invalid_replacement_templates_fail_before_delete_even_without_a_match(self):
@@ -222,25 +282,25 @@ class CleaningBatchTest(unittest.TestCase):
                 for pattern in ("^A$", "^never-matches$"):
                     with self.subTest(vendor=cls.vendor, template=template, pattern=pattern):
                         document = cls(source)
-                        before = copy.deepcopy(document.root)
+                        before = document.snapshot if isinstance(document, CiscoDocument) else copy.deepcopy(document.root)
                         with self.assertRaisesRegex(ValueError, "第 2 条.*无效替换模板"):
                             document.apply_cleaning_rules([
                                 CleaningOperation((), "^OLD$", "delete"),
                                 CleaningOperation((), pattern, "replace", template),
                             ])
-                        self.assertEqual(document.root, before)
+                        self.assertEqual(document.snapshot if isinstance(document, CiscoDocument) else document.root, before)
 
     def test_non_string_replacement_fails_before_mutation(self):
         for cls, source in [(CiscoDocument, "OLD\nA\n"), (JunosDocument, "OLD; A;")]:
             with self.subTest(vendor=cls.vendor):
                 document = cls(source)
-                before = copy.deepcopy(document.root)
+                before = document.snapshot if isinstance(document, CiscoDocument) else copy.deepcopy(document.root)
                 with self.assertRaisesRegex(ValueError, "value 必须是字符串"):
                     document.apply_cleaning_rules([
                         CleaningOperation((), "^OLD$", "delete"),
                         CleaningOperation((), "^A$", "replace", 123),
                     ])
-                self.assertEqual(document.root, before)
+                self.assertEqual(document.snapshot if isinstance(document, CiscoDocument) else document.root, before)
 
     def test_valid_replacement_backreferences_remain_supported(self):
         for cls, source, expected in [
@@ -263,7 +323,7 @@ class CleaningBatchTest(unittest.TestCase):
             with self.subTest(vendor=cls.vendor):
                 document = cls(source)
                 self.assertEqual(document.apply_cleaning_rule((), "old", "replace", ""), 1)
-                self.assertEqual(document.root.children[0].header, expected)
+                self.assertEqual(nodes(document)[0].header, expected)
 
     def test_single_rule_preserves_legacy_none_as_empty_replacement(self):
         for cls, source, expected in [
@@ -273,7 +333,7 @@ class CleaningBatchTest(unittest.TestCase):
             with self.subTest(vendor=cls.vendor):
                 document = cls(source)
                 self.assertEqual(document.apply_cleaning_rule((), "old", "replace", None), 1)
-                self.assertEqual(document.root.children[0].header, expected)
+                self.assertEqual(nodes(document)[0].header, expected)
 
     def test_one_hundred_rules_visit_each_node_only_twice(self):
         operations = [
@@ -282,8 +342,8 @@ class CleaningBatchTest(unittest.TestCase):
         ]
         cisco = CiscoDocument("\n".join(f"node-{index}" for index in range(20)))
         visited = []
-        original = CiscoNode.is_formatting.fget
-        with patch.object(CiscoNode, "is_formatting", property(
+        original = CiscoContext.is_formatting.fget
+        with patch.object(CiscoContext, "is_formatting", property(
             lambda node: visited.append(node) or original(node)
         )):
             self.assertEqual(cisco.apply_cleaning_rules(operations), [0] * 100)
@@ -341,7 +401,7 @@ class CleaningBatchDifferentialTest(unittest.TestCase):
                 with self.subTest(vendor=cls.vendor, fixture=path.name, iteration=iteration):
                     actual, expected = cls(text), cls(text)
                     self.assertEqual(actual.apply_cleaning_rules(operations), reference_clean(expected, operations))
-                    self.assertEqual(actual.root, expected.root)
+                    self.assertEqual(actual.source, expected.source) if isinstance(actual, CiscoDocument) else self.assertEqual(actual.root, expected.root)
                     self.assertEqual(actual.render(), expected.render())
 
 
@@ -392,12 +452,15 @@ class CleaningBatchHandlerTest(unittest.TestCase):
         code.apply.assert_called_once_with(document)
 
     def test_code_rule_input_errors_still_short_circuit(self):
+        from adaptation.cleaning_rules import CiscoBannerCleaningRule, CleaningRuleError
         handler = CleaningRulesHandler(CleaningPoint.PRE_ANALYSIS)
-        context = self.context(CiscoDocument("banner exec ^\nunterminated\n"))
-        handler.process(context)
+        context = self.context(CiscoDocument("hostname XR\n"))
+        with patch.object(CiscoBannerCleaningRule, "apply", side_effect=CleaningRuleError("invalid input")):
+            handler.process(context)
         self.assertEqual(len(context.errors), 1)
         self.assertEqual(context.events[0]["kind"], "cleaning-rule-error")
         self.assertEqual(context.events[0]["rule_id"], "cisco.remove.banner")
+
 
     def test_yaml_rejects_removed_actions_and_default_rules_contain_no_warn(self):
         self.assertTrue(all(rule.action in {"delete", "replace"} for rule in CleaningRulesHandler._configured_rules()))
@@ -421,7 +484,7 @@ class CleaningBatchHandlerTest(unittest.TestCase):
 
     def test_invalid_programmatic_template_does_not_mutate_document_in_handler(self):
         document = CiscoDocument("OLD\nA\n")
-        before = copy.deepcopy(document.root)
+        before = document.snapshot if isinstance(document, CiscoDocument) else copy.deepcopy(document.root)
         handler = CleaningRulesHandler(CleaningPoint.POST_REWRITE)
         handler._rules = [
             self.rule("delete", "delete", "^OLD$"),
@@ -430,7 +493,7 @@ class CleaningBatchHandlerTest(unittest.TestCase):
         context = self.context(document)
         with self.assertRaisesRegex(ValueError, "无效替换模板"):
             handler.process(context)
-        self.assertEqual(document.root, before)
+        self.assertEqual(document.snapshot if isinstance(document, CiscoDocument) else document.root, before)
         self.assertEqual(context.events, [])
 
 

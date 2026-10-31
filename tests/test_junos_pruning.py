@@ -1,10 +1,13 @@
 """NNI-only Junos 剪枝保留业务角色并验证依赖边界。"""
 
+import importlib.util
 from pathlib import Path
 import unittest
 
-from config_adaptor.juniper.document import JunosDocument
-from config_adaptor.juniper.pruning import prune_non_nni, validate_pruned_references
+from impl.juniper import rules as juniper_rules
+from impl.juniper.document import JunosDocument
+from impl.juniper.rules.compatibility import validate_pruned_references
+from impl.juniper.rules.pruning import prune_non_nni
 
 
 FIXTURES = Path(__file__).parent / "fixtures" / "interfaces"
@@ -15,6 +18,15 @@ def load(name: str) -> JunosDocument:
 
 
 class JunosNniPruningTest(unittest.TestCase):
+    def test_rule_code_is_packaged_under_rules(self):
+        self.assertIsNotNone(getattr(juniper_rules, "__path__", None))
+        for name in ("compatibility", "pruning", "simulation"):
+            self.assertIsNotNone(
+                importlib.util.find_spec(f"impl.juniper.rules.{name}"),
+            )
+        for name in ("pruning", "simulation"):
+            self.assertIsNone(importlib.util.find_spec(f"impl.juniper.{name}"))
+
     def test_protected_member_preserves_bundle_members_and_original_irb_role(self):
         document = load("junos_nni_pruning.cfg")
         outcome = prune_non_nni(document, {"ge-0/0/0", "ge-0/0/20"})

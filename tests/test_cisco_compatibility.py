@@ -1,11 +1,15 @@
 """目标接口类型约束的离线验证；不代替实际 XRv9000 commit 检查。"""
 
+import importlib.util
+from cisco_support import append_child, delete_context
 from pathlib import Path
 import unittest
 
-from config_adaptor.cisco.compatibility import adapt_interfaces, validate_interfaces
-from config_adaptor.cisco.document import CiscoDocument
-from config_adaptor.cisco.interfaces import clone_interface_tree, ensure_parent_interface, find_interface_node
+from cleaning_support import clean_hardware
+
+from impl.cisco.rules.compatibility import adapt_interfaces, validate_interfaces
+from impl.cisco.document import CiscoDocument
+from impl.cisco.interfaces import clone_interface_tree, ensure_parent_interface, find_interface_node
 
 
 FIXTURES = Path(__file__).parent / "fixtures" / "interface_compatibility"
@@ -13,6 +17,17 @@ TARGETS = {"GigabitEthernet0/0/0/0", "GigabitEthernet0/0/0/1.200"}
 
 
 class CiscoCompatibilityTest(unittest.TestCase):
+    def test_interface_adaptation_rules_are_owned_by_compatibility_module(self):
+        from impl.cisco.rules import compatibility
+
+        self.assertTrue(hasattr(compatibility, "EthertypeVisitor"))
+        self.assertEqual(
+            compatibility.EthertypeVisitor.__module__, compatibility.__name__,
+        )
+        self.assertIsNone(
+            importlib.util.find_spec("impl.cisco.rules.interface_adaptation"),
+        )
+
     def test_active_configuration_after_end_fails_final_validation(self):
         document = CiscoDocument((FIXTURES / "iosxr_early_end.cfg").read_text())
         outcome = validate_interfaces(document, TARGETS)
@@ -27,13 +42,14 @@ class CiscoCompatibilityTest(unittest.TestCase):
 
     def test_adaptation_preserves_business_and_unknown_commands(self):
         document = CiscoDocument((FIXTURES / "iosxr_targets.cfg").read_text())
+        clean_hardware(document, TARGETS)
         outcome = adapt_interfaces(document, TARGETS)
         self.assertFalse(outcome.errors)
-        self.assertEqual(len(outcome.changes), 6)
+        self.assertEqual(len(outcome.changes), 3)
         parent = find_interface_node(document, "GigabitEthernet0/0/0/0")
         sub = find_interface_node(document, "GigabitEthernet0/0/0/0.100")
-        self.assertIn("ethernet dot1q tunneling ethertype 0x9100", [node.header for node in parent.children])
-        self.assertNotIn("ethernet dot1q tunneling ethertype 0x9100", [node.header for node in sub.children])
+        self.assertIn("ethernet dot1q tunneling ethertype 0x9100", [node.header for node in parent.nodes])
+        self.assertNotIn("ethernet dot1q tunneling ethertype 0x9100", [node.header for node in sub.nodes])
         rendered = document.render()
         self.assertIn("ipv4 address 192.0.2.1", rendered)
         self.assertIn("rewrite ingress tag pop 1 symmetric", rendered)
@@ -58,15 +74,17 @@ class CiscoCompatibilityTest(unittest.TestCase):
         document = CiscoDocument((FIXTURES / "iosxr_targets.cfg").read_text())
         parent = find_interface_node(document, "GigabitEthernet0/0/0/0")
         source = find_interface_node(document, "GigabitEthernet0/0/0/0.100")
-        setting = next(node for node in source.children if "ethertype" in node.header)
-        different = setting.clone()
-        different.header = different.header.replace("0x9100", "0x9200")
-        parent.children.append(different)
+        setting = next(node for node in source.nodes if "ethertype" in node.header)
+        different = setting.header.replace("0x9100", "0x9200")
+        append_child(document, parent, different)
+        parent = find_interface_node(document, "GigabitEthernet0/0/0/0")
+        source = find_interface_node(document, "GigabitEthernet0/0/0/0.100")
+        setting = next(node for node in source.nodes if "ethertype" in node.header)
         outcome = adapt_interfaces(document, TARGETS)
         self.assertEqual(len(outcome.errors), 1)
         self.assertIn("冲突", outcome.errors[0])
-        self.assertIn(setting, source.children)
-        self.assertIn(different, parent.children)
+        self.assertIn(setting, source.nodes)
+        self.assertIn(different, [node.header for node in parent.nodes])
 
     def test_new_parent_and_missing_clone_are_inserted_before_end(self):
         document = CiscoDocument("hostname R1\n!\nend\n")
@@ -80,12 +98,12 @@ class CiscoCompatibilityTest(unittest.TestCase):
     def test_ethertype_parent_is_created_before_end(self):
         document = CiscoDocument((FIXTURES / "iosxr_targets.cfg").read_text())
         parent = find_interface_node(document, "GigabitEthernet0/0/0/0")
-        parent.active = False
+        delete_context(document, parent)
         outcome = adapt_interfaces(document, TARGETS)
         self.assertFalse(outcome.errors)
         self.assertEqual(document.render().strip().splitlines()[-1], "end")
         parent = find_interface_node(document, "GigabitEthernet0/0/0/0")
-        self.assertTrue(any("ethertype" in node.header for node in parent.children))
+        self.assertTrue(any("ethertype" in node.header for node in parent.nodes))
 
 
 if __name__ == "__main__":

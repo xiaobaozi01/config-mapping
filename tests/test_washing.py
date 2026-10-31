@@ -6,9 +6,9 @@ import unittest
 from dataclasses import replace
 from pathlib import Path
 
-from config_adaptor.adaptation.cleaning_rules import CleaningRulesHandler
-from config_adaptor.cisco.document import CiscoDocument
-from config_adaptor.juniper.document import JunosDocument
+from adaptation.cleaning_rules import CleaningRulesHandler
+from impl.cisco.document import CiscoDocument
+from impl.juniper.document import JunosDocument
 
 
 FIXTURES = Path(__file__).parent / "fixtures"

@@ -5,7 +5,7 @@ from __future__ import annotations
 import unittest
 from pathlib import Path
 
-from config_adaptor.cisco.document import CiscoDocument
+from impl.cisco.document import CiscoDocument
 
 
 FIXTURES = Path(__file__).parent / "fixtures" / "group_configs"

@@ -3,14 +3,14 @@
 from pathlib import Path
 import unittest
 
-from config_adaptor.adaptation.factory import parse_document
-from config_adaptor.adaptation.models import (
+from adaptation.factory import parse_document
+from adaptation.models import (
     ConversionContext, Device, DeviceContext, Link, TopologyWorkbook, Vendor,
 )
-from config_adaptor.adaptation.nni import NNIHandler
-from config_adaptor.adaptation.profiles import load_profiles
-from config_adaptor.adaptation.service import prepare_context
-from config_adaptor.adaptation.pipeline import build_default_pipeline
+from adaptation.nni import NNIHandler
+from adaptation.profiles import load_profiles
+from adaptation.service import prepare_context
+from adaptation.pipeline import build_default_pipeline
 
 
 FIXTURES = Path(__file__).parent / "fixtures"

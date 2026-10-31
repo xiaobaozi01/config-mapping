@@ -3,7 +3,7 @@
 from pathlib import Path
 import unittest
 
-from config_adaptor.cisco.document import CiscoDocument
+from impl.cisco.document import CiscoDocument
 
 
 FIXTURES = Path(__file__).parent / "fixtures" / "core_pruning"

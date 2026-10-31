@@ -7,9 +7,9 @@ import gc
 import unittest
 import weakref
 
-from config_adaptor.cisco import document as cisco
-from config_adaptor.common.interface import InterfaceKind
-from config_adaptor.juniper import document as junos
+from impl.cisco import document as cisco
+from impl.common.interface import InterfaceKind
+from impl.juniper import document as junos
 
 
 class DocumentCacheTest(unittest.TestCase):
@@ -104,7 +104,10 @@ class DocumentCacheTest(unittest.TestCase):
                 gc.collect()
                 self.assertTrue(all(reference() is None for reference in references))
                 self.assertTrue(retained_node.header)
-                self.assertIsNotNone(retained_node.clone())
+                if cls is cisco.CiscoDocument:
+                    self.assertTrue(retained_node.text)
+                else:
+                    self.assertIsNotNone(retained_node.clone())
 
     def test_repeated_strings_hit_bounded_caches_including_non_matches(self):
         cisco_document = cisco.CiscoDocument("")
@@ -173,41 +176,33 @@ class DocumentCacheTest(unittest.TestCase):
                 self.assertEqual(junos.JunosDocument._base_header(header), base)
                 self.assertEqual(junos.JunosDocument._output_header(header), output)
 
-    def test_cisco_cached_mode_and_name_follow_header_edits_and_clone(self):
-        node = cisco.CiscoNode("interface preconfigure Gi0/0/0/1 l2transport")
+    def test_cisco_cached_mode_and_name_follow_rewrite_revisions(self):
+        document = cisco.CiscoDocument("interface preconfigure Gi0/0/0/1 l2transport\n")
+        node = document.root.nodes[0]
         self.assertEqual(node.interface_name, "GigabitEthernet0/0/0/1")
         self.assertTrue(node.is_preconfigured_interface)
         self.assertTrue(node.l2transport)
-        clone = node.clone()
-        clone.header = "interface Loopback10"
-        self.assertEqual(clone.interface_name, "Loopback10")
-        self.assertFalse(clone.is_preconfigured_interface)
-        self.assertFalse(clone.l2transport)
+        transaction = document.rewrite()
+        transaction.replace_header(node, "interface Loopback10", "test")
+        transaction.commit()
+        updated = document.root.nodes[0]
+        self.assertEqual(updated.interface_name, "Loopback10")
+        self.assertFalse(updated.is_preconfigured_interface)
+        self.assertFalse(updated.l2transport)
         self.assertTrue(node.is_preconfigured_interface)
-        self.assertTrue(node.l2transport)
-        node.header = "hostname XR"
-        self.assertIsNone(node.interface_name)
-        self.assertFalse(node.is_preconfigured_interface)
-        self.assertFalse(node.l2transport)
-        node.header = "group EDGE"
-        self.assertTrue(cisco.CiscoDocument._is_group_node(node))
-        node.header = "end-group"
-        self.assertFalse(cisco.CiscoDocument._is_group_node(node))
+        self.assertNotEqual(node.snapshot, updated.snapshot)
 
-    def test_cisco_interface_queries_follow_tree_edits_after_warming(self):
+    def test_cisco_interface_queries_follow_rewrite_after_warming(self):
         document = cisco.CiscoDocument("interface Gi0/0/0/1\n!\n")
-        original = document._interface_nodes()[0]
         self.assertEqual(document.interface_specs()[0].name, "GigabitEthernet0/0/0/1")
-        clone = original.clone()
-        clone.header = "interface Loopback10"
-        document.root.children.append(clone)
+        transaction = document.rewrite()
+        transaction.append_child(document.root, "interface Loopback10\n", "test")
+        transaction.commit()
         self.assertEqual(len(document.interface_specs()), 2)
-        original.active = False
+        document.remove_interface("Gi0/0/0/1")
         self.assertEqual([spec.name for spec in document.interface_specs()], ["Loopback10"])
-        document.root.children.remove(clone)
+        document.remove_interface("Loopback10")
         self.assertEqual(document.interface_specs(), [])
-        original.active = True
-        self.assertEqual(document._interface_nodes(), [original])
 
     def test_junos_prefix_flags_follow_edits_active_state_and_comments(self):
         document = junos.JunosDocument("")

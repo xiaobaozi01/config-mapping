@@ -5,8 +5,8 @@ from __future__ import annotations
 import unittest
 from pathlib import Path
 
-from config_adaptor.common.policies import WashingPolicy
-from config_adaptor.juniper.document import JunosDocument
+from impl.common.policies import WashingPolicy
+from impl.juniper.document import JunosDocument
 
 
 FIXTURES = Path(__file__).parent / "fixtures" / "group_configs"

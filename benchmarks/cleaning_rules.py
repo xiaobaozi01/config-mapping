@@ -15,9 +15,9 @@ import re
 import statistics
 import time
 
-from config_adaptor.cisco.document import CiscoDocument
-from config_adaptor.common.cleaning import CleaningOperation, matches_cleaning_path
-from config_adaptor.juniper.document import JunosDocument
+from impl.cisco.document import CiscoDocument
+from impl.common.cleaning import CleaningOperation, matches_cleaning_path
+from impl.juniper.document import JunosDocument
 
 
 def configuration(vendor: str, lines: int) -> str:
@@ -53,9 +53,11 @@ def operations(vendor: str, count: int) -> list[CleaningOperation]:
 
 
 def legacy_clean(document, rules):
-    """保留优化前逐规则、完整递归遍历的算法，作为性能基线。"""
+    """逐规则处理作为基线；Cisco 逐条提交并重解析，Juniper 保留参考遍历。"""
+    if isinstance(document, CiscoDocument):
+        return [document.apply_cleaning_rules([rule])[0] for rule in rules]
     counts = []
-    cisco = isinstance(document, CiscoDocument)
+    cisco = False
 
     def header(node):
         if cisco:

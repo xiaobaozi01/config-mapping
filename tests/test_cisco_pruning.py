@@ -3,7 +3,7 @@
 from pathlib import Path
 import unittest
 
-from config_adaptor.cisco.document import CiscoDocument
+from impl.cisco.document import CiscoDocument
 
 
 FIXTURES = Path(__file__).parent / "fixtures" / "core_pruning"
@@ -84,6 +84,27 @@ class CiscoPruningTest(unittest.TestCase):
         self.assertNotIn("cost 99", output)
         self.assertNotIn("192.0.2.1", output)
         self.assertNotIn("Gi 0/0/0/7", output)
+
+    def test_service_bindings_removed_without_treating_domain_names_as_references(self):
+        doc = document("iosxr_service_dependencies.cfg")
+        outcome = doc.prune_non_nni({"Gi0/0/0/0"})
+        self.assertFalse(outcome.errors, outcome.errors)
+        output = doc.render()
+        for removed in ["REMOVED-RELAY", "monitor-session REMOVED", "interface Bundle-Ether609"]:
+            self.assertNotIn(removed, output)
+        for retained in ["RETAINED-RELAY", "monitor-session RETAINED", "bridge group BVI100",
+                         "bridge-domain BVI100", "allow SSH"]:
+            self.assertIn(retained, output)
+        self.assertFalse(doc.validate_interfaces(set(), outcome.removed_interfaces).errors)
+
+    def test_tunnel_is_preserved_but_unreferenced_line_track_is_removed(self):
+        doc = document("iosxr_ambiguous_objects.cfg")
+        outcome = doc.prune_non_nni({"Gi0/0/0/0"})
+        self.assertEqual(len(outcome.errors), 1, outcome.errors)
+        self.assertTrue(any("tunnel source" in error for error in outcome.errors))
+        self.assertIn("interface tunnel-ip1000", doc.render())
+        self.assertNotIn("track WATCH-LINK", doc.render())
+
 
 
 if __name__ == "__main__":

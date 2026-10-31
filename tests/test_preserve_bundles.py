@@ -1,10 +1,10 @@
 """物理拓扑只列成员口时，逻辑聚合业务完整保留。"""
 from pathlib import Path
 import unittest
-from config_adaptor.adaptation.factory import parse_document
-from config_adaptor.adaptation.models import ConversionContext, Device, DeviceContext, Link, TopologyWorkbook, Vendor
-from config_adaptor.adaptation.profiles import load_profiles
-from config_adaptor.adaptation.pipeline import build_default_pipeline
+from adaptation.factory import parse_document
+from adaptation.models import ConversionContext, Device, DeviceContext, Link, TopologyWorkbook, Vendor
+from adaptation.profiles import load_profiles
+from adaptation.pipeline import build_default_pipeline
 
 FIXTURES = Path(__file__).parent / 'fixtures' / 'preserve_bundles'
 
@@ -102,6 +102,41 @@ class PreserveBundleTest(unittest.TestCase):
                 self.assertTrue(context.has_errors)
                 self.assertTrue(any('MC-LAG' in error for error in context.errors))
                 self.assertFalse(any(mapping.action in {'map-member', 'preserve'} for mapping in context.mappings))
+
+    def test_redundant_member_references_are_pruned_at_nni_removal(self):
+        cases = [
+            (Vendor.CISCO_IOSXR, "iosxr_member_references.cfg", "HundredGigE0/0/0/1"),
+            (Vendor.JUNIPER_JUNOS, "junos_member_references.cfg", "ge-0/0/11"),
+        ]
+        for vendor, fixture, removed in cases:
+            with self.subTest(vendor=vendor):
+                context = context_for(vendor, filename_override=fixture)
+                build_default_pipeline().execute(context)
+                device = context.devices['A']
+                self.assertFalse(context.has_errors, context.errors + device.errors)
+                self.assertNotIn(removed, device.document.render())
+                self.assertTrue(any(event['kind'] == 'redundant-member-cleanup'
+                                    for event in context.events))
+                self.assertIn(removed, device.removed_interfaces)
+                self.assertTrue(any(mapping.action == 'remove' and mapping.source_interface == removed
+                                    for mapping in device.mappings))
+
+
+    def test_deleted_member_name_reused_as_target_does_not_keep_old_bindings(self):
+        context = context_for(Vendor.JUNIPER_JUNOS, filename_override="junos_member_references.cfg")
+        for device in context.devices.values():
+            source = device.config_path.read_text().replace('ge-0/0/11', 'ge-0/0/0')
+            device.document = parse_document(Vendor.JUNIPER_JUNOS.value, source)
+        context.topology.links[1].a_interface = 'ge-0/0/0'
+        context.topology.links[1].z_interface = 'ge-0/0/0'
+        build_default_pipeline().execute(context)
+        device = context.devices['A']
+        self.assertFalse(context.has_errors, context.errors + device.errors)
+        self.assertIn('ge-0/0/0', device.document.bundle_members())
+        output = device.document.render()
+        self.assertNotIn('interface ge-0/0/0;', output)
+        self.assertIn('interface ae10.0;', output)
+
 
 if __name__ == '__main__':
     unittest.main()

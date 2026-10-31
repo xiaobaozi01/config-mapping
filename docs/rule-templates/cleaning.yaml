@@ -1,0 +1,13 @@
+# 复制列表项到对应厂商 cleaning.yaml 的 rules 下；本文件不被程序加载。
+# RULE_DEMO 是合成标记，替换为经过确认的业务匹配条件。
+rules:
+  - id: remove.demo.description
+    vendor: cisco_iosxr
+    enable: true
+    category: demo
+    scope: compatibility_interfaces
+    path:
+      - '^interface\b'
+    match: '^description RULE_DEMO_REMOVE$'
+    action: delete
+    reason: '删除实验合成描述'

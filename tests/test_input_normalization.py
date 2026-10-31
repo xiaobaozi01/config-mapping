@@ -9,11 +9,11 @@ import unittest
 from pathlib import Path
 from unittest.mock import patch
 
-from config_adaptor.adaptation import input_normalization
-from config_adaptor.adaptation.input_normalization import normalize_input
-from config_adaptor.adaptation.models import Vendor
-from config_adaptor.adaptation.service import convert
-from config_adaptor.juniper.document import JunosDocument
+from adaptation import input_normalization
+from adaptation.input_normalization import normalize_input
+from adaptation.models import Vendor
+from adaptation.service import convert
+from impl.juniper.document import JunosDocument
 
 
 FIXTURES = Path(__file__).parent / "fixtures"
