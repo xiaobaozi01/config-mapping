@@ -6,6 +6,7 @@ from scripts.check_method_lengths import check_file
 
 
 class MethodLengthCheckerTest(TestCase):
+
     def test_docstrings_do_not_count_toward_method_length(self):
         docstring = "\n".join(f"    line {index}" for index in range(60))
         source = f'''def documented():

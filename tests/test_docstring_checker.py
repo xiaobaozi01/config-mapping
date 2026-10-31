@@ -6,6 +6,7 @@ from scripts.check_docstrings import check_file
 
 
 class DocstringCheckerTest(TestCase):
+
     def test_missing_docstrings_are_reported_for_all_member_kinds(self):
         source = """class Example:
     def __init__(self):
@@ -105,7 +106,9 @@ class DocstringCheckerTest(TestCase):
                 / "parser.py"
             )
             generated.parent.mkdir(parents=True)
-            generated.write_text("class Generated:\n    pass\n", encoding="utf-8")
+            generated.write_text(
+                "class Generated:\n    pass\n", encoding="utf-8"
+            )
 
             violations = check_file(generated)
 
