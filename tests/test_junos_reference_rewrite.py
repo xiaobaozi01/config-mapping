@@ -24,8 +24,8 @@ def nni_context():
     profile = load_profiles(None)[Vendor.JUNIPER_JUNOS]
     topology = TopologyWorkbook(
         Path("unused.xlsx"), None, "devices", "links", {}, {}, [device, peer],
-        [Link(2, "A", "ge-0/0/7", "P", "Ethernet0"),
-         Link(3, "A", "ge-0/0/8", "P", "Ethernet1")],
+        [Link(2, "link-2", "A", "ge-0/0/7", "P", "Ethernet0"),
+         Link(3, "link-3", "A", "ge-0/0/8", "P", "Ethernet1")],
     )
     return ConversionContext(
         topology, {"A": DeviceContext(device, path, document, profile)}, external_devices={"P"},

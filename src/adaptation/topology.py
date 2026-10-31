@@ -28,6 +28,7 @@ DEVICE_COLUMN_ALIASES = {
 }
 
 LINK_COLUMN_ALIASES = {
+    "link_name": ("链路名称", "链接名称", "链路名", "链接名", "link", "link_name"),
     "a_device": ("a端设备", "源设备", "本端设备", "a_device", "device_a", "source_device"),
     "a_interface": ("a端接口", "源接口", "本端接口", "a_interface", "interface_a", "source_interface"),
     "z_device": ("z端设备", "对端设备", "目的设备", "z_device", "device_z", "target_device"),
@@ -69,6 +70,28 @@ def _header_map(sheet, aliases: dict[str, tuple[str, ...]], required: set[str]) 
     return result
 
 
+def _load_links(link_sheet, link_headers: dict[str, int]) -> list[Link]:
+    """读取链接表，并为没有显式名称的链路生成稳定的端点名称。"""
+    links: list[Link] = []
+    for row in range(2, link_sheet.max_row + 1):
+        values = {
+            field: str(link_sheet.cell(row, column).value or "").strip()
+            for field, column in link_headers.items()
+        }
+        if not any(values.values()):
+            continue
+        endpoints = ("a_device", "a_interface", "z_device", "z_interface")
+        if not all(values.get(field) for field in endpoints):
+            raise ValueError(f"链接表第 {row} 行端点信息不完整")
+        link_name = values.pop("link_name", "")
+        link_name = link_name or (
+            f"{values['a_device']}:{values['a_interface']} <-> "
+            f"{values['z_device']}:{values['z_interface']}"
+        )
+        links.append(Link(row=row, link_name=link_name, **values))
+    return links
+
+
 def load_topology(path: Path) -> TopologyWorkbook:
     """加载设备与链路，并转换成后续处理器使用的结构化模型。"""
     workbook = load_workbook(path)
@@ -100,19 +123,6 @@ def load_topology(path: Path) -> TopologyWorkbook:
             config_file = str(value).strip() if value else None
         devices.append(Device(name=name, vendor=Vendor.parse(vendor_text), config_file=config_file, row=row))
 
-    # 空行允许存在，但一旦某列有值就要求四个端点字段完整。
-    links: list[Link] = []
-    for row in range(2, link_sheet.max_row + 1):
-        values = {
-            field: str(link_sheet.cell(row, column).value or "").strip()
-            for field, column in link_headers.items()
-        }
-        if not any(values.values()):
-            continue
-        if not all(values.get(field) for field in ("a_device", "a_interface", "z_device", "z_interface")):
-            raise ValueError(f"链接表第 {row} 行端点信息不完整")
-        links.append(Link(row=row, **values))
-
     return TopologyWorkbook(
         path=path,
         workbook=workbook,
@@ -121,7 +131,7 @@ def load_topology(path: Path) -> TopologyWorkbook:
         device_headers=device_headers,
         link_headers=link_headers,
         devices=devices,
-        links=links,
+        links=_load_links(link_sheet, link_headers),
     )
 
 

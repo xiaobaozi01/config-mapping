@@ -26,7 +26,17 @@ def context_for(vendor, filename, count=2):
     device = Device(name, vendor, filename, 2)
     peers = [Device(peer, Vendor.HUAWEI, None, index + 3) for index, peer in enumerate(("P", "Q"))]
     prefix = "Gi0/0/0/" if vendor == Vendor.CISCO_IOSXR else "ge-0/0/"
-    links = [Link(index + 2, name, prefix + str(index), peer.name, "Ethernet0") for index, peer in enumerate(peers[:count])]
+    links = [
+        Link(
+            index + 2,
+            f"link-{index + 2}",
+            name,
+            prefix + str(index),
+            peer.name,
+            "Ethernet0",
+        )
+        for index, peer in enumerate(peers[:count])
+    ]
     topology = TopologyWorkbook(Path("unused.xlsx"), None, "devices", "links", {}, {}, [device, *peers], links)
     profile = load_profiles(None)[vendor]
     return ConversionContext(

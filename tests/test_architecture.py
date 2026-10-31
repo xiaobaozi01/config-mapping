@@ -20,8 +20,8 @@ from impl.juniper import JunosDocument
 class NniPlanningTest(unittest.TestCase):
     def test_same_bundle_and_peer_are_grouped_without_mutating_links(self):
         links = [
-            Link(2, "A", "Gi0", "B", "Gi0"),
-            Link(3, "A", "Gi1", "B", "Gi1"),
+            Link(2, "link-2", "A", "Gi0", "B", "Gi0"),
+            Link(3, "link-3", "A", "Gi1", "B", "Gi1"),
         ]
         bundles = {
             (2, "A"): "Bundle-Ether10",
@@ -39,8 +39,8 @@ class NniPlanningTest(unittest.TestCase):
 
     def test_same_bundle_across_peers_remains_separate_mlag_components(self):
         links = [
-            Link(2, "A", "Gi0", "B", "Gi0"),
-            Link(3, "A", "Gi1", "C", "Gi0"),
+            Link(2, "link-2", "A", "Gi0", "B", "Gi0"),
+            Link(3, "link-3", "A", "Gi1", "C", "Gi0"),
         ]
         bundles = {
             (2, "A"): "Bundle-Ether10",

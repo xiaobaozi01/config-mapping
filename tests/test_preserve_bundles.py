@@ -13,7 +13,20 @@ def context_for(vendor, split_peer=False, filename_override=None):
     filename = filename_override or filename
     ports = ['Hu0/0/0/0', 'Hu0/0/0/1'] if vendor == Vendor.CISCO_IOSXR else ['ge-0/0/10', 'ge-0/0/11']
     devices = [Device(name, vendor, None, row+2) for row, name in enumerate(['A', 'B', 'C'])]
-    topology = TopologyWorkbook(Path('unused'), None, '', '', {}, {}, devices, [Link(i+2, 'A', port, 'C' if split_peer and i else 'B', port) for i, port in enumerate(ports)])
+    links = [
+        Link(
+            index + 2,
+            f'link-{index + 2}',
+            'A',
+            port,
+            'C' if split_peer and index else 'B',
+            port,
+        )
+        for index, port in enumerate(ports)
+    ]
+    topology = TopologyWorkbook(
+        Path('unused'), None, '', '', {}, {}, devices, links,
+    )
     profiles = load_profiles(None)
     loaded = {device.name: DeviceContext(device, FIXTURES/filename, parse_document(vendor.value, (FIXTURES/filename).read_text()), profiles[vendor]) for device in devices}
     return ConversionContext(topology, loaded)

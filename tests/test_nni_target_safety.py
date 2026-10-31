@@ -22,10 +22,26 @@ def context_for(fixture, active_sources, skipped_source, vendor=Vendor.CISCO_IOS
     peer = Device("P", Vendor.HUAWEI, None, 3)
     unavailable = Device("X", Vendor.CISCO_IOSXR, None, 4)
     links = [
-        Link(index + 2, "A", source, "P", f"Ethernet{index}")
+        Link(
+            index + 2,
+            f"link-{index + 2}",
+            "A",
+            source,
+            "P",
+            f"Ethernet{index}",
+        )
         for index, source in enumerate(active_sources)
     ]
-    links.append(Link(len(links) + 2, "A", skipped_source, "X", "Ethernet0"))
+    links.append(
+        Link(
+            len(links) + 2,
+            f"link-{len(links) + 2}",
+            "A",
+            skipped_source,
+            "X",
+            "Ethernet0",
+        )
+    )
     config_path = FIXTURES / fixture
     profile = load_profiles(None)[vendor]
     document = parse_document(vendor.value, config_path.read_text())
