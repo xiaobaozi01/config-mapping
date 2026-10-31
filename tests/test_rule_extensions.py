@@ -15,7 +15,6 @@ from impl.cisco import rules
 from impl.cisco.document import CiscoDocument
 from impl.cisco.interfaces import find_interface_node
 from impl.cisco.rules import examples
-from impl.cisco.rules.compatibility import migrate_ethertype
 from impl.common.outcomes import InterfacePruningOutcome
 from impl.common.policies import SimulationAdaptationPolicy
 from impl.common.rules import AdaptContext, FunctionRule, execute_rules, execute_prune_rules
@@ -100,7 +99,12 @@ class RuleTemplateTest(unittest.TestCase):
         self.assertEqual(outcome.removed_addresses, {"192.0.2.9"})
         self.assertEqual(outcome.changes[0]["rule_id"], "cisco.prune.demo")
         untouched = example_document()
-        self.assertEqual(examples.prune_demo_dependencies(untouched, rules.PruneContext(frozenset())).changes, [])
+        self.assertEqual(
+            examples.PRUNE_DEMO_RULE.apply(
+                untouched, rules.PruneContext(frozenset())
+            ).changes,
+            [],
+        )
 
     def test_simulation_modes_policy_scope_statistics_and_idempotence(self):
         rule = examples.SIMULATE_DEMO_RULE
@@ -146,7 +150,9 @@ class MigratedRulesTest(unittest.TestCase):
         source = find_interface_node(document, "Gi0/0/0/0.200")
         replace_header(document, source.nodes[0], source.nodes[0].header.replace("0x9100", "0x9200"))
         before = document.snapshot
-        result = migrate_ethertype(document, AdaptContext(frozenset({"Gi0/0/0/0"})))
+        result = rules.compatibility.ETHERTYPE_RULE.apply(
+            document, AdaptContext(frozenset({"Gi0/0/0/0"}))
+        )
         self.assertTrue(result.errors)
         self.assertEqual(result.changes, [])
         self.assertIs(document.snapshot, before)

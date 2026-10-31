@@ -729,7 +729,7 @@ simulation_adaptation:
 - `compatible`：保证已映射的数据父接口启用，并删除这些目标口上的 speed、duplex、FEC、协商、链路防抖等物理设备属性。
 - `stable`：包含 compatible 行为，并只对配置中已经存在的 BFD interval/multiplier 执行下限钳制。
 
-适配不会为原本未启用 BFD 的协议或接口新增 BFD，也不会默认修改 OSPF、IS-IS、BGP 的 hello/hold/SPF 等业务定时器。非映射接口不参与接口属性清理。`remove_physical_interface_knobs` 仅控制模拟阶段，不能关闭 Cisco 目标接口的强制兼容处理。处理结果按设备写入 `report.json` 的 `simulation-adaptation` 事件；重复执行不会继续产生变更。旧 `param_adjustment` YAML 节点仍兼容读取，但不能与新节点同时配置。
+适配不会为原本未启用 BFD 的协议或接口新增 BFD，也不会默认修改 OSPF、IS-IS、BGP 的 hello/hold/SPF 等业务定时器。非映射接口不参与接口属性清理。`remove_physical_interface_knobs` 仅控制模拟阶段，不能关闭 Cisco 目标接口的强制兼容处理。处理结果按设备写入 `report.json` 的 `simulation-adaptation` 事件；重复执行不会继续产生变更。
 
 ## 9. 全局接口引用更新
 

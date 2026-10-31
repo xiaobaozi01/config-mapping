@@ -4,15 +4,18 @@ from __future__ import annotations
 
 import copy
 import re
+from collections.abc import Iterable, Sequence
 from dataclasses import dataclass
 from functools import lru_cache
-from typing import Iterable, Sequence
 
 from impl.common.cleaning import CleaningOperation, compile_cleaning_rules
 from impl.common.contracts import VendorConfiguration
 from impl.common.errors import require_invariant
 from impl.common.interface import InterfaceKind, InterfaceSpec, interface_parent
-from impl.common.interface_cache import InterfaceAnalysisCache, copy_interface_specs
+from impl.common.interface_cache import (
+    InterfaceAnalysisCache,
+    copy_interface_specs,
+)
 from impl.common.outcomes import (
     CleanupOutcome,
     GroupExpansionOutcome,
@@ -21,19 +24,8 @@ from impl.common.outcomes import (
     SimulationAdaptationOutcome,
 )
 from impl.common.policies import SimulationAdaptationPolicy, WashingPolicy
-from impl.common.interface import normalized_command as _normalized_command
+
 from .empty_blocks import vmx_empty_block_policy
-
-
-def _junos_statement_identity(command: str, path: list[str] | None = None) -> str:
-    """把旧式 Junos 命令与路径参数转换成 group 语义标识键。
-
-    方法委托统一 identity 解析器，保留该包装层是为了兼容旧内部调用，同时让新旧
-    group 展开入口共享同一条语义冲突判定路径，避免出现不同的合并结果。
-    """
-    from .identity import resolve_junos_identity
-
-    return resolve_junos_identity(command, path=path or []).key
 
 
 def canonical_junos_interface(value: str) -> str:
@@ -80,12 +72,18 @@ def _junos_interface_kind(name: str) -> InterfaceKind:
 
 
 def _resolved_interface_kind(name: str) -> InterfaceKind:
-    """从外部接口写法解析类别，不在模块级保存配置数据。"""
+    """从外部接口写法解析厂商无关类别。
+
+    先规范化名称再分类，使拓扑缩写和配置原文共享同一判断结果且不缓存文档状态。
+    """
     return _junos_interface_kind(canonical_junos_interface(name))
 
 
 def _parse_header_prefixes(header: str) -> tuple[str, bool]:
-    """共享解析状态前缀，返回基础语句与是否包含 inactive 标志。"""
+    """去除 Junos 编辑状态前缀并返回基础语句。
+
+    语义匹配忽略 inactive 和 protect，同时保留 inactive 标志供输出阶段恢复停用状态。
+    """
     result = header.strip()
     inactive = False
     while True:
@@ -99,17 +97,28 @@ def _parse_header_prefixes(header: str) -> tuple[str, bool]:
 
 
 def _is_unit_header(header: str) -> bool:
-    """识别块或叶子形式的 unit，保留原有完整匹配规则。"""
-    return bool(re.fullmatch(r"unit\s+\d+;?", _parse_header_prefixes(header)[0]))
+    """判断 header 是否表示完整 unit 语句。
+
+    同时接受块和分号结尾的叶子，避免接口树中两种合法写法被分类成不同对象。
+    """
+    return bool(
+        re.fullmatch(r"unit\s+\d+;?", _parse_header_prefixes(header)[0])
+    )
 
 
 def _unit_number_from_header(header: str) -> str:
-    """提取已识别 unit 的原始编号字符串。"""
+    """提取 unit 语句中的原始编号。
+
+    保留字符串而非整数，使前导零等原始写法在目标接口名称中保持不变。
+    """
     return _parse_header_prefixes(header)[0].rstrip(";").split(maxsplit=1)[1]
 
 
 def _vlan_from_header(header: str) -> int | None:
-    """解析单条语句的单层或 QinQ 外层 VLAN。"""
+    """解析单层 VLAN 或 QinQ 外层 VLAN。
+
+    非 VLAN 语句返回空值，使调用方可以区分未标记接口和 VLAN 0。
+    """
     statement = _parse_header_prefixes(header)[0]
     match = re.match(r"vlan-id\s+(\d+)\s*;", statement)
     if match:
@@ -119,7 +128,10 @@ def _vlan_from_header(header: str) -> int | None:
 
 
 def _inner_vlan_from_header(header: str) -> int | None:
-    """解析单条 QinQ 语句的内层 VLAN，单层或无标签语句返回 None。"""
+    """解析 QinQ 语句的内层 VLAN。
+
+    只有完整 vlan-tags 结构才返回编号，避免把普通 VLAN 标签误判为双层封装。
+    """
     match = re.match(
         r"vlan-tags\s+outer\s+\d+\s+inner\s+(\d+)\s*;",
         _parse_header_prefixes(header)[0],
@@ -138,8 +150,9 @@ class JunosNode:
     升级而来；空时按 vMX YAML 策略输出。转换中新建的空容器则不输出。
     统一节点模型可递归修改任意层级，同时保留解析器暂时不理解的语句文本。
     """
+
     header: str
-    children: list["JunosNode"] | None = None
+    children: list[JunosNode] | None = None
     active: bool = True
     origin: str = "explicit"
     rank: tuple[int, ...] = (1_000_000, 0)
@@ -166,15 +179,25 @@ class JunosNode:
 
     @property
     def is_comment_only(self) -> bool:
-        """注释独占一行时不参与业务语义，但仍由最终渲染器输出。"""
+        """判断节点是否只承载独立注释。
+
+        独立注释必须保留给输出，但不能进入接口、协议或 group 的业务语义遍历。
+        """
         return self.comment is not None and not self.header
 
     @property
     def effective(self) -> bool:
-        """返回节点是否应参与当前生效配置的语义处理。"""
-        return self.active and not self.configured_inactive and not self.is_comment_only
+        """返回节点是否参与当前生效配置的语义处理。
 
-    def clone(self) -> "JunosNode":
+        活动标记、inactive 前缀和纯注释状态共同决定有效性，避免任一状态被单独忽略。
+        """
+        return (
+            self.active
+            and not self.configured_inactive
+            and not self.is_comment_only
+        )
+
+    def clone(self) -> JunosNode:
         """深拷贝当前节点及其完整子树。
 
         M-LAG 拆分和引用一对多展开都需要从同一源配置生成多个目标；
@@ -184,48 +207,89 @@ class JunosNode:
 
 
 class _JunosHeaderParser:
-    """单个文档持有的字符串解析器，缓存不引用文档或可修改节点。"""
+    """保存单文档使用的可失效字符串解析缓存。
+
+    缓存只依赖不可变 header 文本，不持有节点或文档，避免配置修订后复用旧解析结果。
+    """
 
     def __init__(self) -> None:
-        self.canonical_interface = lru_cache(maxsize=32_768)(canonical_junos_interface)
-        self.interface_kind = lru_cache(maxsize=32_768)(_resolved_interface_kind)
+        """为 header 分类操作建立有界缓存。
+
+        缓存容量与接口和策略规模匹配，重复遍历时仍保持可预测内存上限。
+        """
+        self.canonical_interface = lru_cache(maxsize=32_768)(
+            canonical_junos_interface
+        )
+        self.interface_kind = lru_cache(maxsize=32_768)(
+            _resolved_interface_kind
+        )
         self.header_prefixes = lru_cache(maxsize=32_768)(_parse_header_prefixes)
         self.is_unit = lru_cache(maxsize=32_768)(_is_unit_header)
         self.unit_number = lru_cache(maxsize=32_768)(_unit_number_from_header)
         self.vlan = lru_cache(maxsize=32_768)(_vlan_from_header)
         self.inner_vlan = lru_cache(maxsize=32_768)(_inner_vlan_from_header)
 
-    def __deepcopy__(self, memo: dict[int, object]) -> _JunosHeaderParser:
-        """复制文档时创建空缓存，避免 deepcopy 复用 functools 的包装器。"""
+    def __deepcopy__(self, _memo: dict[int, object]) -> _JunosHeaderParser:
+        """为复制后的文档创建空 header 缓存。
+
+        复制树可能继续独立修改，复用原缓存包装器会返回与当前 header 不一致的结果。
+        """
         return type(self)()
 
     def base_header(self, header: str) -> str:
-        """复用前缀解析结果，返回语义匹配所用的基础文本。"""
+        """返回用于语义匹配的基础 header。
+
+        复用共享前缀解析缓存，使接口、group 和渲染判断采用完全一致的文本语义。
+        """
         return self.header_prefixes(header)[0]
 
     def output_header(self, header: str) -> str:
-        """复用前缀解析结果，输出时移除 protect 并保留 inactive。"""
+        """返回移除 protect 并保留 inactive 的输出 header。
+
+        实验配置不需要编辑保护，但必须继续保留原本停用的节点状态。
+        """
         result, inactive = self.header_prefixes(header)
         return f"inactive: {result}" if inactive else result
 
     def is_effective(self, node: JunosNode) -> bool:
-        """只缓存 header 解析，节点的活动与注释状态实时读取。"""
-        return node.active and not self.header_prefixes(node.header)[1] and not node.is_comment_only
+        """判断节点是否参与当前生效配置。
+
+        header 解析可以缓存，但节点活动和注释会直接变化，因此这些状态始终实时读取。
+        """
+        return (
+            node.active
+            and not self.header_prefixes(node.header)[1]
+            and not node.is_comment_only
+        )
 
 
 class _ReferenceRewriter:
-    """一次映射的文本匹配和 AST 遍历状态，不重复匹配替换结果。"""
+    """保存单次接口引用替换的匹配状态。
 
-    def __init__(self, document: JunosDocument, replacements: dict[str, list[str]]):
+    替换模式只匹配原始名称，使一对多结果不会在同一轮继续被其他映射再次改写。
+    """
+
+    def __init__(
+        self, document: JunosDocument, replacements: dict[str, list[str]]
+    ):
+        """编译来源名称的边界正则并保存目标映射。
+
+        名称按长度倒序拼接，避免较短接口名抢先匹配较长名称的一部分。
+        """
         self.document = document
         self.replacements = replacements
         names = sorted(replacements, key=len, reverse=True)
         self.pattern = re.compile(
-            r"(?<![A-Za-z0-9_.-])(" + "|".join(map(re.escape, names)) + r")(?![A-Za-z0-9_.-])"
+            r"(?<![A-Za-z0-9_.-])("
+            + "|".join(map(re.escape, names))
+            + r")(?![A-Za-z0-9_.-])"
         )
 
     def expand(self, value: str) -> list[str]:
-        """只匹配原命令；一对多时生成独立变体，避免连续映射造成级联。"""
+        """把一个 header 展开为所有目标名称组合。
+
+        同时替换多个来源时会生成独立变体，避免先把一个名称改写后再误命中新结果。
+        """
         matches = list(self.pattern.finditer(value))
         if not matches:
             return [value]
@@ -239,10 +303,15 @@ class _ReferenceRewriter:
                 for target in self.replacements[match.group(1)]
             ]
             cursor = match.end()
-        return list(dict.fromkeys(current + value[cursor:] for current in variants))
+        return list(
+            dict.fromkeys(current + value[cursor:] for current in variants)
+        )
 
     def walk(self, node: JunosNode, path: tuple[str, ...] = ()) -> None:
-        """跳过根 interfaces 的直属定义名称，继续改写定义内部的引用。"""
+        """递归改写有效节点中的接口引用。
+
+        根 interfaces 下的定义名称由迁移步骤负责，仅其内部引用在这里替换，避免重复改名。
+        """
         if not node.active or node.children is None:
             return
         rebuilt = []
@@ -251,9 +320,17 @@ class _ReferenceRewriter:
             if not child.active or child.is_comment_only:
                 rebuilt.append(child)
                 continue
-            variants = [child.header] if path == ("interfaces",) else self.expand(child.header)
+            variants = (
+                [child.header]
+                if path == ("interfaces",)
+                else self.expand(child.header)
+            )
             for header in variants:
-                clone = child if len(variants) == 1 and header == child.header else child.clone()
+                clone = (
+                    child
+                    if len(variants) == 1 and header == child.header
+                    else child.clone()
+                )
                 clone.header = header
                 base = self.document._parser.base_header(header).rstrip(";")
                 self.walk(clone, (*path, base))
@@ -268,6 +345,7 @@ class JunosDocument(VendorConfiguration):
     适配委托给独立厂商模块。这样应用层不需要了解 ``JunosNode``，厂商语法操作也
     能按职责拆分，而仍由一个文档对象维护完整转换状态。
     """
+
     vendor = "juniper_junos"
 
     def __init__(self, text: str):
@@ -306,112 +384,27 @@ class JunosDocument(VendorConfiguration):
         return value
 
     @staticmethod
-    def _expand_inline_fragments(text: str) -> list[tuple[str, str | None, int]]:
-        """拆分行内块，同时保留注释和原始配置的行号。"""
+    def _expand_inline_fragments(
+        text: str,
+    ) -> list[tuple[str, str | None, int]]:
+        """拆分行内块并保留注释和原始行号。
+
+        分号、大括号和块分隔符被拆成独立片段，使后续栈解析与审计定位保持精确。
+        """
         expanded: list[tuple[str, str | None, int]] = []
         quote: str | None = None
         escaped = False
         block_comment = False
 
         for line_number, raw in enumerate(text.splitlines(), start=1):
-            fragments: list[tuple[str, str | None]] = []
-            buffer: list[str] = []
-            index = 0
-
-            def flush() -> None:
-                value = "".join(buffer).strip()
-                buffer.clear()
-                if value:
-                    fragments.append((value, None))
-
-            def attach_comment(comment: str) -> None:
-                flush()
-                if fragments and fragments[-1][0] not in {"}", "};"}:
-                    header, previous = fragments[-1]
-                    fragments[-1] = (
-                        header,
-                        f"{previous} {comment}" if previous else comment,
-                    )
-                else:
-                    fragments.append(("", comment))
-
-            while index < len(raw):
-                character = raw[index]
-
-                if quote is not None:
-                    buffer.append(character)
-                    if escaped:
-                        escaped = False
-                    elif character == "\\":
-                        escaped = True
-                    elif character == quote:
-                        quote = None
-                    index += 1
-                    continue
-
-                if block_comment:
-                    buffer.append(character)
-                    if character == "*" and index + 1 < len(raw) and raw[index + 1] == "/":
-                        buffer.append("/")
-                        block_comment = False
-                        index += 2
-                    else:
-                        index += 1
-                    continue
-
-                if character in {'"', "'"}:
-                    quote = character
-                    buffer.append(character)
-                    index += 1
-                    continue
-
-                if character == "#":
-                    attach_comment(raw[index:].strip())
-                    break
-
-                if character == "/" and index + 1 < len(raw) and raw[index + 1] == "*":
-                    closing = raw.find("*/", index + 2)
-                    if closing != -1:
-                        comment = raw[index : closing + 2]
-                        before = "".join(buffer).strip()
-                        after = raw[closing + 2 :].strip()
-                        if not before or not after:
-                            attach_comment(comment)
-                        else:
-                            buffer.append(comment)
-                        index = closing + 2
-                        continue
-                    block_comment = True
-                    buffer.extend(("/", "*"))
-                    index += 2
-                    continue
-
-                if character == "{":
-                    buffer.append("{")
-                    flush()
-                    index += 1
-                    continue
-
-                if character == ";":
-                    buffer.append(";")
-                    flush()
-                    index += 1
-                    continue
-
-                if character == "}":
-                    flush()
-                    closing = "}"
-                    if index + 1 < len(raw) and raw[index + 1] == ";":
-                        closing = "};"
-                        index += 1
-                    fragments.append((closing, None))
-                    index += 1
-                    continue
-
-                buffer.append(character)
-                index += 1
-
-            flush()
+            fragments, quote, escaped, block_comment = (
+                JunosDocument._scan_inline_line(
+                    raw,
+                    quote,
+                    escaped,
+                    block_comment,
+                )
+            )
             expanded.extend(
                 (header, comment, line_number)
                 for header, comment in (fragments or [("", None)])
@@ -420,12 +413,175 @@ class JunosDocument(VendorConfiguration):
         return expanded
 
     @staticmethod
-    def _expand_inline_blocks(text: str) -> str:
-        """供旧入口查看行内块展开后的文本；解析器使用带注释的片段。"""
-        lines: list[str] = []
-        for header, comment, _ in JunosDocument._expand_inline_fragments(text):
-            lines.append(f"{header} {comment}" if header and comment else header or comment or "")
-        return "\n".join(lines)
+    def _scan_inline_line(
+        raw: str,
+        quote: str | None,
+        escaped: bool,
+        block_comment: bool,
+    ) -> tuple[list[tuple[str, str | None]], str | None, bool, bool]:
+        """扫描一行并返回片段以及跨行词法状态。
+
+        引号和块注释可能跨越换行，状态必须回传给下一行才能避免误拆分内容。
+        """
+        fragments, buffer, index = [], [], 0
+        while index < len(raw):
+            character = raw[index]
+            if quote is not None:
+                index, quote, escaped = JunosDocument._consume_quote(
+                    index, character, quote, escaped, buffer
+                )
+                continue
+            if block_comment:
+                index, block_comment = JunosDocument._consume_block_comment(
+                    raw, index, character, buffer
+                )
+                continue
+            if character in {'"', "'"}:
+                quote = character
+                buffer.append(character)
+                index += 1
+                continue
+            if character == "#":
+                JunosDocument._attach_comment(
+                    fragments, buffer, raw[index:].strip()
+                )
+                break
+            if character == "/" and raw[index : index + 2] == "/*":
+                consumed = JunosDocument._consume_inline_comment(
+                    raw, index, fragments, buffer
+                )
+                if consumed is not None:
+                    index = consumed
+                    continue
+                block_comment = True
+                buffer.extend(("/", "*"))
+                index += 2
+                continue
+            if character in {"{", ";", "}"}:
+                index = JunosDocument._consume_delimiter(
+                    raw, index, fragments, buffer
+                )
+                continue
+            buffer.append(character)
+            index += 1
+        JunosDocument._flush_fragment(fragments, buffer)
+        return fragments, quote, escaped, block_comment
+
+    @staticmethod
+    def _consume_delimiter(
+        raw: str,
+        index: int,
+        fragments: list[tuple[str, str | None]],
+        buffer: list[str],
+    ) -> int:
+        """提交语句或块分隔符并返回下一字符位置。
+
+        大括号和分号需要进入当前语句片段，而闭块分隔符独立成段以保留树层级。
+        """
+        character = raw[index]
+        if character in {"{", ";"}:
+            buffer.append(character)
+            JunosDocument._flush_fragment(fragments, buffer)
+            return index + 1
+        JunosDocument._flush_fragment(fragments, buffer)
+        closing = "};" if raw[index : index + 2] == "};" else "}"
+        fragments.append((closing, None))
+        return index + len(closing)
+
+    @staticmethod
+    def _consume_quote(
+        index: int,
+        character: str,
+        quote: str,
+        escaped: bool,
+        buffer: list[str],
+    ) -> tuple[int, str | None, bool]:
+        """消费引号内的一个字符并维护转义状态。
+
+        只有未转义的匹配引号才结束字符串，避免反斜杠后的引号被提前关闭。
+        """
+        buffer.append(character)
+        if escaped:
+            escaped = False
+        elif character == "\\":
+            escaped = True
+        elif character == quote:
+            quote = None
+        return index + 1, quote, escaped
+
+    @staticmethod
+    def _consume_block_comment(
+        raw: str,
+        index: int,
+        character: str,
+        buffer: list[str],
+    ) -> tuple[int, bool]:
+        """消费跨行块注释并识别结束标记。
+
+        结束符的两个字符一次写入缓冲区，使注释保持原始文本而不被分词破坏。
+        """
+        buffer.append(character)
+        if raw[index : index + 2] == "*/":
+            buffer.append("/")
+            return index + 2, False
+        return index + 1, True
+
+    @staticmethod
+    def _consume_inline_comment(
+        raw: str,
+        index: int,
+        fragments: list[tuple[str, str | None]],
+        buffer: list[str],
+    ) -> int | None:
+        """消费完整行内块注释并返回结束位置。
+
+        注释前后均有配置时保留在原语句中；独占语句位置时作为独立注释片段。
+        """
+        closing = raw.find("*/", index + 2)
+        if closing == -1:
+            return None
+        comment = raw[index : closing + 2]
+        before = "".join(buffer).strip()
+        after = raw[closing + 2 :].strip()
+        if not before or not after:
+            JunosDocument._attach_comment(fragments, buffer, comment)
+        else:
+            buffer.append(comment)
+        return closing + 2
+
+    @staticmethod
+    def _flush_fragment(
+        fragments: list[tuple[str, str | None]],
+        buffer: list[str],
+    ) -> None:
+        """把当前缓冲区提交为无注释片段。
+
+        空缓冲区不产生节点，避免格式空白被错误解释成配置语句。
+        """
+        value = "".join(buffer).strip()
+        buffer.clear()
+        if value:
+            fragments.append((value, None))
+
+    @staticmethod
+    def _attach_comment(
+        fragments: list[tuple[str, str | None]],
+        buffer: list[str],
+        comment: str,
+    ) -> None:
+        """把行内注释附着到前一语句或保留为独立片段。
+
+        紧邻闭块后的注释不附到闭块，防止输出时改变注释所属的层级和阅读位置。
+        """
+        JunosDocument._flush_fragment(fragments, buffer)
+        if fragments and fragments[-1][0] not in {"}", "};"}:
+            header, previous = fragments[-1]
+            fragments[-1] = (
+                header,
+                f"{previous} {comment}" if previous else comment,
+            )
+        else:
+            fragments.append(("", comment))
 
     def _parse(self, text: str) -> None:
         """使用栈把 Junos 大括号文本解析成节点树，并校验括号平衡。
@@ -441,7 +597,9 @@ class JunosDocument(VendorConfiguration):
                 continue
             if header in {"}", "};"}:
                 if len(stack) == 1:
-                    raise ValueError(f"Junos 配置第 {number} 行出现多余右大括号")
+                    raise ValueError(
+                        f"Junos 配置第 {number} 行出现多余右大括号"
+                    )
                 stack.pop()
                 if comment:
                     stack[-1].children.append(JunosNode("", comment=comment))
@@ -473,16 +631,6 @@ class JunosDocument(VendorConfiguration):
         单独决定保留 ``inactive:`` 并移除 ``protect:``。
         """
         return _parse_header_prefixes(header)[0]
-
-    @staticmethod
-    def _output_header(header: str) -> str:
-        """移除输出中无运行意义的 ``protect:``，并保留 ``inactive:``。
-
-        GNS3 配置不需要继承生产设备上的编辑保护；组合前缀会统一重建为
-        ``inactive:`` 加基础语句，确保去保护不会意外激活原本停用的节点。
-        """
-        result, inactive = _parse_header_prefixes(header)
-        return f"inactive: {result}" if inactive else result
 
     def _top_block(self, name: str, create: bool = False) -> JunosNode | None:
         """查找指定活动顶层块，并在请求时创建缺失块。
@@ -525,7 +673,11 @@ class JunosDocument(VendorConfiguration):
         block = self._interfaces_block()
         if not block or block.children is None:
             return []
-        return [node for node in block.children if self._parser.is_effective(node) and node.is_block]
+        return [
+            node
+            for node in block.children
+            if self._parser.is_effective(node) and node.is_block
+        ]
 
     def _interface_name(self, node: JunosNode) -> str:
         """从接口节点 header 的首个字段提取规范化接口名。
@@ -533,7 +685,9 @@ class JunosDocument(VendorConfiguration):
         先移除状态前缀再规范化，可使 ``inactive:``、``protect:`` 或空白差异不影响
         同名节点合并和接口查找。
         """
-        return self.resolve_interface(self._parser.base_header(node.header).split()[0])
+        return self.resolve_interface(
+            self._parser.base_header(node.header).split()[0]
+        )
 
     def _unit_nodes(self, interface: JunosNode) -> list[JunosNode]:
         """列出接口节点下有效的 ``unit`` 子节点，包括空的叶子 unit。
@@ -546,7 +700,8 @@ class JunosDocument(VendorConfiguration):
         return [
             node
             for node in interface.children
-            if self._parser.is_effective(node) and self._parser.is_unit(node.header)
+            if self._parser.is_effective(node)
+            and self._parser.is_unit(node.header)
         ]
 
     def _unit_number(self, node: JunosNode) -> str:
@@ -680,12 +835,14 @@ class JunosDocument(VendorConfiguration):
     def _find_interface_node(self, name: str) -> JunosNode | None:
         """按父接口名查找第一个有效 Junos 接口节点。
 
-        unit 并非顶层节点，因此查找会归一到父口；保留该兼容入口并委托接口模块，
-        可确保所有旧调用方复用相同的规范化和活动状态规则。
+        unit 并非顶层节点，因此查找会归一到父口；委托接口模块可确保调用方
+        复用相同的规范化和活动状态规则。
         """
         return self._interfaces().find_interface_node(self, name)
 
-    def remove_interface(self, name: str, include_children: bool = False) -> None:
+    def remove_interface(
+        self, name: str, include_children: bool = False
+    ) -> None:
         """逻辑停用接口所在的整个 Junos 父节点及其 unit 子树。
 
         Junos unit 天然嵌套在父口中，因此删除父节点即可覆盖子接口；保留
@@ -693,21 +850,29 @@ class JunosDocument(VendorConfiguration):
         """
         self._interfaces().remove_interface(self, name, include_children)
 
-    def rename_interface_tree(self, source: str, target: str, strip_bundle: bool = False) -> None:
+    def rename_interface_tree(
+        self, source: str, target: str, strip_bundle: bool = False
+    ) -> None:
         """重命名整个 Junos 接口节点，并可移除聚合相关 options。
 
         父节点改名会自然携带全部 unit，适合 NNI 暂存与最终落位；迁出 ae 成员时
         清除旧 options，可避免目标物理口继续引用已不存在的聚合关系。
         """
-        self._interfaces().rename_interface_tree(self, source, target, strip_bundle)
+        self._interfaces().rename_interface_tree(
+            self, source, target, strip_bundle
+        )
 
-    def clone_interface_tree(self, source: str, target: str, strip_bundle: bool = False) -> None:
+    def clone_interface_tree(
+        self, source: str, target: str, strip_bundle: bool = False
+    ) -> None:
         """把一棵 Junos 接口子树深拷贝到新目标接口。
 
         M-LAG 可能要求同一 ae 业务按多个对端拆成多份，不能直接改名并消耗唯一源树；
         克隆保留源配置供后续目标继续复制，``strip_bundle`` 防止旧成员选项泄漏。
         """
-        self._interfaces().clone_interface_tree(self, source, target, strip_bundle)
+        self._interfaces().clone_interface_tree(
+            self, source, target, strip_bundle
+        )
 
     def _merge_duplicate_interface(self, preferred: JunosNode) -> None:
         """把同名接口节点的非重复子树合并到首选节点并停用副本。
@@ -718,41 +883,72 @@ class JunosDocument(VendorConfiguration):
         self._interfaces()._merge_duplicate_interface(self, preferred)
 
     def ensure_parent_interface(self, name: str) -> None:
-        """确保 NNI 承载父接口存在，不改变现有封装。"""
+        """确保 NNI 承载父接口存在。
+
+        已有接口保持原 unit 和封装，仅有缺失时创建空父节点，避免伪造业务配置。
+        """
         self._interfaces().ensure_parent_interface(self, name)
 
     def bundle_mode(self, member: str) -> str:
-        """读取成员原协商方式，unknown 表示无法安全判定。"""
+        """读取聚合成员的原协商方式。
+
+        无法确认成员绑定或 LACP 模式时返回 unknown，使迁移流程选择保守失败。
+        """
         from .bundles import bundle_mode
+
         return bundle_mode(self, member)
 
     def adapt_bundle(self, name: str) -> InterfaceAdaptationOutcome:
-        """保留逻辑聚合，按单成员实验调整已有门限。"""
+        """保留逻辑聚合并按单成员实验调整已有门限。
+
+        只改模拟不兼容的成员数和带宽门槛，保留主口类型、地址及引用。
+        """
         from .bundles import adapt_bundle
+
         return adapt_bundle(self, name)
 
     def validate_nni_clone(
-        self, source: str, target_interfaces: set[str],
+        self,
+        source: str,
+        target_interfaces: set[str],
     ) -> InterfaceAdaptationOutcome:
-        """在源树复制前检查三层地址及单值协议源引用。"""
+        """在源接口复制前检查三层地址和单值引用。
+
+        一对多目标无法等价承载单值配置，因此校验必须先于任何克隆或改名。
+        """
         from .clone_constraints import validate_nni_clone
 
         return validate_nni_clone(self, source, target_interfaces)
 
-    def prune_non_nni(self, protected_parents: set[str]) -> InterfacePruningOutcome:
-        """基于原始接口名裁剪接入接口及其可识别依赖。"""
+    def prune_non_nni(
+        self, protected_parents: set[str]
+    ) -> InterfacePruningOutcome:
+        """基于原始接口身份删除非 NNI 接入接口及明确依赖。
+
+        保护集合来自拓扑原始名称，避免迁移后的名称变化扩大或缩小清理范围。
+        """
         from .rules.pruning import prune_non_nni
 
         return prune_non_nni(self, protected_parents)
 
-    def prune_interface_dependencies(self, removed_interfaces: set[str]) -> InterfacePruningOutcome:
-        """清理 NNI 聚合缩减后已删除成员口的可识别引用。"""
+    def prune_interface_dependencies(
+        self, removed_interfaces: set[str]
+    ) -> InterfacePruningOutcome:
+        """清理聚合缩减后已删除成员口的可识别引用。
+
+        只处理指定成员相关依赖，不重新执行全局非 NNI 删除，避免影响其他业务。
+        """
         from .rules.pruning import prune_interface_dependencies
 
         return prune_interface_dependencies(self, removed_interfaces)
 
-    def adapt_interfaces(self, target_interfaces: set[str]) -> InterfaceAdaptationOutcome:
-        """执行已注册的接口适配规则；默认保持原 unit 语义。"""
+    def adapt_interfaces(
+        self, target_interfaces: set[str]
+    ) -> InterfaceAdaptationOutcome:
+        """执行已注册的 Junos 接口适配规则。
+
+        统一入口让后续规则扩展无需修改文档门面，同时默认保留现有 unit 语义。
+        """
         from .rules import adapt_interfaces
 
         return adapt_interfaces(self, target_interfaces)
@@ -760,7 +956,10 @@ class JunosDocument(VendorConfiguration):
     def validate_interfaces(
         self, target_interfaces: set[str], removed_interfaces: set[str]
     ) -> InterfaceAdaptationOutcome:
-        """执行最终接口引用、网关和 unit 约束检查。"""
+        """执行最终接口引用、网关和 unit 约束检查。
+
+        校验在全部迁移和清理之后运行，只报告不允许输出的残留问题。
+        """
         from .rules import validate_interfaces
 
         return validate_interfaces(self, target_interfaces, removed_interfaces)
@@ -778,18 +977,6 @@ class JunosDocument(VendorConfiguration):
         from .rules.simulation import adapt_to_simulation
 
         return adapt_to_simulation(self, policy, data_interfaces)
-
-    def adjust_simulation_parameters(
-        self,
-        policy: SimulationAdaptationPolicy,
-        data_interfaces: set[str],
-    ) -> SimulationAdaptationOutcome:
-        """通过旧方法名调用当前的模拟参数适配入口。
-
-        保留该别名可避免既有调用方立即失效，同时只委托新方法，不复制实现，确保
-        两个入口始终使用同一策略和统计行为。
-        """
-        return self.adapt_to_simulation(policy, data_interfaces)
 
     def clean_management_access(self) -> CleanupOutcome:
         """清除 Junos 原有管理访问和认证配置，并返回分类统计。
@@ -818,50 +1005,113 @@ class JunosDocument(VendorConfiguration):
         action: str,
         value: str | None,
     ) -> int:
-        """通过批量执行器兼容单条删除或替换调用。"""
+        """通过批量执行器运行一条清洗操作。
+
+        单条入口复用批量编译和审计路径，避免维护两套匹配语义。
+        """
         if action == "replace" and value is None:
             value = ""
-        return self.apply_cleaning_rules([CleaningOperation(path, match, action, value)])[0]
+        return self.apply_cleaning_rules(
+            [CleaningOperation(path, match, action, value)]
+        )[0]
 
-    def apply_cleaning_rules(self, operations: Sequence[CleaningOperation]) -> list[int]:
-        """先删除、后替换，每轮每个节点只执行首条匹配规则；返回原输入顺序的计数。"""
+    def apply_cleaning_rules(
+        self, operations: Sequence[CleaningOperation]
+    ) -> list[int]:
+        """按删除、替换顺序执行批量清洗并返回原输入顺序的命中数。
+
+        每轮从最新树快照开始且每个节点只执行首条规则，避免同一轮重复改写和顺序歧义。
+        """
         phases = compile_cleaning_rules(operations)
         hits = [0] * len(operations)
         parser = self._parser
         for phase in phases:
-            def walk(node: JunosNode, ancestors: tuple[str, ...], interface: str | None = None) -> None:
-                if not parser.is_effective(node):
-                    return
-                header = parser.base_header(node.header).rstrip(";").strip()
-                if ancestors == ("interfaces",):
-                    interface = header
-                for operation in phase.candidates(ancestors):
-                    if operation.interface_names is not None and interface not in operation.interface_names:
-                        continue
-                    if not operation.pattern.search(header):
-                        continue
-                    hits[operation.index] += 1
-                    if phase.action == "delete":
-                        node.active = False
-                        return
-                    node.header = operation.pattern.sub(operation.value or "", header) + (
-                        "" if node.is_block else ";"
-                    )
-                    header = parser.base_header(node.header).rstrip(";").strip()
-                    break
-                for child in node.children or []:
-                    walk(child, (*ancestors, header), interface)
-
-            try:
-                for block in self.root.children or []:
-                    walk(block, ())
-            finally:
-                # 断开递归闭包自引用，调用结束后无需等待循环 GC 即可释放缓存。
-                del walk
+            for block in self.root.children or []:
+                self._walk_cleaning_phase(
+                    block,
+                    (),
+                    None,
+                    phase,
+                    hits,
+                    parser,
+                )
         return hits
 
+    def _walk_cleaning_phase(
+        self,
+        node: JunosNode,
+        ancestors: tuple[str, ...],
+        interface: str | None,
+        phase,
+        hits: list[int],
+        parser,
+    ) -> None:
+        """在单个清洗阶段中递归遍历节点并执行匹配操作。
+
+        子接口上下文从 interfaces 层向下传递，使规则可以按完整接口名限制作用范围。
+        """
+        if not parser.is_effective(node):
+            return
+        header = parser.base_header(node.header).rstrip(";").strip()
+        if ancestors == ("interfaces",):
+            interface = header
+        operations = phase.candidates(ancestors)
+        if self._apply_cleaning_phase(
+            node,
+            phase,
+            operations,
+            hits,
+            header,
+            interface,
+        ):
+            return
+        header = parser.base_header(node.header).rstrip(";").strip()
+        for child in node.children or []:
+            self._walk_cleaning_phase(
+                child,
+                (*ancestors, header),
+                interface,
+                phase,
+                hits,
+                parser,
+            )
+
+    @staticmethod
+    def _apply_cleaning_phase(
+        node: JunosNode,
+        phase,
+        operations,
+        hits: list[int],
+        header: str,
+        interface: str | None,
+    ) -> bool:
+        """执行节点上的首条匹配清洗操作。
+
+        删除后立即停止子树遍历，替换则继续使用更新后的 header 定位子节点。
+        """
+        for operation in operations:
+            if (
+                operation.interface_names is not None
+                and interface not in operation.interface_names
+            ):
+                continue
+            if not operation.pattern.search(header):
+                continue
+            hits[operation.index] += 1
+            if phase.action == "delete":
+                node.active = False
+                return True
+            node.header = operation.pattern.sub(
+                operation.value or "", header
+            ) + ("" if node.is_block else ";")
+            return False
+        return False
+
     def replace_references(self, replacements: dict[str, list[str]]) -> None:
-        """改写所有位置的接口引用，接口定义名称由迁移步骤负责。"""
+        """按映射表改写 Junos 配置中的接口引用。
+
+        接口定义名称由迁移步骤处理，本方法只更新定义之外的引用且过滤恒等映射。
+        """
         relevant = {
             self.resolve_interface(source): list(dict.fromkeys(targets))
             for source, targets in replacements.items()
@@ -884,47 +1134,99 @@ class JunosDocument(VendorConfiguration):
             return ""
         indent = "    " * depth
         if node.children is None:
-            header = self._parser.output_header(node.header)
-            if node.comment:
-                header = f"{header} {node.comment}" if header else node.comment
-            return indent + header
+            return self._render_leaf(node, indent)
         path = (*ancestors, self._parser.base_header(node.header))
         opening = indent + self._parser.output_header(node.header) + " {"
         if node.comment:
             opening += " " + node.comment
-        lines = [opening]
+        children, has_statement, standalone_comments = self._render_children(
+            node, depth, path
+        )
+        if not has_statement:
+            return self._render_empty_block(
+                node,
+                indent,
+                opening,
+                path,
+                standalone_comments,
+            )
+        return "\n".join([opening, *children, indent + "}"])
+
+    def _render_leaf(self, node: JunosNode, indent: str) -> str:
+        """渲染叶子节点及其行内注释。
+
+        protect 前缀在输出时移除，inactive 状态则继续保留以维持原节点是否生效。
+        """
+        header = self._parser.output_header(node.header)
+        if node.comment:
+            header = f"{header} {node.comment}" if header else node.comment
+        return indent + header
+
+    def _render_children(
+        self,
+        node: JunosNode,
+        depth: int,
+        path: tuple[str, ...],
+    ) -> tuple[list[str], bool, list[str]]:
+        """渲染子节点并统计有效语句和独立注释。
+
+        分开记录两种内容，使空块策略只由真实语句决定，而注释仍可随块输出。
+        """
+        print_sections: list[str] = []
         has_statement = False
         standalone_comments: list[str] = []
-        for child in node.children:
+        for child in node.children or []:
             rendered = self._render_node(child, depth + 1, path)
-            if rendered:
-                lines.append(rendered)
-                if child.children is not None or child.header.strip():
-                    has_statement = True
-                elif child.is_comment_only:
-                    standalone_comments.append(child.comment)
-        if not has_statement:
-            if not node.declared_in_source:
-                return ""
-            action = vmx_empty_block_policy().action_for(path)
-            if action == "omit":
-                return ""
-            if action == "semicolon":
-                statement = indent + self._parser.output_header(node.header) + ";"
-                if node.comment:
-                    statement += " " + node.comment
-                # 块内独立注释前置，避免被误读为后续兄弟语句的注释。
-                return "\n".join(
-                    [*(indent + comment for comment in standalone_comments), statement]
-                )
+            if not rendered:
+                continue
+            print_sections.append(rendered)
+            if child.children is not None or child.header.strip():
+                has_statement = True
+            elif child.is_comment_only:
+                standalone_comments.append(child.comment)
+        return print_sections, has_statement, standalone_comments
+
+    def _render_empty_block(
+        self,
+        node: JunosNode,
+        indent: str,
+        opening: str,
+        path: tuple[str, ...],
+        standalone_comments: list[str],
+    ) -> str:
+        """按路径策略渲染源码中声明的空块。
+
+        只有源码中原本存在或由叶子升级的块才按镜像策略输出，避免转换过程新建的
+        空容器污染结果；独立注释仍随所选语法保留，以免删除用户信息。
+        """
+        if not node.declared_in_source:
+            return ""
+        action = vmx_empty_block_policy().action_for(path)
+        if action == "omit":
+            return ""
+        if action == "semicolon":
+            statement = indent + self._parser.output_header(node.header) + ";"
+            if node.comment:
+                statement += " " + node.comment
             return "\n".join(
-                [opening, *(indent + "    " + comment for comment in standalone_comments), indent + "}"]
+                [
+                    *(indent + comment for comment in standalone_comments),
+                    statement,
+                ]
             )
-        lines.append(indent + "}")
-        return "\n".join(lines)
+        return "\n".join(
+            [
+                opening,
+                *(indent + "    " + comment for comment in standalone_comments),
+                indent + "}",
+            ]
+        )
 
     def _render_effective_node(self, node: JunosNode, depth: int) -> str:
-        """渲染仅包含当前生效节点的语义视图，不改变最终输出。"""
+        """渲染仅含当前生效节点的语义视图。
+
+        该视图供分析使用且不触发空块策略，避免分析结果改变最终配置输出。
+        """
         if not self._parser.is_effective(node):
             return ""
         indent = "    " * depth
@@ -948,5 +1250,9 @@ class JunosDocument(VendorConfiguration):
             self.root.children is not None,
             "Junos 文档根节点必须可包含子节点",
         )
-        rendered = [self._render_node(node, 0) for node in self.root.children if node.active]
+        rendered = [
+            self._render_node(node, 0)
+            for node in self.root.children
+            if node.active
+        ]
         return "\n".join(item for item in rendered if item).rstrip() + "\n"

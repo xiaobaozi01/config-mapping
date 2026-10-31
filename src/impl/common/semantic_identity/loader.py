@@ -9,8 +9,9 @@ import yaml
 
 from .models import MergeKind, SemanticRule
 
-
-_CAPTURE_NAME_RE = re.compile(r"\{([a-zA-Z_][a-zA-Z0-9_-]*)(?:\.\.\.)?(?::[^}]+)?\}")
+_CAPTURE_NAME_RE = re.compile(
+    r"\{([a-zA-Z_][a-zA-Z0-9_-]*)(?:\.\.\.)?(?::[^}]+)?\}"
+)
 _RULE_KEYS = {"id", "node", "path", "statement", "identity", "merge"}
 
 
@@ -20,8 +21,12 @@ def _string_list(value: object, field: str, rule_id: str) -> tuple[str, ...]:
     规则文件由人手工维护，字段类型错误要尽早报错；返回不可变元组让规则在加载后
     只读使用，也避免后续匹配阶段意外修改模板。
     """
-    if not isinstance(value, list) or not all(isinstance(item, str) and item for item in value):
-        raise ValueError(f"identity 规则 {rule_id} 的 {field} 必须是非空字符串列表")
+    if not isinstance(value, list) or not all(
+        isinstance(item, str) and item for item in value
+    ):
+        raise ValueError(
+            f"identity 规则 {rule_id} 的 {field} 必须是非空字符串列表"
+        )
     return tuple(value)
 
 
@@ -37,32 +42,32 @@ def _parse_rule(raw: object, source: str) -> SemanticRule:
     unknown = sorted(set(raw) - _RULE_KEYS)
     missing = sorted(_RULE_KEYS - set(raw))
     if unknown:
-        raise ValueError(f"{source}: identity 规则包含未知字段: {', '.join(unknown)}")
+        raise ValueError(
+            f"{source}: identity 规则包含未知字段: {', '.join(unknown)}"
+        )
     if missing:
-        raise ValueError(f"{source}: identity 规则缺少字段: {', '.join(missing)}")
+        raise ValueError(
+            f"{source}: identity 规则缺少字段: {', '.join(missing)}"
+        )
     rule_id = raw["id"]
     if not isinstance(rule_id, str) or not rule_id:
         raise ValueError(f"{source}: identity 规则 id 必须是非空字符串")
     node_kind = raw["node"]
     if node_kind not in {"leaf", "block"}:
-        raise ValueError(f"identity 规则 {rule_id} 的 node 必须是 leaf 或 block")
+        raise ValueError(
+            f"identity 规则 {rule_id} 的 node 必须是 leaf 或 block"
+        )
     path = _string_list(raw["path"], "path", rule_id)
     statement = _string_list(raw["statement"], "statement", rule_id)
     identity = _string_list(raw["identity"], "identity", rule_id)
     try:
         merge_kind = MergeKind(raw["merge"])
     except (TypeError, ValueError) as exc:
-        raise ValueError(f"identity 规则 {rule_id} 的 merge 无效: {raw['merge']}") from exc
-
-    captures = set()
-    for value in [*path, *statement]:
-        captures.update(_CAPTURE_NAME_RE.findall(value))
-    used = {name for value in identity for name in _CAPTURE_NAME_RE.findall(value)}
-    missing_captures = sorted(used - captures)
-    if missing_captures:
         raise ValueError(
-            f"identity 规则 {rule_id} 引用了未定义 capture: {', '.join(missing_captures)}"
-        )
+            f"identity 规则 {rule_id} 的 merge 无效: {raw['merge']}"
+        ) from exc
+
+    _validate_captures(path, statement, identity, rule_id)
     return SemanticRule(
         rule_id=rule_id,
         node_kind=node_kind,
@@ -73,17 +78,38 @@ def _parse_rule(raw: object, source: str) -> SemanticRule:
     )
 
 
-def load_rule_pack(
-    directory: Path,
-    *,
-    vendor: str | None = None,
-    image: str | None = None,
-) -> tuple[SemanticRule, ...]:
-    """按 manifest 显式列出的文件加载并校验一个规则包。
+def _validate_captures(
+    path: tuple[str, ...],
+    statement: tuple[str, ...],
+    identity: tuple[str, ...],
+    rule_id: str,
+) -> None:
+    """校验 identity 模板只引用 path 或 statement 中定义的 capture。
 
-    manifest 声明 schema、目标厂商/镜像和规则文件清单；显式清单避免无差别扫描目录
-    引入无关文件，并让目标校验与重复 id 检查在启动时统一完成，保证后续匹配使用的
-    规则集完整且唯一。
+    加载时完成引用检查，避免规则在实际匹配配置时才因模板字段缺失而中断转换。
+    """
+    captures = set()
+    for value in [*path, *statement]:
+        captures.update(_CAPTURE_NAME_RE.findall(value))
+    used = {
+        name for value in identity for name in _CAPTURE_NAME_RE.findall(value)
+    }
+    missing_captures = sorted(used - captures)
+    if missing_captures:
+        raise ValueError(
+            f"identity 规则 {rule_id} 引用了未定义 capture: "
+            f"{', '.join(missing_captures)}"
+        )
+
+
+def _load_manifest(
+    directory: Path,
+    vendor: str | None,
+    image: str | None,
+) -> tuple[Path, list[object]]:
+    """读取并校验规则包 manifest。
+
+    清单显式限定目标镜像和文件列表，避免目录扫描引入无关规则并允许加载前完成目标匹配。
     """
     manifest_path = directory / "manifest.yaml"
     with manifest_path.open("r", encoding="utf-8") as handle:
@@ -98,14 +124,37 @@ def load_rule_pack(
     if image is not None and target.get("image") != image:
         raise ValueError(f"{manifest_path}: target.image 必须为 {image}")
     files = manifest.get("rule_files")
-    if not isinstance(files, list) or not files or not all(isinstance(item, str) for item in files):
+    if (
+        not isinstance(files, list)
+        or not files
+        or not all(isinstance(item, str) for item in files)
+    ):
         raise ValueError(f"{manifest_path}: rule_files 必须是非空字符串列表")
+    return manifest_path, files
+
+
+def load_rule_pack(
+    directory: Path,
+    *,
+    vendor: str | None = None,
+    image: str | None = None,
+) -> tuple[SemanticRule, ...]:
+    """按 manifest 显式列出的文件加载并校验一个规则包。
+
+    manifest 声明 schema、目标厂商/镜像和规则文件清单；显式清单避免无差别扫描目录
+    引入无关文件，并让目标校验与重复 id 检查在启动时统一完成，保证后续匹配使用的
+    规则集完整且唯一。
+    """
+    manifest_path, files = _load_manifest(directory, vendor, image)
 
     rules: list[SemanticRule] = []
     seen: set[str] = set()
     for filename in files:
         rule_path = directory / filename
-        if rule_path.parent != directory or rule_path.suffix not in {".yaml", ".yml"}:
+        if rule_path.parent != directory or rule_path.suffix not in {
+            ".yaml",
+            ".yml",
+        }:
             raise ValueError(f"{manifest_path}: 非法规则文件路径 {filename}")
         with rule_path.open("r", encoding="utf-8") as handle:
             payload = yaml.safe_load(handle) or {}

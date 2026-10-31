@@ -5,12 +5,21 @@ from __future__ import annotations
 from functools import lru_cache
 
 from impl.common.config_paths import config_path
-from impl.common.semantic_identity import SemanticDecision, SemanticResolver, StatementContext, load_rule_pack
+from impl.common.semantic_identity import (
+    SemanticDecision,
+    SemanticResolver,
+    StatementContext,
+    load_rule_pack,
+)
 from impl.common.semantic_identity.matcher import normalize
 
 
 @lru_cache(maxsize=1)
 def _resolver() -> SemanticResolver:
+    """返回共享的 vMX 语义解析器。
+
+    规则包和编译缓存创建成本较高且内容固定，单例缓存可避免每次语句解析重复加载。
+    """
     directory = config_path("rules", "juniper", "vmx")
     return SemanticResolver(
         load_rule_pack(directory, vendor="juniper_junos", image="vmx")
@@ -18,7 +27,10 @@ def _resolver() -> SemanticResolver:
 
 
 def _strip_annotations(statement: str) -> str:
-    """去掉不改变配置槽位的 Junos 节点标记。"""
+    """去掉不改变配置槽位的 Junos 节点标记。
+
+    inactive、protect 和 replace 描述编辑状态而非身份，忽略它们才能正确比较同一槽位。
+    """
     result = normalize(statement)
     while True:
         for prefix in ("inactive:", "protect:", "replace:"):
@@ -35,7 +47,10 @@ def resolve_junos_identity(
     path: list[str] | tuple[str, ...] = (),
     node_kind: str = "leaf",
 ) -> SemanticDecision:
-    """解析 Junos 语句，标记前缀不参与 identity 计算。"""
+    """解析 Junos 语句并返回路径感知的语义决策。
+
+    路径和语句使用同一套去标记规则，避免继承位置相同但显示前缀不同导致错误冲突。
+    """
     return _resolver().resolve(
         StatementContext(
             vendor="juniper_junos",

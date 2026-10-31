@@ -7,7 +7,10 @@ import unittest
 
 from cleaning_support import clean_hardware
 
-from impl.cisco.rules.compatibility import adapt_interfaces, validate_interfaces
+from impl.cisco.rules import (
+    adapt_interfaces,
+    validate_compatibility as validate_interfaces,
+)
 from impl.cisco.document import CiscoDocument
 from impl.cisco.interfaces import clone_interface_tree, ensure_parent_interface, find_interface_node
 

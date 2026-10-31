@@ -14,19 +14,40 @@ if TYPE_CHECKING:
 
 
 class Vendor(StrEnum):
-    """首版识别的设备厂商；枚举值同时作为解析器和 profile 键。"""
+    """定义转换流程识别的设备厂商及其稳定序列化值。
+
+    枚举值同时作为解析器和 profile 键，避免不同模块使用不一致的厂商字符串。
+    """
+
     CISCO_IOSXR = "cisco_iosxr"
     JUNIPER_JUNOS = "juniper_junos"
     HUAWEI = "huawei"
     UNKNOWN = "unknown"
 
     @classmethod
-    def parse(cls, value: str) -> "Vendor":
-        """兼容中英文及常见缩写，将 Excel 厂商文本归一化。"""
+    def parse(cls, value: str) -> Vendor:
+        """把 Excel 中的中英文厂商名称归一化为枚举值。
+
+        接受常见缩写可容忍人工表格差异，未知名称返回 ``UNKNOWN`` 以保留诊断机会。
+        """
         normalized = "".join(value.lower().split()).replace("-", "_")
-        if normalized in {"cisco", "思科", "iosxr", "ios_xr", "ciscoiosxr", "cisco_iosxr"}:
+        if normalized in {
+            "cisco",
+            "思科",
+            "iosxr",
+            "ios_xr",
+            "ciscoiosxr",
+            "cisco_iosxr",
+        }:
             return cls.CISCO_IOSXR
-        if normalized in {"juniper", "瞻博", "junos", "vmx", "juniperjunos", "juniper_junos"}:
+        if normalized in {
+            "juniper",
+            "瞻博",
+            "junos",
+            "vmx",
+            "juniperjunos",
+            "juniper_junos",
+        }:
             return cls.JUNIPER_JUNOS
         if normalized in {"huawei", "华为"}:
             return cls.HUAWEI
@@ -35,7 +56,11 @@ class Vendor(StrEnum):
 
 @dataclass(slots=True)
 class Device:
-    """设备列表中的一行。"""
+    """保存设备列表中的设备身份和配置来源。
+
+    设备名作为后续映射主键，配置文件名与行号则用于定位输入和报告问题。
+    """
+
     name: str
     vendor: Vendor
     config_file: str | None
@@ -44,7 +69,11 @@ class Device:
 
 @dataclass(slots=True)
 class Link:
-    """链接表中的一条物理 NNI；active=False 表示输出时删除。"""
+    """保存链接表中的一条物理 NNI 及两端接口。
+
+    ``active`` 允许预检和聚合缩减在不删除原始行信息的情况下停止下游消费。
+    """
+
     row: int
     link_name: str
     a_device: str
@@ -55,22 +84,20 @@ class Link:
     skip_reason: str | None = None
 
     def endpoints(self) -> tuple[tuple[str, str], tuple[str, str]]:
-        """以统一顺序返回 A/Z 两端的设备名和接口名。"""
+        """以固定顺序返回 A、Z 两端的设备名和接口名。
+
+        固定顺序让分配、校验和报告遍历相同链路时产生稳定结果。
+        """
         return (
             (self.a_device, self.a_interface),
             (self.z_device, self.z_interface),
         )
 
-    def interface_for(self, device_name: str) -> str | None:
-        """读取指定设备在这条链路上的接口。"""
-        if self.a_device == device_name:
-            return self.a_interface
-        if self.z_device == device_name:
-            return self.z_interface
-        return None
-
     def set_interface_for(self, device_name: str, interface: str) -> None:
-        """映射完成后回写指定端点的目标接口。"""
+        """把指定设备端点的接口改写为目标接口。
+
+        只修改匹配端点可让同一链路两端分别按各自镜像分配，而不影响另一端。
+        """
         if self.a_device == device_name:
             self.a_interface = interface
         elif self.z_device == device_name:
@@ -79,7 +106,11 @@ class Link:
 
 @dataclass(slots=True)
 class InterfaceMapping:
-    """一条可审计的源接口到目标接口转换记录。"""
+    """保存一条源接口到目标接口的转换映射。
+
+    设备、动作和原因共同构成审计事实，序列化后可供报告和外部工具复核。
+    """
+
     device: str
     source_interface: str
     role: str
@@ -87,19 +118,22 @@ class InterfaceMapping:
     target_interface: str | None
     link_rows: list[int] = field(default_factory=list)
     reason: str = ""
-    # M-LAG 克隆关系元数据
-    is_mlag_clone: bool = False
-    mlag_group_id: str | None = None
-    mlag_peers: list[str] = field(default_factory=list)
 
     def to_dict(self) -> dict[str, Any]:
-        """转换成可直接写入 JSON 的字典。"""
+        """把映射转换为可直接序列化为 JSON 的字典。
+
+        统一从数据模型导出，避免报告层手工枚举字段而遗漏后续新增信息。
+        """
         return asdict(self)
 
 
 @dataclass(slots=True)
 class ImageProfile:
-    """某厂商 GNS3 镜像按顺序暴露的数据接口。"""
+    """描述目标镜像顺序暴露的接口和模拟适配参数。
+
+    接口顺序是 NNI 稳定分配的依据，策略则限定镜像上允许执行的兼容调整。
+    """
+
     vendor: Vendor
     interfaces: list[str]
     image: str
@@ -109,19 +143,21 @@ class ImageProfile:
     )
 
     @property
-    def param_adjustment(self) -> SimulationAdaptationPolicy:
-        """兼容旧字段名；新代码使用 simulation_adaptation。"""
-        return self.simulation_adaptation
-
-    @property
     def nni_interfaces(self) -> list[str]:
-        """最后三个接口空置或预留，其余接口可分配给 NNI。"""
+        """返回可用于 NNI 分配的接口前缀。
+
+        最后三个接口始终预留，避免迁移占用控制或实验辅助端口。
+        """
         return self.interfaces[:-3]
 
 
 @dataclass(slots=True)
 class DeviceContext:
-    """单台设备在转换过程中的文档、规格、映射和诊断信息。"""
+    """保存单台设备在转换期间的文档、映射和诊断状态。
+
+    所有阶段共享同一上下文对象，使接口删除和映射结果能够跨阶段累积。
+    """
+
     device: Device
     config_path: Path
     document: VendorConfiguration
@@ -140,7 +176,12 @@ class DeviceContext:
         """
         result: dict[str, list[str]] = {}
         for item in self.mappings:
-            if not item.target_interface or item.action in {"remove", "remove-bare", "skip", "preserve"}:
+            if not item.target_interface or item.action in {
+                "remove",
+                "remove-bare",
+                "skip",
+                "preserve",
+            }:
                 continue
             targets = result.setdefault(item.source_interface, [])
             if item.target_interface not in targets:
@@ -150,7 +191,11 @@ class DeviceContext:
 
 @dataclass(slots=True)
 class TopologyWorkbook:
-    """Excel 原对象、字段位置和已解析设备/链路的组合。"""
+    """保存原始 Excel 工作簿、列位置和解析后的拓扑数据。
+
+    同时保留工作簿和字段索引，使转换结束后可以基于原文件安全写出适配副本。
+    """
+
     path: Path
     workbook: Any
     device_sheet: str
@@ -163,7 +208,11 @@ class TopologyWorkbook:
 
 @dataclass(slots=True)
 class ConversionContext:
-    """责任链各处理器共享的一次转换状态。"""
+    """保存一次转换流水线共享的拓扑、设备状态和诊断事件。
+
+    单一上下文让阶段按顺序累积结果，同时通过错误集合统一决定是否短路后续处理。
+    """
+
     topology: TopologyWorkbook
     devices: dict[str, DeviceContext]
     washing_policy: WashingPolicy = field(default_factory=WashingPolicy)
@@ -175,14 +224,20 @@ class ConversionContext:
     external_devices: set[str] = field(default_factory=set)
 
     def add_event(self, kind: str, message: str, **details: Any) -> None:
-        """追加结构化事件；details 中禁止放入认证秘密。"""
+        """追加一条带类型和附加上下文的结构化事件。
+
+        事件只保存可审计元数据，禁止传入认证秘密，以免报告泄漏生产凭据。
+        """
         event = {"kind": kind, "message": message}
         event.update(details)
         self.events.append(event)
 
     @property
     def mappings(self) -> list[InterfaceMapping]:
-        """按设备名稳定汇总所有接口映射。"""
+        """按设备名排序汇总全部接口映射。
+
+        稳定排序让相同输入生成相同报告顺序，便于比较和自动化审计。
+        """
         result: list[InterfaceMapping] = []
         for name in sorted(self.devices):
             result.extend(self.devices[name].mappings)
@@ -190,5 +245,11 @@ class ConversionContext:
 
     @property
     def has_errors(self) -> bool:
-        """全局或任一设备有错误时，整次转换视为失败。"""
-        return bool(self.errors or any(device.errors for device in self.devices.values()))
+        """报告全局或任一设备是否已产生错误。
+
+        全局失败条件集中在一个属性中，避免各阶段自行遗漏设备级错误。
+        """
+        return bool(
+            self.errors
+            or any(device.errors for device in self.devices.values())
+        )

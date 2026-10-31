@@ -2,9 +2,10 @@
 
 from __future__ import annotations
 
-from impl.common.lab_account import JUNOS_LAB_PASSWORD_HASH
 from impl.common.errors import require_invariant
+from impl.common.lab_account import JUNOS_LAB_PASSWORD_HASH
 from impl.common.outcomes import CleanupOutcome
+
 from .document import JunosDocument, JunosNode
 
 
@@ -84,13 +85,37 @@ def clean_management_access(document: JunosDocument) -> CleanupOutcome:
     外部 AAA、SNMP 和远程管理凭据不应进入隔离实验环境，否则既有泄密风险，也可能
     因外部认证服务器不可达而无法登录；与可改变业务能力的可选清洗分开。
     """
-    parser = document._parser
     system = document._top_block("system", create=True)
     require_invariant(
         system is not None and system.children is not None,
         "Junos system 块在 create=True 后必须存在且可包含子节点",
     )
     outcome = CleanupOutcome()
+    _remove_system_auth(document, system, outcome)
+    _clean_system_services(document, system, outcome)
+
+    snmp = document._top_block("snmp")
+    if snmp:
+        snmp.active = False
+        outcome.record("snmp")
+
+    security = document._top_block("security")
+    if security:
+        _disable_matching(
+            document, security, {"ssh-known-hosts"}, "ssh-trust", outcome
+        )
+    return outcome
+
+
+def _remove_system_auth(
+    document: JunosDocument,
+    system: JunosNode,
+    outcome: CleanupOutcome,
+) -> None:
+    """停用 system 下的本地认证、外部 AAA 与 accounting 语句。
+
+    这些生产凭据不应进入隔离实验环境，按关键字集中停用可避免认证路径遗漏。
+    """
     auth_keywords = {
         "login",
         "root-authentication",
@@ -109,6 +134,17 @@ def clean_management_access(document: JunosDocument) -> CleanupOutcome:
             child.active = False
             outcome.record(token)
 
+
+def _clean_system_services(
+    document: JunosDocument,
+    system: JunosNode,
+    outcome: CleanupOutcome,
+) -> None:
+    """停用远程管理服务并清理空 netconf。
+
+    ssh、telnet 与外部认证必须同时处理，否则设备进入实验环境后仍可能依赖不可达服务。
+    """
+    parser = document._parser
     system_services = next(
         (
             child
@@ -130,16 +166,6 @@ def clean_management_access(document: JunosDocument) -> CleanupOutcome:
         )
         _disable_empty_netconf(document, system_services, outcome)
 
-    snmp = document._top_block("snmp")
-    if snmp:
-        snmp.active = False
-        outcome.record("snmp")
-
-    security = document._top_block("security")
-    if security:
-        _disable_matching(document, security, {"ssh-known-hosts"}, "ssh-trust", outcome)
-    return outcome
-
 
 def add_lab_account(document: JunosDocument) -> None:
     """向 ``system`` 块追加实验用 root 认证。
@@ -153,5 +179,8 @@ def add_lab_account(document: JunosDocument) -> None:
         "Junos system 块在 create=True 后必须存在且可包含子节点",
     )
     system.children.append(
-        JunosNode(f'root-authentication encrypted-password "{JUNOS_LAB_PASSWORD_HASH}";')
+        JunosNode(
+            "root-authentication encrypted-password "
+            f'"{JUNOS_LAB_PASSWORD_HASH}";'
+        )
     )

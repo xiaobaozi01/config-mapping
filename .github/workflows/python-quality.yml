@@ -1,0 +1,27 @@
+name: Python quality
+
+on:
+  push:
+  pull_request:
+
+jobs:
+  quality:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+          cache: pip
+      - name: Install dependencies
+        run: pip install -e ".[dev]"
+      - name: Check formatting
+        run: pyink --check --line-length 80 src
+      - name: Lint
+        run: ruff check src
+      - name: Check method lengths
+        run: python scripts/check_method_lengths.py $(find src -name '*.py' -type f)
+      - name: Check docstrings
+        run: python scripts/check_docstrings.py
+      - name: Run tests
+        run: pytest -q

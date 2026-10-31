@@ -8,6 +8,10 @@ from impl.juniper.document import JunosDocument
 
 
 def parse_document(vendor: str, text: str) -> VendorConfiguration:
+    """按规范厂商名称创建对应的配置文档。
+
+    工厂集中处理厂商分派，使上层流程只依赖统一协议而无需条件导入具体解析器。
+    """
     if vendor == "cisco_iosxr":
         return CiscoDocument(text)
     if vendor == "juniper_junos":

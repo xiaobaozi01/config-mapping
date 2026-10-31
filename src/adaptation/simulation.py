@@ -26,7 +26,9 @@ class SimulationAdaptationHandler:
             device = context.devices[device_name]
             policy = device.profile.simulation_adaptation
             data_interfaces = set(target_parents(device, simulation=True))
-            outcome = device.document.adapt_to_simulation(policy, data_interfaces)
+            outcome = device.document.adapt_to_simulation(
+                policy, data_interfaces
+            )
             context.add_event(
                 "simulation-adaptation",
                 f"设备 {device_name} 已按 {policy.mode} 模式适配模拟参数",

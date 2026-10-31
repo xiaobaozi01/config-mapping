@@ -8,9 +8,12 @@ from typing import Protocol
 from .cleaning_rules import CleaningPoint, CleaningRulesHandler
 from .groups import GroupExpansionHandler
 from .interfaces import (
-    FinalInterfaceValidationHandler, InterfaceClassificationHandler,
-    InterfaceCompatibilityHandler, NonNNICleanupHandler,
-    PreconfiguredInterfaceCleanupHandler, ReferenceRewriteHandler,
+    FinalInterfaceValidationHandler,
+    InterfaceClassificationHandler,
+    InterfaceCompatibilityHandler,
+    NonNNICleanupHandler,
+    PreconfiguredInterfaceCleanupHandler,
+    ReferenceRewriteHandler,
 )
 from .models import ConversionContext
 from .nni import NNIHandler
@@ -19,33 +22,50 @@ from .topology import TopologyPreflightHandler
 
 
 class ConversionStage(Protocol):
-    """一个原子转换阶段；阶段只负责自身业务，不持有下游阶段。"""
+    """定义转换流水线中的一个原子阶段。
 
-    def process(self, context: ConversionContext) -> None: ...
+    阶段只读取和更新共享上下文而不持有下游阶段，使顺序调整和独立测试成为可能。
+    """
+
+    def process(self, context: ConversionContext) -> None:
+        """处理共享转换上下文并留下本阶段结果或错误。
+
+        阶段不得自行调用后续阶段，统一由流水线依据错误状态控制是否继续。
+        """
+        ...
 
 
 class ConversionPipeline:
-    """按注册顺序执行阶段，并在首次错误后停止。"""
+    """按注册顺序执行转换阶段。
+
+    遇到任意阶段错误立即停止，避免后续阶段基于不完整或已失败的上下文继续写入。
+    """
 
     def __init__(self, stages: Iterable[ConversionStage]):
+        """冻结阶段注册顺序并创建流水线。
+
+        转成元组可防止运行期间被外部列表修改，保证同一定义每次都按相同顺序执行。
+        """
         self._stages = tuple(stages)
 
     @property
     def stages(self) -> tuple[ConversionStage, ...]:
-        """暴露只读阶段列表，便于测试和定制流程。"""
+        """返回只读阶段序列。
+
+        暴露不可变序列既支持检查实际装配结果，也避免调用方绕过流水线修改阶段。
+        """
         return self._stages
 
-    def handle(self, context: ConversionContext) -> ConversionContext:
-        """兼容原责任链入口。"""
+    def execute(self, context: ConversionContext) -> ConversionContext:
+        """依次执行阶段并返回更新后的上下文。
+
+        每阶段结束后检查统一错误状态，使失败处理集中在流水线而不依赖各阶段约定。
+        """
         for stage in self._stages:
             stage.process(context)
             if context.has_errors:
                 break
         return context
-
-    def execute(self, context: ConversionContext) -> ConversionContext:
-        """应用层语义更明确的新入口。"""
-        return self.handle(context)
 
 
 def build_default_pipeline() -> ConversionPipeline:

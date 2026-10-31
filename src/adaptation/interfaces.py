@@ -4,48 +4,88 @@ from __future__ import annotations
 
 from typing import cast
 
+from impl.cisco.document import CiscoDocument
 from impl.common.interface import InterfaceKind, interface_parent
 from impl.common.outcomes import InterfaceAdaptationOutcome
-from impl.cisco.document import CiscoDocument
+
 from .cleaning_rules import target_parents
 from .models import ConversionContext, InterfaceMapping, Vendor
 
 
 def _report(
-    context: ConversionContext, name: str, kind: str, outcome: InterfaceAdaptationOutcome,
+    context: ConversionContext,
+    name: str,
+    kind: str,
+    outcome: InterfaceAdaptationOutcome,
 ) -> None:
+    """把厂商接口处理结果写入设备状态和全局结构化事件。
+
+    统一补充目标接口来源，使报告能够从目标反向追踪源接口，并集中处理诊断格式。
+    """
     device = context.devices[name]
-    device.errors.extend(f"设备 {name}: {message}" for message in outcome.errors)
-    device.warnings.extend(f"设备 {name}: {message}" for message in outcome.warnings)
+    device.errors.extend(
+        f"设备 {name}: {message}" for message in outcome.errors
+    )
+    device.warnings.extend(
+        f"设备 {name}: {message}" for message in outcome.warnings
+    )
     for change in outcome.changes:
         details = dict(change)
         target = str(change.get("interface", ""))
         if target:
-            details["source_interfaces"] = sorted({
-                mapping.source_interface for mapping in device.mappings
-                if mapping.target_interface == target
-            })
+            details["source_interfaces"] = sorted(
+                {
+                    mapping.source_interface
+                    for mapping in device.mappings
+                    if mapping.target_interface == target
+                }
+            )
             details.setdefault("target_interface", target)
-        context.add_event(kind, f"设备 {name}: {change.get('reason', kind)}", device=name, **details)
+        context.add_event(
+            kind,
+            f"设备 {name}: {change.get('reason', kind)}",
+            device=name,
+            **details,
+        )
     _report_diagnostics(context, name, kind, outcome)
 
 
 def _report_diagnostics(context, name, kind, outcome):
-    for level, messages in (("error", outcome.errors), ("warning", outcome.warnings)):
+    """把规则级错误和告警转换为带来源 ID 的处理器事件。
+
+    同一消息可能由多条规则产生，聚合规则 ID 可保留诊断来源并避免重复事件。
+    """
+    for level, messages in (
+        ("error", outcome.errors),
+        ("warning", outcome.warnings),
+    ):
         for message in messages:
-            rule_ids = list(dict.fromkeys(
-                item["rule_id"] for item in outcome.diagnostics
-                if item["level"] == level and item["message"] == message
-            ))
+            rule_ids = list(
+                dict.fromkeys(
+                    item["rule_id"]
+                    for item in outcome.diagnostics
+                    if item["level"] == level and item["message"] == message
+                )
+            )
             context.add_event(
-                f"{kind}-{level}", message, device=name, rule_ids=rule_ids,
+                f"{kind}-{level}",
+                message,
+                device=name,
+                rule_ids=rule_ids,
             )
 
 
 class PreconfiguredInterfaceCleanupHandler:
-    """在接口分类前忽略 IOS XR 尚未实例化的物理接口候选配置。"""
+    """在接口分类前删除 IOS XR 尚未实例化的接口候选块。
+
+    预配置接口不代表当前拓扑真实存在，提前移除以避免错误占用端口或干扰分类。
+    """
 
     def process(self, context: ConversionContext) -> None:
+        """逐台 Cisco 设备删除预配置接口并记录汇总事件。
+
+        删除通过事务一次提交，避免部分设备或部分接口被移出后影响后续分类一致性。
+        """
         for device_name in sorted(context.devices):
             device = context.devices[device_name]
             if device.device.vendor != Vendor.CISCO_IOSXR:
@@ -109,9 +149,16 @@ class InterfaceClassificationHandler:
 
 
 class NonNNICleanupHandler:
-    """在端口映射前按原始拓扑确定 NNI 保护闭包，裁剪其余接入业务。"""
+    """在端口映射前裁剪不属于 NNI 保留闭包的接口业务。
+
+    保护范围直接来自原始拓扑，包含预检跳过的链路，避免迁移改变 NNI 身份后误删端点。
+    """
 
     def process(self, context: ConversionContext) -> None:
+        """逐设备执行非 NNI 裁剪并记录删除接口与审计结果。
+
+        接口删除先写入设备共享集合，后续引用改写和最终校验才能看到完整的失效范围。
+        """
         for name in sorted(context.devices):
             device = context.devices[name]
             # inactive 的预检跳过行同样保护，避免把暂时缺失的拓扑端点当作 UNI。
@@ -124,10 +171,16 @@ class NonNNICleanupHandler:
             outcome = device.document.prune_non_nni(protected)
             device.removed_interfaces.update(outcome.removed_interfaces)
             for interface in sorted(outcome.removed_interfaces):
-                device.mappings.append(InterfaceMapping(
-                    device=name, source_interface=interface, role="NON_NNI", action="remove",
-                    target_interface=None, reason="非 NNI 接口不参与核心路由实验",
-                ))
+                device.mappings.append(
+                    InterfaceMapping(
+                        device=name,
+                        source_interface=interface,
+                        role="NON_NNI",
+                        action="remove",
+                        target_interface=None,
+                        reason="非 NNI 接口不参与核心路由实验",
+                    )
+                )
             _report(context, name, "non-nni-cleanup", outcome)
 
 
@@ -152,24 +205,44 @@ class ReferenceRewriteHandler:
 
 
 class InterfaceCompatibilityHandler:
-    """对最终目标接口执行必要的类型兼容处理，独立于 BFD 模拟策略。"""
+    """对最终目标接口执行必要的类型兼容处理。
+
+    该处理独立于模拟策略，因为基础接口语法即使关闭可选参数适配也必须可导入。
+    """
 
     def process(self, context: ConversionContext) -> None:
+        """逐设备适配目标接口并汇总变更、告警和错误。
+
+        只传成功 NNI 映射的目标父口，避免兼容规则修改未参与转换的原始业务接口。
+        """
         for name in sorted(context.devices):
             device = context.devices[name]
-            outcome = device.document.adapt_interfaces(set(target_parents(device)))
+            outcome = device.document.adapt_interfaces(
+                set(target_parents(device))
+            )
             _report(context, name, "interface-compatibility", outcome)
 
 
 class FinalInterfaceValidationHandler:
-    """最后一道检查，不能把已知非法配置输出为转换成功。"""
+    """检查最终接口类型和残留引用，阻止非法配置输出。
+
+    校验只读地在所有改写完成后运行，使前面阶段无法用继续修改掩盖已知错误。
+    """
 
     def process(self, context: ConversionContext) -> None:
+        """逐设备收集目标接口和已删除来源并执行最终验证。
+
+        删除集合在验证时即时汇总，确保 preserve 和 skip 映射不会被误判为残留引用。
+        """
         for name in sorted(context.devices):
             device = context.devices[name]
             removed = device.removed_interfaces | {
-                mapping.source_interface for mapping in device.mappings
-                if mapping.role == "NNI" and mapping.action not in {"skip", "preserve"}
+                mapping.source_interface
+                for mapping in device.mappings
+                if mapping.role == "NNI"
+                and mapping.action not in {"skip", "preserve"}
             }
-            outcome = device.document.validate_interfaces(set(target_parents(device)), removed)
+            outcome = device.document.validate_interfaces(
+                set(target_parents(device)), removed
+            )
             _report(context, name, "interface-validation", outcome)

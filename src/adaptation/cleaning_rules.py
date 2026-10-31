@@ -18,23 +18,43 @@ from impl.common.cleaning import CleaningOperation
 from impl.common.config_paths import config_path
 from impl.common.contracts import VendorConfiguration
 from impl.common.interface import InterfaceKind, interface_parent
+
 from .models import ConversionContext, DeviceContext, Vendor
 
+CLEANING_SCOPES = {
+    "document",
+    "compatibility_interfaces",
+    "simulation_interfaces",
+}
 
-CLEANING_SCOPES = {"document", "compatibility_interfaces", "simulation_interfaces"}
 
+def target_parents(
+    device: DeviceContext, *, simulation: bool = False
+) -> frozenset[str]:
+    """返回设备映射中需要清洗的目标接口父口集合。
 
-def target_parents(device: DeviceContext, *, simulation: bool = False) -> frozenset[str]:
+    只纳入成功 NNI 映射的目标口，使清洗范围不会扩散到未参与迁移的原始业务接口。
+    """
     excluded = {"remove", "remove-bare", "skip"} if simulation else {"skip"}
     return frozenset(
-        interface_parent(device.document.resolve_interface(mapping.target_interface))
+        interface_parent(
+            device.document.resolve_interface(mapping.target_interface)
+        )
         for mapping in device.mappings
-        if mapping.role == "NNI" and mapping.target_interface
+        if mapping.role == "NNI"
+        and mapping.target_interface
         and mapping.action not in excluded
     )
 
 
-def resolve_cleaning_scope(scope: str, device: DeviceContext) -> frozenset[str] | None:
+def resolve_cleaning_scope(
+    scope: str, device: DeviceContext
+) -> frozenset[str] | None:
+    """把清洗范围名称解析为厂商文档可执行的接口集合。
+
+    文档范围返回空值表示全局清洗，接口范围则从最终映射推导父口，避免规则依赖原始
+    接口名称或旧拓扑位置。
+    """
     if scope == "document":
         return None
     if scope not in CLEANING_SCOPES:
@@ -47,7 +67,11 @@ def resolve_cleaning_scope(scope: str, device: DeviceContext) -> frozenset[str] 
     parents = target_parents(device, simulation=simulation)
     kinds = {InterfaceKind.PHYSICAL, InterfaceKind.GATEWAY}
     return frozenset(
-        (spec.parent if device.document.vendor == "juniper_junos" else spec.name)
+        (
+            spec.parent
+            if device.document.vendor == "juniper_junos"
+            else spec.name
+        )
         for spec in device.document.interface_specs()
         if spec.parent in parents and (simulation or spec.kind in kinds)
     )
@@ -99,41 +123,65 @@ class ExecutableCleaningRule(Protocol):
 
     @property
     def rule_id(self) -> str:
-        """返回用于报告和定位规则的全局唯一标识。"""
+        """返回用于报告和定位规则的全局唯一标识。
+
+        唯一标识在多规则汇总时承担去重和来源追踪，不能随设备或执行次数变化。
+        """
         raise NotImplementedError
 
     @property
     def vendor(self) -> str:
-        """返回规则适用的厂商配置类型。"""
+        """返回规则适用的厂商配置类型。
+
+        调度层按厂商标识筛选规则，防止 Cisco 规则误作用于 Junos 文档。
+        """
         raise NotImplementedError
 
     @property
     def category(self) -> str:
-        """返回规则变更对象的审计分类。"""
+        """返回规则变更对象的审计分类。
+
+        分类用于聚合命中统计，而具体配置内容不进入报告，以减少噪音和敏感信息泄漏。
+        """
         raise NotImplementedError
 
     @property
     def action(self) -> str:
-        """返回规则执行的动作类型。"""
+        """返回规则执行的动作类型。
+
+        动作决定批量清洗的轮次和模板校验方式，并由统一执行器保持一致。
+        """
         raise NotImplementedError
 
     @property
     def reason(self) -> str:
-        """返回执行该规则的业务原因。"""
+        """返回执行该规则的业务原因。
+
+        原因写入结构化事件，使维护者无需从规则 ID 反推删除或替换的业务依据。
+        """
         raise NotImplementedError
 
     @property
     def point(self) -> CleaningPoint:
-        """返回规则所属的固定流水线执行点。"""
+        """返回规则所属的固定流水线执行点。
+
+        固定执行点避免规则依赖任意阶段下标，并保证分析前后的修改范围可预测。
+        """
         raise NotImplementedError
 
     @property
     def enabled(self) -> bool:
-        """返回规则是否参与执行，统一 YAML 开关和内置规则常量。"""
+        """返回规则是否参与当前执行，并统一 YAML 开关和内置规则常量。
+
+        调度层只读取该属性，因此声明式与代码规则可以用不同方式决定是否启用。
+        """
         raise NotImplementedError
 
     def apply(self, document: VendorConfiguration) -> CleaningResult:
-        """修改一个厂商文档并返回不含敏感值的统计结果。"""
+        """修改一个厂商文档并返回不含敏感值的统计结果。
+
+        规则只报告类别和数量，统一结果模型使调度层无需理解厂商修改细节。
+        """
         ...
 
 
@@ -166,7 +214,10 @@ class ConfiguredCleaningRule:
 
     @property
     def enabled(self) -> bool:
-        """把 YAML 的 ``enable`` 字段适配为统一规则协议。"""
+        """把 YAML 的 ``enable`` 字段适配为统一规则协议。
+
+        直接返回配置值可避免声明式规则另建一套启用判断，同时保持开关含义清晰。
+        """
         return self.enable
 
     def apply(self, document: VendorConfiguration) -> CleaningResult:
@@ -176,7 +227,9 @@ class ConfiguredCleaningRule:
         结果，避免流程层理解 Cisco 与 Junos 的树结构差异。
         """
         if self.scope != "document":
-            raise ValueError("命名范围规则需要通过 CleaningRulesHandler 提供接口上下文")
+            raise ValueError(
+                "命名范围规则需要通过 CleaningRulesHandler 提供接口上下文"
+            )
         hits = document.apply_cleaning_rule(
             self.path,
             self.match,
@@ -207,7 +260,10 @@ class CiscoBannerCleaningRule:
 
     @property
     def enabled(self) -> bool:
-        """始终启用内置 banner 清洗，避免生产提示和站点信息进入实验配置。"""
+        """始终启用内置 banner 清洗。
+
+        banner 可能包含生产环境和站点信息，不能依赖可选配置才能避免泄漏。
+        """
         return True
 
     def apply(self, document: VendorConfiguration) -> CleaningResult:
@@ -250,7 +306,10 @@ class AuthenticationCleaningRule:
 
     @property
     def enabled(self) -> bool:
-        """始终执行认证替换，这是实验配置可接管性的固定要求。"""
+        """始终启用认证替换规则。
+
+        清除生产认证后必须建立实验账号，否则输出设备可能无法登录和接管。
+        """
         return True
 
     def apply(self, document: VendorConfiguration) -> CleaningResult:
@@ -276,16 +335,22 @@ class CleaningRulesHandler:
 
     # YAML 路径与期望厂商成对声明，用于加载时阻止规则放错镜像目录。
     _RULE_SOURCES = (
-        (config_path("rules", "cisco", "xrv9000", "cleaning.yaml"), Vendor.CISCO_IOSXR),
-        (config_path("rules", "juniper", "vmx", "cleaning.yaml"), Vendor.JUNIPER_JUNOS),
+        (
+            config_path("rules", "cisco", "xrv9000", "cleaning.yaml"),
+            Vendor.CISCO_IOSXR,
+        ),
+        (
+            config_path("rules", "juniper", "vmx", "cleaning.yaml"),
+            Vendor.JUNIPER_JUNOS,
+        ),
     )
     # YAML 使用厂商内局部 id，加载时统一生成稳定、全局唯一的报告 id。
-    _VENDOR_PREFIX = {
+    _VENDOR_PREFIX: ClassVar[dict[str, str]] = {
         Vendor.CISCO_IOSXR.value: "cisco",
         Vendor.JUNIPER_JUNOS.value: "juniper",
     }
     # 声明式规则仅开放厂商文档已经实现且可统一审计的动作。
-    _ACTIONS = {"delete", "replace"}
+    _ACTIONS: ClassVar[frozenset[str]] = frozenset({"delete", "replace"})
     # 点号分隔命名层级；每段允许小写字母、数字、下划线和中划线。
     _LOCAL_ID_PATTERN = re.compile(r"^[a-z0-9_-]+(?:\.[a-z0-9_-]+)*$")
 
@@ -307,45 +372,96 @@ class CleaningRulesHandler:
         for device_name in sorted(context.devices):
             device = context.devices[device_name]
             applicable = [
-                rule for rule in self._rules
+                rule
+                for rule in self._rules
                 if rule.enabled
                 and rule.point == self.point
                 and rule.vendor == device.device.vendor.value
             ]
-            configured = [rule for rule in applicable if isinstance(rule, ConfiguredCleaningRule)]
-            configured.sort(key=lambda rule: rule.action != "delete")
-            if configured:
-                counts = device.document.apply_cleaning_rules([
-                    CleaningOperation(
-                        rule.path, rule.match, rule.action, rule.value,
-                        resolve_cleaning_scope(rule.scope, device),
-                    )
-                    for rule in configured
-                ])
-                for rule, hits in zip(configured, counts, strict=True):
-                    if hits:
-                        self._record_result(context, device_name, rule, CleaningResult(changed=hits))
+            if not self._apply_configured(
+                context, device_name, device, applicable
+            ):
+                return
+            if not self._apply_code_rules(
+                context, device_name, device, applicable
+            ):
+                return
 
-            for rule in applicable:
-                if isinstance(rule, ConfiguredCleaningRule):
-                    continue
-                try:
-                    result = rule.apply(device.document)
-                except CleaningRuleError as exc:
-                    message = f"设备 {device_name} 执行清洗规则 {rule.rule_id} 失败: {exc}"
-                    context.errors.append(message)
-                    context.add_event(
-                        "cleaning-rule-error",
-                        message,
-                        device=device_name,
-                        rule_id=rule.rule_id,
-                        category=rule.category,
-                        point=self.point.value,
-                    )
-                    return
-                if not result.changed:
-                    continue
+    def _apply_configured(
+        self,
+        context: ConversionContext,
+        device_name: str,
+        device: DeviceContext,
+        applicable: list[ExecutableCleaningRule],
+    ) -> bool:
+        """执行适用于当前设备的 YAML 清洗规则。
+
+        返回值表示是否可以继续执行代码规则，配置文件会先按动作和输入顺序稳定排序。
+        """
+        configured = [
+            rule
+            for rule in applicable
+            if isinstance(rule, ConfiguredCleaningRule)
+        ]
+        configured.sort(key=lambda rule: rule.action != "delete")
+        if not configured:
+            return True
+        counts = device.document.apply_cleaning_rules(
+            [
+                CleaningOperation(
+                    rule.path,
+                    rule.match,
+                    rule.action,
+                    rule.value,
+                    resolve_cleaning_scope(rule.scope, device),
+                )
+                for rule in configured
+            ]
+        )
+        for rule, hits in zip(configured, counts, strict=True):
+            if hits:
+                self._record_result(
+                    context,
+                    device_name,
+                    rule,
+                    CleaningResult(changed=hits),
+                )
+        return True
+
+    def _apply_code_rules(
+        self,
+        context: ConversionContext,
+        device_name: str,
+        device: DeviceContext,
+        applicable: list[ExecutableCleaningRule],
+    ) -> bool:
+        """执行适用于当前设备的代码规则。
+
+        业务输入错误会记录设备级诊断并返回停止信号，防止不完整清洗进入后续阶段。
+        """
+        for rule in applicable:
+            if isinstance(rule, ConfiguredCleaningRule):
+                continue
+            try:
+                result = rule.apply(device.document)
+            except CleaningRuleError as exc:
+                message = (
+                    f"设备 {device_name} 执行清洗规则 "
+                    f"{rule.rule_id} 失败: {exc}"
+                )
+                context.errors.append(message)
+                context.add_event(
+                    "cleaning-rule-error",
+                    message,
+                    device=device_name,
+                    rule_id=rule.rule_id,
+                    category=rule.category,
+                    point=self.point.value,
+                )
+                return False
+            if result.changed:
                 self._record_result(context, device_name, rule, result)
+        return True
 
     def _record_result(
         self,
@@ -379,7 +495,9 @@ class CleaningRulesHandler:
         )
 
     @staticmethod
-    def _required_string(raw: dict[str, object], field: str, rule_id: str) -> str:
+    def _required_string(
+        raw: dict[str, object], field: str, rule_id: str
+    ) -> str:
         """读取一个必填非空字符串，并在加载阶段报告具体规则和字段。
 
         统一这个基础校验可保持错误格式一致，避免主解析方法重复类型判断。
@@ -418,13 +536,7 @@ class CleaningRulesHandler:
             raise ValueError(f"清洗规则 {rule_id} 包含未知 scope: {scope}")
         reason = cls._required_string(raw, "reason", rule_id)
 
-        allowed = {
-            "id", "vendor", "enable", "category", "path", "match",
-            "action", "reason", "value", "scope",
-        }
-        unknown = sorted(set(raw) - allowed)
-        if unknown:
-            raise ValueError(f"清洗规则 {rule_id} 包含未知字段: {', '.join(unknown)}")
+        cls._validate_fields(raw, rule_id)
         return ConfiguredCleaningRule(
             rule_id=rule_id,
             vendor=vendor,
@@ -439,7 +551,35 @@ class CleaningRulesHandler:
         )
 
     @classmethod
+    def _validate_fields(cls, raw: dict[str, object], rule_id: str) -> None:
+        """拒绝声明式清洗规则中的未知字段。
+
+        加载阶段严格限制字段集合，可让拼写错误直接暴露而不会在运行时被静默忽略。
+        """
+        allowed = {
+            "id",
+            "vendor",
+            "enable",
+            "category",
+            "path",
+            "match",
+            "action",
+            "reason",
+            "value",
+            "scope",
+        }
+        unknown = sorted(set(raw) - allowed)
+        if unknown:
+            raise ValueError(
+                f"清洗规则 {rule_id} 包含未知字段: {', '.join(unknown)}"
+            )
+
+    @classmethod
     def _parse_identity(cls, raw, seen):
+        """校验并生成规则的全局厂商前缀 ID。
+
+        在构造规则前完成格式和跨文件重复检查，确保报告中的规则标识稳定且唯一。
+        """
         local_id = cls._required_string(raw, "id", "<unknown>")
         vendor = cls._required_string(raw, "vendor", local_id)
         if vendor not in cls._VENDOR_PREFIX:
@@ -457,6 +597,10 @@ class CleaningRulesHandler:
 
     @classmethod
     def _parse_matcher(cls, raw, rule_id, match, action):
+        """校验路径、正则和替换模板并返回可执行的匹配参数。
+
+        在删除动作开始前预编译替换模板，可避免只完成一半清洗后才发现规则无效。
+        """
         path_value = raw.get("path")
         if not isinstance(path_value, list) or not all(
             isinstance(component, str) and component for component in path_value
@@ -475,12 +619,16 @@ class CleaningRulesHandler:
         if value is not None and not isinstance(value, str):
             raise ValueError(f"清洗规则 {rule_id} 的 value 必须是字符串")
         if action == "replace" and value is None:
-            raise ValueError(f"清洗规则 {rule_id} 的 replace 动作必须提供 value")
+            raise ValueError(
+                f"清洗规则 {rule_id} 的 replace 动作必须提供 value"
+            )
         if action == "replace":
             try:
                 re.compile(match, re.IGNORECASE).sub(value, "")
             except (re.error, IndexError) as exc:
-                raise ValueError(f"清洗规则 {rule_id} 包含无效替换模板: {exc}") from exc
+                raise ValueError(
+                    f"清洗规则 {rule_id} 包含无效替换模板: {exc}"
+                ) from exc
         return path, value
 
     @classmethod

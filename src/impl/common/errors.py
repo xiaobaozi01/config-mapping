@@ -4,7 +4,11 @@ from __future__ import annotations
 
 
 class InvariantViolation(RuntimeError):
-    """表示程序内部数据结构违反了已建立的不变量。"""
+    """表示程序内部数据结构违反了已建立的不变量。
+
+    该异常只标记程序缺陷而不表示用户输入错误，便于调用方区分可恢复业务失败和
+    必须修复的实现问题。
+    """
 
 
 def require_invariant(condition: bool, message: str) -> None:

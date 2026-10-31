@@ -2,12 +2,13 @@
 
 from __future__ import annotations
 
+from collections.abc import Iterable
 from pathlib import Path
-from typing import Iterable
 
 from openpyxl import load_workbook
 
 from impl.common.interface import interface_parent
+
 from .models import (
     ConversionContext,
     Device,
@@ -17,32 +18,88 @@ from .models import (
     Vendor,
 )
 
-
 DEVICE_SHEET_ALIASES = ("设备列表", "devices", "device list", "device_list")
 LINK_SHEET_ALIASES = ("链接表", "链路表", "links", "link list", "link_list")
 
 DEVICE_COLUMN_ALIASES = {
-    "name": ("设备名称", "设备名", "名称", "device", "device_name", "name", "hostname"),
+    "name": (
+        "设备名称",
+        "设备名",
+        "名称",
+        "device",
+        "device_name",
+        "name",
+        "hostname",
+    ),
     "vendor": ("厂商", "厂家", "vendor", "manufacturer"),
-    "config_file": ("配置文件", "配置文件名", "config", "config_file", "configuration"),
+    "config_file": (
+        "配置文件",
+        "配置文件名",
+        "config",
+        "config_file",
+        "configuration",
+    ),
 }
 
 LINK_COLUMN_ALIASES = {
-    "link_name": ("链路名称", "链接名称", "链路名", "链接名", "link", "link_name"),
-    "a_device": ("a端设备", "源设备", "本端设备", "a_device", "device_a", "source_device"),
-    "a_interface": ("a端接口", "源接口", "本端接口", "a_interface", "interface_a", "source_interface"),
-    "z_device": ("z端设备", "对端设备", "目的设备", "z_device", "device_z", "target_device"),
-    "z_interface": ("z端接口", "对端接口", "目的接口", "z_interface", "interface_z", "target_interface"),
+    "link_name": (
+        "链路名称",
+        "链接名称",
+        "链路名",
+        "链接名",
+        "link",
+        "link_name",
+    ),
+    "a_device": (
+        "a端设备",
+        "源设备",
+        "本端设备",
+        "a_device",
+        "device_a",
+        "source_device",
+    ),
+    "a_interface": (
+        "a端接口",
+        "源接口",
+        "本端接口",
+        "a_interface",
+        "interface_a",
+        "source_interface",
+    ),
+    "z_device": (
+        "z端设备",
+        "对端设备",
+        "目的设备",
+        "z_device",
+        "device_z",
+        "target_device",
+    ),
+    "z_interface": (
+        "z端接口",
+        "对端接口",
+        "目的接口",
+        "z_interface",
+        "interface_z",
+        "target_interface",
+    ),
 }
 
 
 def _normalized(value: object) -> str:
-    """统一表头和 Sheet 名的大小写、空白及下划线。"""
+    """生成用于表头和 Sheet 名匹配的规范文本。
+
+    忽略大小写、空白和下划线可兼容人工表格中的常见书写差异。
+    """
     return "".join(str(value or "").strip().lower().split()).replace("_", "")
 
 
-def _find_sheet(sheet_names: Iterable[str], aliases: tuple[str, ...], kind: str) -> str:
-    """按别名寻找工作表，并保留工作簿中的原始名称。"""
+def _find_sheet(
+    sheet_names: Iterable[str], aliases: tuple[str, ...], kind: str
+) -> str:
+    """按别名定位工作表并返回工作簿中的原始名称。
+
+    保留原名称供 openpyxl 后续访问，同时用规范化比较避免大小写和空白差异。
+    """
     lookup = {_normalized(name): name for name in sheet_names}
     for alias in aliases:
         if _normalized(alias) in lookup:
@@ -50,8 +107,13 @@ def _find_sheet(sheet_names: Iterable[str], aliases: tuple[str, ...], kind: str)
     raise ValueError(f"找不到{kind}工作表，允许名称: {', '.join(aliases)}")
 
 
-def _header_map(sheet, aliases: dict[str, tuple[str, ...]], required: set[str]) -> dict[str, int]:
-    """把逻辑字段名映射到 Excel 列号，同时检查必需列。"""
+def _header_map(
+    sheet, aliases: dict[str, tuple[str, ...]], required: set[str]
+) -> dict[str, int]:
+    """建立逻辑字段到 Excel 列号的映射。
+
+    在读取数据行前验证必需列，使缺列错误带明确工作表上下文而不是变成空值。
+    """
     raw = {
         _normalized(cell.value): cell.column
         for cell in sheet[1]
@@ -66,12 +128,17 @@ def _header_map(sheet, aliases: dict[str, tuple[str, ...]], required: set[str]) 
                 break
     missing = sorted(required - set(result))
     if missing:
-        raise ValueError(f"工作表 {sheet.title} 缺少必需列: {', '.join(missing)}")
+        raise ValueError(
+            f"工作表 {sheet.title} 缺少必需列: {', '.join(missing)}"
+        )
     return result
 
 
 def _load_links(link_sheet, link_headers: dict[str, int]) -> list[Link]:
-    """读取链接表，并为没有显式名称的链路生成稳定的端点名称。"""
+    """读取链接表并构造物理 NNI 列表。
+
+    缺少显式名称时使用稳定端点文本，既兼容现有表格，也不依赖可变行号。
+    """
     links: list[Link] = []
     for row in range(2, link_sheet.max_row + 1):
         values = {
@@ -92,36 +159,62 @@ def _load_links(link_sheet, link_headers: dict[str, int]) -> list[Link]:
     return links
 
 
-def load_topology(path: Path) -> TopologyWorkbook:
-    """加载设备与链路，并转换成后续处理器使用的结构化模型。"""
-    workbook = load_workbook(path)
-    device_sheet_name = _find_sheet(workbook.sheetnames, DEVICE_SHEET_ALIASES, "设备列表")
-    link_sheet_name = _find_sheet(workbook.sheetnames, LINK_SHEET_ALIASES, "链接表")
-    device_sheet = workbook[device_sheet_name]
-    link_sheet = workbook[link_sheet_name]
-    device_headers = _header_map(device_sheet, DEVICE_COLUMN_ALIASES, {"name", "vendor"})
-    link_headers = _header_map(
-        link_sheet,
-        LINK_COLUMN_ALIASES,
-        {"a_device", "a_interface", "z_device", "z_interface"},
-    )
+def _load_devices(device_sheet, device_headers: dict[str, int]) -> list[Device]:
+    """读取设备表并校验设备身份。
 
-    # 设备名是后续所有映射的主键，因此必须非空且全局唯一。
+    设备名是跨阶段主键，因此在构造上下文前拒绝空值和重复名称。
+    """
     devices: list[Device] = []
     seen: set[str] = set()
     for row in range(2, device_sheet.max_row + 1):
-        name = str(device_sheet.cell(row, device_headers["name"]).value or "").strip()
+        name = str(
+            device_sheet.cell(row, device_headers["name"]).value or ""
+        ).strip()
         if not name:
             continue
         if name in seen:
             raise ValueError(f"设备列表存在重复设备名: {name}")
         seen.add(name)
-        vendor_text = str(device_sheet.cell(row, device_headers["vendor"]).value or "").strip()
+        vendor_text = str(
+            device_sheet.cell(row, device_headers["vendor"]).value or ""
+        ).strip()
         config_file = None
         if "config_file" in device_headers:
             value = device_sheet.cell(row, device_headers["config_file"]).value
             config_file = str(value).strip() if value else None
-        devices.append(Device(name=name, vendor=Vendor.parse(vendor_text), config_file=config_file, row=row))
+        devices.append(
+            Device(
+                name=name,
+                vendor=Vendor.parse(vendor_text),
+                config_file=config_file,
+                row=row,
+            )
+        )
+    return devices
+
+
+def load_topology(path: Path) -> TopologyWorkbook:
+    """加载工作簿并构造设备、链路和字段索引。
+
+    保留原始 workbook 用于后续安全写回，同时把业务数据转换为强类型模型。
+    """
+    workbook = load_workbook(path)
+    device_sheet_name = _find_sheet(
+        workbook.sheetnames, DEVICE_SHEET_ALIASES, "设备列表"
+    )
+    link_sheet_name = _find_sheet(
+        workbook.sheetnames, LINK_SHEET_ALIASES, "链接表"
+    )
+    device_sheet = workbook[device_sheet_name]
+    link_sheet = workbook[link_sheet_name]
+    device_headers = _header_map(
+        device_sheet, DEVICE_COLUMN_ALIASES, {"name", "vendor"}
+    )
+    link_headers = _header_map(
+        link_sheet,
+        LINK_COLUMN_ALIASES,
+        {"a_device", "a_interface", "z_device", "z_interface"},
+    )
 
     return TopologyWorkbook(
         path=path,
@@ -130,7 +223,7 @@ def load_topology(path: Path) -> TopologyWorkbook:
         link_sheet=link_sheet_name,
         device_headers=device_headers,
         link_headers=link_headers,
-        devices=devices,
+        devices=_load_devices(device_sheet, device_headers),
         links=_load_links(link_sheet, link_headers),
     )
 
@@ -140,7 +233,10 @@ def write_adapted_topology(
     output: Path,
     config_files: dict[str, str] | None = None,
 ) -> None:
-    """复制原工作簿，改写有效链路并删除被扁平化的冗余行。"""
+    """基于原始工作簿写出适配后的拓扑副本。
+
+    重新读取源文件并自下而上删除冗余行，避免改变内存中的解析对象或后续行号。
+    """
 
     # 重新加载源文件，确保内存中的解析对象和原始文件都不被修改。
     workbook = load_workbook(topology.path)
@@ -154,7 +250,9 @@ def write_adapted_topology(
         sheet.cell(row, topology.link_headers["z_interface"], link.z_interface)
 
     # 必须从下往上删行，否则前面删除后会改变后续行号。
-    for row in sorted((link.row for link in topology.links if not link.active), reverse=True):
+    for row in sorted(
+        (link.row for link in topology.links if not link.active), reverse=True
+    ):
         sheet.delete_rows(row, 1)
 
     if config_files and "config_file" in topology.device_headers:
@@ -168,6 +266,8 @@ def write_adapted_topology(
 
     output.parent.mkdir(parents=True, exist_ok=True)
     workbook.save(output)
+
+
 class TopologyPreflightHandler:
     """在配置改写前划定本次转换能够安全处理的拓扑链路范围。
 
@@ -191,35 +291,55 @@ class TopologyPreflightHandler:
         """
         topology_devices = {device.name for device in context.topology.devices}
         for link in context.topology.links:
-            missing = [name for name, _ in link.endpoints() if name not in topology_devices]
-            if missing:
-                link.active = False
-                link.skip_reason = f"端点设备未出现在设备列表: {', '.join(missing)}"
-                context.errors.append(f"链接表第 {link.row} 行：{link.skip_reason}")
-                self._record_skipped_endpoints(context, link, link.skip_reason)
-                continue
-            if all(
-                device_name in context.devices
-                or device_name in context.external_devices
-                for device_name, _ in link.endpoints()
-            ):
-                continue
-            link.active = False
-            link.skip_reason = "端点包含无法识别或不在支持范围内的设备"
-            self._record_skipped_endpoints(context, link, link.skip_reason)
-            context.warnings.append(f"链接表第 {link.row} 行已跳过：{link.skip_reason}")
-            context.add_event(
-                "skip-link",
-                f"跳过链接表第 {link.row} 行",
-                row=link.row,
-                reason=link.skip_reason,
-            )
+            self._preflight_link(context, link, topology_devices)
 
         context.add_event(
             "topology-preflight",
             "拓扑链路预检完成",
-            active_links=sum(1 for link in context.topology.links if link.active),
-            skipped_links=sum(1 for link in context.topology.links if not link.active),
+            active_links=sum(
+                1 for link in context.topology.links if link.active
+            ),
+            skipped_links=sum(
+                1 for link in context.topology.links if not link.active
+            ),
+        )
+
+    def _preflight_link(
+        self,
+        context: ConversionContext,
+        link: Link,
+        topology_devices: set[str],
+    ) -> None:
+        """校验一条链路的设备完整性和转换范围。
+
+        不合法链路会停用并保留跳过映射，使后续阶段既不消费它，也不会误删其 NNI 身份。
+        """
+        missing = [
+            name for name, _ in link.endpoints() if name not in topology_devices
+        ]
+        if missing:
+            link.active = False
+            link.skip_reason = f"端点设备未出现在设备列表: {', '.join(missing)}"
+            context.errors.append(f"链接表第 {link.row} 行：{link.skip_reason}")
+            self._record_skipped_endpoints(context, link, link.skip_reason)
+            return
+        if all(
+            device_name in context.devices
+            or device_name in context.external_devices
+            for device_name, _ in link.endpoints()
+        ):
+            return
+        link.active = False
+        link.skip_reason = "端点包含无法识别或不在支持范围内的设备"
+        self._record_skipped_endpoints(context, link, link.skip_reason)
+        context.warnings.append(
+            f"链接表第 {link.row} 行已跳过：{link.skip_reason}"
+        )
+        context.add_event(
+            "skip-link",
+            f"跳过链接表第 {link.row} 行",
+            row=link.row,
+            reason=link.skip_reason,
         )
 
     @staticmethod
@@ -239,7 +359,9 @@ class TopologyPreflightHandler:
             device = context.devices.get(device_name)
             if not device:
                 continue
-            source = interface_parent(device.document.resolve_interface(raw_interface))
+            source = interface_parent(
+                device.document.resolve_interface(raw_interface)
+            )
             logical = device.document.bundle_members().get(source)
             for reserved in dict.fromkeys((source, logical)):
                 if not reserved:

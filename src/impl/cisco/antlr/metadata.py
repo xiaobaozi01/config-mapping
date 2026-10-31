@@ -5,6 +5,11 @@ from itertools import accumulate
 
 
 def retain_block_modes(original, candidate, operations, header_operations):
+    """把原解析树中的块语义传播到重写后的候选上下文。
+
+    文本重写可能丢失空块的 token 结构，依据操作区间映射原块标记可避免输出时把
+    原本的空容器误降级为叶子语句。
+    """
     events, ranges = {}, []
     for order, (start, stop, text, _, context, _) in enumerate(operations):
         begin = original.tokens.tokens[start].start
@@ -16,7 +21,10 @@ def retain_block_modes(original, candidate, operations, header_operations):
     deltas = list(accumulate(events[position] for position in positions))
     ranges.sort(key=lambda item: item[0])
     starts = [item[0] for item in ranges]
-    contexts = {context.start.start: context for context in candidate.root.walk(include_formatting=True)}
+    contexts = {
+        context.start.start: context
+        for context in candidate.root.walk(include_formatting=True)
+    }
     for context in original.root.walk(include_formatting=True):
         if not context.is_block:
             continue
@@ -24,7 +32,9 @@ def retain_block_modes(original, candidate, operations, header_operations):
         selected = bisect_right(starts, offset) - 1
         if selected >= 0:
             begin, end, order, target = ranges[selected]
-            if begin <= offset < end and not (order in header_operations and target is context):
+            if begin <= offset < end and not (
+                order in header_operations and target is context
+            ):
                 continue
         event = bisect_right(positions, offset) - 1
         updated = contexts.get(offset + (deltas[event] if event >= 0 else 0))

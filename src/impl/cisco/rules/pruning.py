@@ -4,22 +4,33 @@ from __future__ import annotations
 
 import ipaddress
 import re
+from contextlib import suppress
 
 from impl.common.interface import InterfaceKind, interface_parent
 from impl.common.outcomes import InterfacePruningOutcome
-from ..document import CiscoDocument, CiscoContext, canonical_cisco_interface, _CISCO_INTERFACE_TOKEN
+
+from ..document import (
+    _CISCO_INTERFACE_TOKEN,
+    CiscoContext,
+    CiscoDocument,
+    canonical_cisco_interface,
+)
 from ..interfaces import interface_nodes
 from .support import CiscoRuleVisitor, CiscoVisitorRule, document_scope
-
 
 # 整个接口 token 一次规范化，避免 Gi/BE 缩写和主口/子口前缀误匹配。
 _ADDRESS = re.compile(r"^(?:ipv4|ipv6)\s+address\s+(\S+)", re.I)
 
 
-def interface_references(document: CiscoDocument, text: str, names: set[str]) -> set[str]:
-    """只返回完整、规范化后属于给定集合的接口 token。"""
+def interface_references(text: str, names: set[str]) -> set[str]:
+    """返回文本中属于指定集合的完整接口引用。
+
+    先排除桥域和描述等定义性语句，再使用规范化名称可避免把相似接口误判为引用。
+    """
     # 桥组/桥域的标识符可以恰好等于 BVI 名称，它们是定义名称而非引用。
-    if re.match(r"^(?:bridge\s+group|bridge-domain|description|remark)\b", text, re.I):
+    if re.match(
+        r"^(?:bridge\s+group|bridge-domain|description|remark)\b", text, re.I
+    ):
         return set()
     indexed = {name.lower(): name for name in names}
     return {
@@ -30,18 +41,24 @@ def interface_references(document: CiscoDocument, text: str, names: set[str]) ->
 
 
 def _addresses(block: CiscoContext) -> set[str]:
+    """收集接口块子树中的已配置 IP 地址。
+
+    无效或未编号前缀会被忽略，使地址清理只跟踪能够明确归类的本地地址。
+    """
     result: set[str] = set()
     for child in block.walk():
         match = _ADDRESS.match(child.header)
         if match:
-            try:
+            with suppress(ValueError):
                 result.add(str(ipaddress.ip_interface(match.group(1)).ip))
-            except ValueError:
-                pass  # negotiated/unnumbered 不代表已配置本地地址。
     return result
 
 
 def _walk(nodes: list[CiscoContext], path: tuple[str, ...] = ()):
+    """递归遍历活动 Cisco 节点及完整命令路径。
+
+    跳过格式节点可让依赖分析只处理实际配置，同时保留报告定位所需的祖先路径。
+    """
     for node in nodes:
         if not node.active or node.is_formatting:
             continue
@@ -51,88 +68,187 @@ def _walk(nodes: list[CiscoContext], path: tuple[str, ...] = ()):
 
 
 class _BgpSourcePruner:
-    """解析 BGP 源继承并按存活会话清理失效配置。"""
+    """分析 BGP 邻居和模板的本地源继承。
 
-    def __init__(self, document, removed_interfaces, removed_addresses,
-                 retained_addresses, outcome, record):
+    只有完整解析继承关系后才能判断哪些邻居或模板失去源地址，避免局部文本误删。
+    """
+
+    def __init__(
+        self,
+        document,
+        removed_interfaces,
+        removed_addresses,
+        retained_addresses,
+        outcome,
+        record,
+    ):
+        """保存待分析文档、删除集合和结果回调。
+
+        地址集合在构造时转为独立集合，避免后续接口裁剪修改输入数据。
+        """
         self.document = document
         self.removed_interfaces = removed_interfaces
-        self.all_removed_addresses = set().union(*removed_addresses.values()) if removed_addresses else set()
+        self.all_removed_addresses = (
+            set().union(*removed_addresses.values())
+            if removed_addresses
+            else set()
+        )
         self.retained_addresses = retained_addresses
         self.outcome = outcome
         self.record = record
 
     def vrf_for(self, path: tuple[str, ...]) -> str:
-        return next((header.split(maxsplit=1)[1] for header in reversed(path)
-                     if re.match(r"^vrf\s+", header, re.I)), "")
+        """返回命令路径中最近的 VRF 名称。
+
+        同名地址可能在不同 VRF 中并存，逐路径解析可避免跨实例误判源地址存活。
+        """
+        return next(
+            (
+                header.split(maxsplit=1)[1]
+                for header in reversed(path)
+                if re.match(r"^vrf\s+", header, re.I)
+            ),
+            "",
+        )
 
     def source_key(self, value: str) -> tuple[str, str]:
+        """把 local-address 值区分为 IP 地址或接口名称。
+
+        两类源使用不同存活判断，先分类可避免把接口字符串当 IP 解析。
+        """
         try:
             return "address", str(ipaddress.ip_address(value))
         except ValueError:
             return "interface", self.document.resolve_interface(value)
 
     def source_lost(self, source: tuple[str, str], vrf: str) -> bool:
+        """判断一个本地源是否已被裁剪。
+
+        接口源依赖删除集合，IP 源还必须在同一 VRF 中不存在保留地址。
+        """
         kind, value = source
         if kind == "interface":
-            return bool(interface_references(self.document, value, self.removed_interfaces))
+            return bool(interface_references(value, self.removed_interfaces))
         # 全局模板的 IP 源也必须在实际邻居的 VRF 内存在，不能借用别的 VRF。
-        return value in self.all_removed_addresses and value not in self.retained_addresses.get(vrf, set())
+        return (
+            value in self.all_removed_addresses
+            and value not in self.retained_addresses.get(vrf, set())
+        )
 
     def source_interfaces(self, source: tuple[str, str]) -> set[str]:
+        """返回本地源关联的已裁剪接口名称。
+
+        纯 IP 源没有直接接口身份，因此返回空集合供审计记录使用。
+        """
         if source[0] == "interface":
-            return interface_references(self.document, source[1], self.removed_interfaces)
+            return interface_references(source[1], self.removed_interfaces)
         return set()
 
     def index(self, root):
-        self.sessions: dict[int, tuple[CiscoContext, tuple[str, ...], bool]] = {}
+        """建立 BGP 会话、模板、源值和 use 引用索引。
+
+        先完成只读索引再分析，使后续删除决策基于同一份原始配置。
+        """
+        self.sessions: dict[int, tuple[CiscoContext, tuple[str, ...], bool]] = (
+            {}
+        )
         self.templates: dict[tuple[tuple[str, ...], str, str], list[int]] = {}
-        self.statements: dict[int, tuple[CiscoContext, tuple[str, ...], tuple[str, str]]] = {}
+        self.statements: dict[
+            int, tuple[CiscoContext, tuple[str, ...], tuple[str, str]]
+        ] = {}
         self.direct: dict[int, dict[tuple[str, str], set[int]]] = {}
         self.uses: dict[int, list[tuple[str, str]]] = {}
         for node, path in _walk([root]):
-            match = re.fullmatch(r"(neighbor|neighbor-group|session-group)\s+(.+)", node.header, re.I)
-            if not match:
+            self._index_session(node, path)
+
+    def _index_session(self, node, path) -> None:
+        """索引 BGP 邻居、模板及其直接源和 use 引用。
+
+        路径和模板种类一起保存，使后续可按词法作用域解析正确的继承目标。
+        """
+        match = re.fullmatch(
+            r"(neighbor|neighbor-group|session-group)\s+(.+)",
+            node.header,
+            re.I,
+        )
+        if not match:
+            return
+        identity = id(node)
+        kind, name = match.group(1).lower(), match.group(2)
+        self.sessions[identity] = node, path, kind != "neighbor"
+        if kind != "neighbor":
+            self.templates.setdefault((path[:-1], kind, name), []).append(
+                identity
+            )
+        self.direct[identity] = {}
+        self.uses[identity] = []
+        for child in node.nodes:
+            if not child.active or child.is_formatting:
                 continue
-            identity = id(node)
-            kind, name = match.group(1).lower(), match.group(2)
-            self.sessions[identity] = node, path, kind != "neighbor"
-            if kind != "neighbor":
-                self.templates.setdefault((path[:-1], kind, name), []).append(identity)
-            self.direct[identity] = {}
-            self.uses[identity] = []
-            for child in node.nodes:
-                if not child.active or child.is_formatting:
-                    continue
-                source = re.fullmatch(r"(?:update-source|local-address)\s+(.+)", child.header, re.I)
-                if source:
-                    key = self.source_key(source.group(1).strip())
-                    self.direct[identity].setdefault(key, set()).add(id(child))
-                    self.statements[id(child)] = child, (*path, child.header), key
-                use = re.fullmatch(r"use\s+(neighbor-group|session-group)\s+(\S+)", child.header, re.I)
-                if use:
-                    self.uses[identity].append((use.group(1).lower(), use.group(2)))
+            source = re.fullmatch(
+                r"(?:update-source|local-address)\s+(.+)",
+                child.header,
+                re.I,
+            )
+            if source:
+                key = self.source_key(source.group(1).strip())
+                self.direct[identity].setdefault(key, set()).add(id(child))
+                self.statements[id(child)] = (
+                    child,
+                    (*path, child.header),
+                    key,
+                )
+            use = re.fullmatch(
+                r"use\s+(neighbor-group|session-group)\s+(\S+)",
+                child.header,
+                re.I,
+            )
+            if use:
+                self.uses[identity].append((use.group(1).lower(), use.group(2)))
 
     def link_templates(self):
-        self.edges: dict[int, list[int]] = {identity: [] for identity in self.sessions}
+        """把会话的 use 引用解析为模板依赖边。
+
+        缺失或重复定义会记录错误，防止基于不确定继承关系清理配置。
+        """
+        self.edges: dict[int, list[int]] = {
+            identity: [] for identity in self.sessions
+        }
         self.errors: set[str] = set()
         for identity, references in self.uses.items():
             _, path, _ = self.sessions[identity]
             for kind, name in references:
                 candidates = [
-                    (scope, ids) for (scope, template_kind, template_name), ids in self.templates.items()
-                    if template_kind == kind and template_name == name and path[:len(scope)] == scope
+                    (scope, ids)
+                    for (
+                        scope,
+                        template_kind,
+                        template_name,
+                    ), ids in self.templates.items()
+                    if template_kind == kind
+                    and template_name == name
+                    and path[: len(scope)] == scope
                 ]
                 if not candidates:
-                    self.errors.add(f"BGP 本地源继承无法解析: {' / '.join(path)} 引用缺失的 {kind} {name}")
+                    self.errors.add(
+                        f"BGP 本地源继承无法解析: {' / '.join(path)} 引用缺失的 {kind} {name}"
+                    )
                     continue
                 _, ids = max(candidates, key=lambda item: len(item[0]))
                 if len(ids) != 1:
-                    self.errors.add(f"BGP 本地源继承无法确定: {' / '.join(path)} 引用重复的 {kind} {name}")
+                    self.errors.add(
+                        f"BGP 本地源继承无法确定: {' / '.join(path)} 引用重复的 {kind} {name}"
+                    )
                     continue
                 self.edges[identity].append(ids[0])
 
-    def effective(self, identity: int, visiting: set[int]) -> dict[tuple[str, str], set[int]]:
+    def effective(
+        self, identity: int, visiting: set[int]
+    ) -> dict[tuple[str, str], set[int]]:
+        """计算一个会话最终生效的本地源集合。
+
+        显式源优先于模板，递归访问集合同时用于检测循环和缓存结果。
+        """
         if identity in self.resolved:
             return self.resolved[identity]
         _, path, _ = self.sessions[identity]
@@ -143,23 +259,55 @@ class _BgpSourcePruner:
         values = {key: set(ids) for key, ids in self.direct[identity].items()}
         if not values:
             for target in self.edges[identity]:
-                for key, ids in self.effective(target, visiting | {identity}).items():
+                for key, ids in self.effective(
+                    target, visiting | {identity}
+                ).items():
                     values.setdefault(key, set()).update(ids)
         if len(values) > 1:
-            self.errors.add(f"BGP 有效本地源冲突，无法安全裁剪: {' / '.join(path)}")
+            self.errors.add(
+                f"BGP 有效本地源冲突，无法安全裁剪: {' / '.join(path)}"
+            )
         self.resolved[identity] = values
         return values
 
     def prune_sessions(self):
+        """协调会话分类、模板依赖和失效源语句清理。
+
+        先确定保留闭包再判断删除，避免删除仍被健康会话依赖的共享模板。
+        """
+        required, used_statements, affected_templates = (
+            self._classify_sessions()
+        )
+        self._include_template_dependencies(required)
+        self._remove_lost_templates(required, affected_templates)
+        self._remove_unused_template_sources(required, used_statements)
+
+    def _classify_sessions(
+        self,
+    ) -> tuple[set[int], set[int], set[int]]:
+        """区分保留、失效和失去本地源的会话。
+
+        模板与会话使用不同删除策略，分类结果同时携带仍需保留的源语句 ID。
+        """
         required: set[int] = set()
         used_statements: set[int] = set()
         affected_templates: set[int] = set()
         for identity, (node, path, template) in self.sessions.items():
             values = self.resolved[identity]
-            lost = any(self.source_lost(source, self.vrf_for(path)) for source in values)
+            lost = any(
+                self.source_lost(source, self.vrf_for(path))
+                for source in values
+            )
             if not template and lost:
-                refs = set().union(*(self.source_interfaces(source) for source in values))
-                self.record(node, path, "BGP 有效本地源依赖已裁剪接口或地址，删除整个邻居", refs)
+                refs = set().union(
+                    *(self.source_interfaces(source) for source in values)
+                )
+                self.record(
+                    node,
+                    path,
+                    "BGP 有效本地源依赖已裁剪接口或地址，删除整个邻居",
+                    refs,
+                )
             elif template and lost:
                 affected_templates.add(identity)
             else:
@@ -167,7 +315,13 @@ class _BgpSourcePruner:
                 if not template:
                     for ids in values.values():
                         used_statements.update(ids)
+        return required, used_statements, affected_templates
 
+    def _include_template_dependencies(self, required: set[int]) -> None:
+        """把保留会话依赖的全部模板加入闭包。
+
+        递归依赖边可保留多级 use 链，避免只检查直接引用而误删上游模板。
+        """
         pending = list(required)
         while pending:
             identity = pending.pop()
@@ -175,10 +329,37 @@ class _BgpSourcePruner:
                 if target not in required:
                     required.add(target)
                     pending.append(target)
+
+    def _remove_lost_templates(
+        self,
+        required: set[int],
+        affected_templates: set[int],
+    ) -> None:
+        """删除失去源且未被保留会话依赖的模板。
+
+        先计算依赖闭包差集，可保留仍服务健康会话的共享模板。
+        """
         for identity in affected_templates - required:
             node, path, _ = self.sessions[identity]
-            refs = set().union(*(self.source_interfaces(source) for source in self.resolved[identity]))
-            self.record(node, path, "BGP 失效本地源模板不再被保留会话依赖", refs)
+            refs = set().union(
+                *(
+                    self.source_interfaces(source)
+                    for source in self.resolved[identity]
+                )
+            )
+            self.record(
+                node, path, "BGP 失效本地源模板不再被保留会话依赖", refs
+            )
+
+    def _remove_unused_template_sources(
+        self,
+        required: set[int],
+        used_statements: set[int],
+    ) -> None:
+        """删除保留模板中未被有效会话使用的失效源。
+
+        模板本身仍需存在时只清理无用默认源，避免扩大删除范围。
+        """
         for identity in required:
             _, _, template = self.sessions[identity]
             if not template:
@@ -186,12 +367,26 @@ class _BgpSourcePruner:
             for source, ids in self.direct[identity].items():
                 for statement_id in ids:
                     child, path, _ = self.statements[statement_id]
-                    if statement_id not in used_statements and self.source_lost(source, self.vrf_for(path)):
-                        self.record(child, path, "保留 BGP 模板公共参数，移除未被有效会话使用的失效默认源", self.source_interfaces(source))
+                    if (
+                        statement_id not in used_statements
+                        and self.source_lost(source, self.vrf_for(path))
+                    ):
+                        self.record(
+                            child,
+                            path,
+                            "保留 BGP 模板公共参数，移除未被有效会话使用的失效默认源",
+                            self.source_interfaces(source),
+                        )
 
     def run(self):
+        """分析全部活动 BGP 实例并执行会话剪枝。
+
+        每个 BGP 根独立建立索引和解析结果，错误实例整体跳过以避免部分删除。
+        """
         for root in self.document.root.nodes:
-            if not root.active or not re.match(r"^router\s+bgp\b", root.header, re.I):
+            if not root.active or not re.match(
+                r"^router\s+bgp\b", root.header, re.I
+            ):
                 continue
             self.index(root)
             self.link_templates()
@@ -205,68 +400,134 @@ class _BgpSourcePruner:
 
 
 class _CiscoPruner:
-    """跨对象裁剪分析；通过回调声明删除，不持有或提交事务。"""
+    """分析跨接口、广播域和协议依赖的裁剪范围。
+
+    分析器只通过回调记录删除，不直接持有事务，使多个规则共享判断并统一提交。
+    """
 
     def __init__(self, document, protected_parents, outcome, record):
+        """建立受保护接口闭包和待清理接口集合。
+
+        同时扩展聚合父子关系，确保保护父口或成员时整组接口都不会被误删。
+        """
         self.document = document
         self.outcome = outcome
         self.record = record
-        self.protected = {interface_parent(self.document.resolve_interface(name)) for name in protected_parents}
+        self.protected = {
+            interface_parent(self.document.resolve_interface(name))
+            for name in protected_parents
+        }
         members = self.document.bundle_members()
-        self.protected.update(bundle for member, bundle in members.items() if member in self.protected)
-        self.protected.update(member for member, bundle in members.items() if bundle in self.protected)
+        self.protected.update(
+            bundle
+            for member, bundle in members.items()
+            if member in self.protected
+        )
+        self.protected.update(
+            member
+            for member, bundle in members.items()
+            if bundle in self.protected
+        )
         self.blocks = interface_nodes(self.document)
-        self.names = {block.interface_name for block in self.blocks if block.interface_name}
+        self.names = {
+            block.interface_name
+            for block in self.blocks
+            if block.interface_name
+        }
         self.removed = {
-            name for name in self.names
-            if self.document.interface_kind(name) in {InterfaceKind.PHYSICAL, InterfaceKind.BUNDLE}
+            name
+            for name in self.names
+            if self.document.interface_kind(name)
+            in {InterfaceKind.PHYSICAL, InterfaceKind.BUNDLE}
             and interface_parent(name) not in self.protected
         }
         # 即使父口没有单独的 interface 块，外部也可能引用父口。
-        self.removed.update(interface_parent(name) for name in list(self.removed))
+        self.removed.update(
+            interface_parent(name) for name in list(self.removed)
+        )
 
     def prune_domains(self):
+        """删除仅依赖已裁剪接口的 L2VPN 广播域。
+
+        仍含保留接入接口的广播域会继续保护其 routed gateway，保留有效业务链。
+        """
         self.retained_gateways: set[str] = set()
         domains = [
-            (node, path) for node, path in _walk(self.document.root.nodes)
-            if path[0].lower() == "l2vpn" and re.match(r"^bridge-domain\s", node.header, re.I)
+            (node, path)
+            for node, path in _walk(self.document.root.nodes)
+            if path[0].lower() == "l2vpn"
+            and re.match(r"^bridge-domain\s", node.header, re.I)
         ]
         for domain, path in domains:
             attachments = {
-                self.document.resolve_interface(child.header.split(maxsplit=1)[1])
+                self.document.resolve_interface(
+                    child.header.split(maxsplit=1)[1]
+                )
                 for child in domain.nodes
-                if child.active and re.match(r"^interface\s", child.header, re.I)
+                if child.active
+                and re.match(r"^interface\s", child.header, re.I)
             }
             gateways = {
-                self.document.resolve_interface(re.sub(r"^routed\s+interface\s+", "", child.header, flags=re.I))
+                self.document.resolve_interface(
+                    re.sub(
+                        r"^routed\s+interface\s+", "", child.header, flags=re.I
+                    )
+                )
                 for child in domain.nodes
-                if child.active and re.match(r"^routed\s+interface\s", child.header, re.I)
+                if child.active
+                and re.match(r"^routed\s+interface\s", child.header, re.I)
             }
             if attachments and not (attachments - self.removed):
-                self.record(domain, path, "广播域只关联已裁剪的接入接口", attachments & self.removed)
+                self.record(
+                    domain,
+                    path,
+                    "广播域只关联已裁剪的接入接口",
+                    attachments & self.removed,
+                )
             elif attachments - self.removed:
                 self.retained_gateways.update(gateways)
 
     def prune_p2p(self):
+        """删除本地接入全部失效的点到点 L2VPN 服务。
+
+        只处理 xconnect group 内的服务，避免影响其他 L2VPN 业务。
+        """
         for service, path in list(_walk(self.document.root.nodes)):
             if (
                 path[0].lower() != "l2vpn"
                 or not re.match(r"^p2p\s+", service.header, re.I)
-                or not any(re.match(r"^xconnect\s+group\s+", ancestor, re.I) for ancestor in path[:-1])
+                or not any(
+                    re.match(r"^xconnect\s+group\s+", ancestor, re.I)
+                    for ancestor in path[:-1]
+                )
             ):
                 continue
             attachments = {
-                self.document.resolve_interface(child.header.split(maxsplit=1)[1])
+                self.document.resolve_interface(
+                    child.header.split(maxsplit=1)[1]
+                )
                 for child in service.nodes
-                if child.active and re.match(r"^interface\s+", child.header, re.I)
+                if child.active
+                and re.match(r"^interface\s+", child.header, re.I)
             }
             if attachments and attachments <= self.removed:
-                self.record(service, path, "点到点业务的全部本地接口已裁剪，删除远端 PW 绑定", attachments)
+                self.record(
+                    service,
+                    path,
+                    "点到点业务的全部本地接口已裁剪，删除远端 PW 绑定",
+                    attachments,
+                )
 
     def prune_interfaces(self):
+        """确定需要删除的接口、网关和地址集合。
+
+        先汇总保留地址再减去，避免同一 IP 同时出现在保留接口时被错误标记为删除。
+        """
         self.removed.update(
-            name for name in self.names
-            if self.document.interface_kind(name) == InterfaceKind.GATEWAY and name not in self.retained_gateways
+            name
+            for name in self.names
+            if self.document.interface_kind(name) == InterfaceKind.GATEWAY
+            and name not in self.retained_gateways
         )
         self.removed_addresses: set[str] = set()
         self.retained_addresses: set[str] = set()
@@ -274,13 +535,24 @@ class _CiscoPruner:
         self.retained_sources: dict[str, set[str]] = {}
         for block in self.blocks:
             name = block.interface_name
-            vrf = next((child.header.split(maxsplit=1)[1] for child in block.nodes
-                        if child.active and re.match(r"^vrf\s+", child.header, re.I)), "")
+            vrf = next(
+                (
+                    child.header.split(maxsplit=1)[1]
+                    for child in block.nodes
+                    if child.active and re.match(r"^vrf\s+", child.header, re.I)
+                ),
+                "",
+            )
             addresses = _addresses(block)
             if name in self.removed:
                 self.removed_addresses.update(addresses)
                 self.removed_sources.setdefault(vrf, set()).update(addresses)
-                self.record(block, (block.header,), "非 NNI 接口不参与核心路由实验", {name})
+                self.record(
+                    block,
+                    (block.header,),
+                    "非 NNI 接口不参与核心路由实验",
+                    {name},
+                )
             else:
                 self.retained_addresses.update(addresses)
                 self.retained_sources.setdefault(vrf, set()).update(addresses)
@@ -288,50 +560,93 @@ class _CiscoPruner:
         self.outcome.removed_interfaces = self.removed
         self.outcome.removed_addresses = self.removed_addresses
 
-    def clean(self, nodes: list[CiscoContext], path: tuple[str, ...] = ()) -> None:
+    def clean(
+        self, nodes: list[CiscoContext], path: tuple[str, ...] = ()
+    ) -> None:
+        """递归删除指向已裁剪接口的绑定和静态路由。
+
+        只有语法可确认整条绑定归属时自动删除，其他引用转为错误要求人工处理。
+        """
         for node in nodes:
             if not node.active or node.is_formatting:
                 continue
             current = (*path, node.header)
             if re.match(r"^(?:description|remark)\b", node.header, re.I):
                 continue
-            refs = interface_references(self.document, node.header, self.removed)
+            refs = interface_references(node.header, self.removed)
             if refs:
                 # 这些语法中整个节点就是接口绑定或以接口为下一跳的路由。
                 top = current[0].lower()
-                interface_binding = bool(re.match(r"^(?:interface|routed\s+interface)\s", node.header, re.I))
-                known_binding = interface_binding and (
-                    re.match(r"^(?:router\s+(?:ospf\S*|isis|rip|vrrp)|mpls|rsvp|l2vpn|vrf|evpn|dhcp\s+ipv[46])\b", top)
-                    is not None
-                    or (top == "control-plane" and "management-plane" in current and "inband" in current)
+                interface_binding = bool(
+                    re.match(
+                        r"^(?:interface|routed\s+interface)\s",
+                        node.header,
+                        re.I,
+                    )
                 )
-                static_route = top.startswith("router static") and bool(re.match(r"^[0-9a-fA-F:.]+/\d+\s", node.header))
+                known_binding = interface_binding and (
+                    re.match(
+                        r"^(?:router\s+(?:ospf\S*|isis|rip|vrrp)|mpls|"
+                        r"rsvp|l2vpn|vrf|evpn|dhcp\s+ipv[46])\b",
+                        top,
+                    )
+                    is not None
+                    or (
+                        top == "control-plane"
+                        and "management-plane" in current
+                        and "inband" in current
+                    )
+                )
+                static_route = top.startswith("router static") and bool(
+                    re.match(r"^[0-9a-fA-F:.]+/\d+\s", node.header)
+                )
                 if known_binding or static_route:
-                    self.record(node, current, "删除依赖非 NNI 接口的绑定或静态路由", refs)
+                    self.record(
+                        node,
+                        current,
+                        "删除依赖非 NNI 接口的绑定或静态路由",
+                        refs,
+                    )
                     continue
                 self.outcome.errors.append(
-                    f"无法安全裁剪活动接口依赖: {' / '.join(current)}; 接口 {', '.join(sorted(refs))}"
+                    f"无法安全裁剪活动接口依赖: {' / '.join(current)}; "
+                    f"接口 {', '.join(sorted(refs))}"
                 )
             self.clean(node.nodes, current)
 
     def prune_monitor_sessions(self):
-        """镜像目的接口消失时删除对应会话；不影响其他镜像会话。"""
+        """删除目的接口已消失的镜像会话。
+
+        只有会话自身明确引用已删除目的接口时才删除，避免影响其他镜像会话。
+        """
         for node in self.document.root.nodes:
-            if not node.active or not re.match(r"^monitor-session\b", node.header, re.I):
+            if not node.active or not re.match(
+                r"^monitor-session\b", node.header, re.I
+            ):
                 continue
             references = set()
             for child in node.walk():
                 if re.match(r"^destination\s+interface\s+", child.header, re.I):
-                    references.update(interface_references(self.document, child.header, self.removed))
+                    references.update(
+                        interface_references(child.header, self.removed)
+                    )
             if references:
-                self.record(node, (node.header,), "镜像会话的目的接口已删除", references)
+                self.record(
+                    node, (node.header,), "镜像会话的目的接口已删除", references
+                )
 
     def check_bundle_ownership(self):
+        """校验仍承载业务的 Bundle 能否解析到物理成员。
+
+        失去成员归属的业务聚合无法安全裁剪，必须在任何删除前作为错误阻止转换。
+        """
         members = self.document.bundle_members()
         business = self.document.business_interface_names()
         orphans = {
-            spec.parent for spec in self.document.interface_specs()
-            if spec.kind == InterfaceKind.BUNDLE and spec.name in business
+            spec.parent
+            for spec in self.document.interface_specs()
+            if spec.kind == InterfaceKind.BUNDLE
+            and spec.name in business
             and spec.parent not in set(members.values())
         }
         if orphans:
@@ -341,34 +656,62 @@ class _CiscoPruner:
         return not orphans
 
     def analyze(self):
+        """按依赖顺序执行全部非 NNI 裁剪分析。
+
+        先建立广播域和接口删除集合，再清理协议依赖，避免后续规则基于过时边界判断。
+        """
         if not self.check_bundle_ownership():
             return
         self.prune_domains()
         self.prune_p2p()
         self.prune_interfaces()
         _BgpSourcePruner(
-            self.document, self.removed, self.removed_sources, self.retained_sources,
-            self.outcome, self.record,
+            self.document,
+            self.removed,
+            self.removed_sources,
+            self.retained_sources,
+            self.outcome,
+            self.record,
         ).run()
         self.prune_monitor_sessions()
 
 
 class PruningVisitor(CiscoRuleVisitor):
-    """保存本次业务删除事件，在 finish 向统一会话声明不重叠的删除。"""
+    """收集一次剪枝规则的删除对象和审计事件。
+
+    延迟到 finish 统一声明最外层删除，避免祖先与后代同时提交造成重叠事务。
+    """
 
     def __init__(self, session):
+        """创建空的删除映射和报告事件列表。
+
+        两类集合在分析期间累计，只有成功提交后才映射到最终结果。
+        """
         super().__init__(session)
         self.deletions = {}
         self.events = []
 
     def record(self, node, path, reason, references):
+        """记录一个待删除节点及其接口依赖。
+
+        使用节点标识去重可合并不同分析产生的同一删除，同时保留稳定审计顺序。
+        """
         sources = sorted(references)
         self.deletions[id(node)] = node, reason, sources
-        self.events.append({
-            "action": "remove", "path": list(path), "reason": reason, "source_interfaces": sources,
-        })
+        self.events.append(
+            {
+                "action": "remove",
+                "path": list(path),
+                "reason": reason,
+                "source_interfaces": sources,
+            }
+        )
 
     def finish(self):
+        """向规则会话提交最外层且互不重叠的删除。
+
+        祖先已删除的后代不再单独提交，避免 TokenStreamRewriter 区间冲突。
+        """
         if self.session.result.errors:
             return
         for node, reason, sources in self.deletions.values():
@@ -376,163 +719,265 @@ class PruningVisitor(CiscoRuleVisitor):
             while parent is not None and id(parent) not in self.deletions:
                 parent = parent.parentCtx
             if parent is None:
-                self.session.edits.delete(node, reason, source_interfaces=sources)
+                self.session.edits.delete(
+                    node, reason, source_interfaces=sources
+                )
 
 
 class NonNNIVisitor(PruningVisitor):
+    """执行完整非 NNI 接口和业务清理。
+
+    该访问器只创建分析器并委托 analyze，自身负责事件收集和统一提交。
+    """
+
     def visitConfiguration(self, root):
+        """从配置根启动完整非 NNI 剪枝分析。
+
+        保护集合来自规则上下文，分析结果通过当前 Visitor 记录删除。
+        """
         _CiscoPruner(
-            self.session.document, self.session.context.protected_parents,
-            self.session.result, self.record,
+            self.session.document,
+            self.session.context.protected_parents,
+            self.session.result,
+            self.record,
         ).analyze()
 
 
 class MemberSourcesVisitor(PruningVisitor):
+    """清理 NNI 聚合缩减后失效的成员源。
+
+    该模式只传播已显式删除的成员接口，不重新计算完整非 NNI 范围。
+    """
+
     def visitConfiguration(self, root):
-        worker = _CiscoPruner(self.session.document, set(), self.session.result, self.record)
+        """从配置根启动 BGP 成员源和镜像会话清理。
+
+        删除集合直接取规则上下文，确保只处理调用方指定的成员。
+        """
+        worker = _CiscoPruner(
+            self.session.document, set(), self.session.result, self.record
+        )
         worker.removed = set(self.session.context.removed_interfaces)
-        _BgpSourcePruner(worker.document, worker.removed, {}, {}, worker.outcome, self.record).run()
+        _BgpSourcePruner(
+            worker.document, worker.removed, {}, {}, worker.outcome, self.record
+        ).run()
         worker.prune_monitor_sessions()
 
 
 class InterfaceBindingsVisitor(PruningVisitor):
+    """清理接口删除后遗留的协议和路由绑定。
+
+    该规则不修改接口集合，只沿已删除成员检查全局配置中的引用。
+    """
+
     def visitConfiguration(self, root):
-        worker = _CiscoPruner(self.session.document, set(), self.session.result, self.record)
+        """从配置根递归检查已删除接口绑定。
+
+        使用规则上下文的删除集合，未知依赖由分析器报告错误而不自动删除。
+        """
+        worker = _CiscoPruner(
+            self.session.document, set(), self.session.result, self.record
+        )
         worker.removed = set(self.session.context.removed_interfaces)
         worker.clean(root.nodes)
 
 
 def pruning_result(session, visitor, edits):
-    """成功提交后映射业务删除事件；祖先删除覆盖的后代事件保留既有报告语义。"""
+    """把成功提交的剪枝事件写入最终结果。
+
+    只有实际提交事务时才公开事件，祖先删除覆盖的后代记录仍保留报告语义。
+    """
     session.result.changes[:] = visitor.events if edits.total else []
 
 
-def prune_non_nni(document: CiscoDocument, protected_parents: set[str]) -> InterfacePruningOutcome:
+def prune_non_nni(
+    document: CiscoDocument, protected_parents: set[str]
+) -> InterfacePruningOutcome:
+    """通过规则注册表执行完整非 NNI 清理。
+
+    包装函数保持文档门面的稳定入口，具体执行由当前 PRUNE_RULES 决定。
+    """
     from . import prune_non_nni as execute
 
     return execute(document, protected_parents)
 
 
-def validate_pruned_references(document: CiscoDocument, removed: set[str]) -> InterfacePruningOutcome:
-    """兼容函数入口，最终引用检查使用同一个只读 Visitor 规则。"""
-    from .compatibility import REMOVED_REFERENCES_RULE
-    from impl.common.rules import ValidationContext
-    result = REMOVED_REFERENCES_RULE.apply(document, ValidationContext(frozenset(), frozenset(removed)))
-    return InterfacePruningOutcome(errors=result.errors, warnings=result.warnings)
-
-
-def prune_member_sources(document, context):
-    return MEMBER_SOURCES_RULE.apply(document, context)
-
-
-def prune_interface_bindings(document, context):
-    return INTERFACE_BINDINGS_RULE.apply(document, context)
-
-
 def prune_interface_dependencies(document, removed_interfaces):
-    """成员缩减复用 PRUNE_RULES，不再直接调用具体的依赖裁剪函数。"""
+    """通过规则注册表清理已删除成员的依赖。
+
+    复用成员源规则可保证注册表扩展后无需修改文档门面。
+    """
     from . import prune_member_dependencies
 
     return prune_member_dependencies(document, removed_interfaces)
 
 
 def _tracked_interface(document, node):
-    """只识别单一 line-protocol 监控；列表和其他 track 类型不自动裁剪。"""
-    types = [child for child in node.nodes if child.active and re.match(r"^type\b", child.header, re.I)]
-    if len(types) != 1 or not re.fullmatch(r"type\s+line-protocol\s+state", types[0].header, re.I):
+    """解析只含单一 line-protocol 接口的 track 定义。
+
+    列表、无接口和混合类型无法确定唯一依赖，返回空值以阻止自动删除。
+    """
+    types = [
+        child
+        for child in node.nodes
+        if child.active and re.match(r"^type\b", child.header, re.I)
+    ]
+    if len(types) != 1 or not re.fullmatch(
+        r"type\s+line-protocol\s+state", types[0].header, re.I
+    ):
         return None
     interfaces = [
-        match.group(1) for child in types[0].nodes if child.active
+        match.group(1)
+        for child in types[0].nodes
+        if child.active
         if (match := re.fullmatch(r"interface\s+(.+)", child.header, re.I))
     ]
-    return document.resolve_interface(interfaces[0]) if len(interfaces) == 1 else None
+    return (
+        document.resolve_interface(interfaces[0])
+        if len(interfaces) == 1
+        else None
+    )
 
 
 def _is_vrrp_use(header, path, name):
+    """判断命令是否是 VRRP 对指定 track 对象的合法引用。
+
+    同时检查地址族和 VRRP 层级，可避免把其他模块的同名 track 当成安全依赖。
+    """
     match = re.fullmatch(r"track\s+object\s+(\S+)(?:\s+\d+)?", header, re.I)
     return bool(
-        match and match.group(1) == name and path[0].lower() == "router vrrp"
-        and any(re.fullmatch(r"address-family\s+ipv[46]", part, re.I) for part in path[1:-1])
+        match
+        and match.group(1) == name
+        and path[0].lower() == "router vrrp"
+        and any(
+            re.fullmatch(r"address-family\s+ipv[46]", part, re.I)
+            for part in path[1:-1]
+        )
         and re.fullmatch(r"vrrp\s+\d+", path[-2], re.I)
     )
 
 
 def _track_uses(name, definitions, commands):
-    """预先收集消费引用；发现未知消费者时保留整条依赖链并报错。"""
+    """收集指定 track 的已知和未知消费者。
+
+    只有 VRRP 引用可自动解除；其他消费者保留依赖并报错，防止留下悬空配置。
+    """
     pattern = re.compile(r"(?<![\w.-])" + re.escape(name) + r"(?![\w.-])")
     known = []
     errors = []
     for node, path in commands:
         if any(node is definition for definition in definitions):
             continue
-        if re.match(r"^(?:description|remark)\b", node.header, re.I) or not pattern.search(node.header):
+        if re.match(
+            r"^(?:description|remark)\b", node.header, re.I
+        ) or not pattern.search(node.header):
             continue
         if _is_vrrp_use(node.header, path, name):
             known.append((node, path))
         else:
-            errors.append(f"无法安全裁剪 track {name} 的活动依赖: {' / '.join(path)}")
+            errors.append(
+                f"无法安全裁剪 track {name} 的活动依赖: {' / '.join(path)}"
+            )
     return known, errors
 
 
 class TrackDependenciesVisitor(PruningVisitor):
-    """删除失去监控接口的 track 和 VRRP 跟踪语句，保留 VRRP 组。"""
+    """删除失去监控接口的 track 及其合法 VRRP 引用。
+
+    保留 VRRP 组本身，只解除已删除对象的跟踪关系，避免扩大业务删除范围。
+    """
 
     def visitConfiguration(self, root):
+        """分析全部 track 定义和消费者并登记删除。
+
+        重复定义或未知消费者会阻止该 track 自动裁剪，保证依赖链可解释。
+        """
         document, outcome = self.session.document, self.session.result
         removed_interfaces = self.session.context.removed_interfaces
         commands = list(_walk(root.nodes))
         definitions = {}
         for node in root.nodes:
-            if node.active and (match := re.fullmatch(r"track\s+(\S+)", node.header, re.I)):
+            if node.active and (
+                match := re.fullmatch(r"track\s+(\S+)", node.header, re.I)
+            ):
                 definitions.setdefault(match.group(1), []).append(node)
         for name, nodes in definitions.items():
             targets = [_tracked_interface(document, node) for node in nodes]
-            lost = {target for target in targets if target and (
-                target in removed_interfaces or interface_parent(target) in removed_interfaces
-            )}
+            lost = {
+                target
+                for target in targets
+                if target
+                and (
+                    target in removed_interfaces
+                    or interface_parent(target) in removed_interfaces
+                )
+            }
             if not lost:
                 continue
             if len(nodes) != 1:
-                outcome.errors.append(f"track {name} 存在重复定义，不能安全级联裁剪")
+                outcome.errors.append(
+                    f"track {name} 存在重复定义，不能安全级联裁剪"
+                )
                 continue
             uses, unknown = _track_uses(name, nodes, commands)
             if unknown:
                 outcome.errors.extend(unknown)
                 continue
-            self.record(nodes[0], (nodes[0].header,), "track 监控的接口已删除，移除跟踪对象", lost)
+            self.record(
+                nodes[0],
+                (nodes[0].header,),
+                "track 监控的接口已删除，移除跟踪对象",
+                lost,
+            )
             for node, path in uses:
-                self.record(node, path, f"track {name} 已删除，解除 VRRP 对象跟踪", lost)
-
-
-def prune_track_dependencies(document, context):
-    return TRACK_DEPENDENCIES_RULE.apply(document, context)
+                self.record(
+                    node, path, f"track {name} 已删除，解除 VRRP 对象跟踪", lost
+                )
 
 
 def full_prune_condition(context):
+    """判断上下文是否允许完整非 NNI 清理。
+
+    完整清理和成员依赖清理互斥，通过条件避免同一规则集重复删除接口。
+    """
     return context.remove_non_nni
 
 
 def member_prune_condition(context):
+    """判断上下文是否只执行聚合成员依赖清理。
+
+    该条件关闭完整接口裁剪，使成员缩减阶段只传播已知删除集合。
+    """
     return not context.remove_non_nni
 
 
-def prune_non_nni_rule(document, context):
-    return NON_NNI_RULE.apply(document, context)
-
-
 NON_NNI_RULE = CiscoVisitorRule(
-    "cisco.prune.non_nni", NonNNIVisitor, selector=document_scope, condition=full_prune_condition,
-    outcome_factory=InterfacePruningOutcome, result_mapper=pruning_result,
+    "cisco.prune.non_nni",
+    NonNNIVisitor,
+    selector=document_scope,
+    condition=full_prune_condition,
+    outcome_factory=InterfacePruningOutcome,
+    result_mapper=pruning_result,
 )
 MEMBER_SOURCES_RULE = CiscoVisitorRule(
-    "cisco.prune.member_sources", MemberSourcesVisitor, selector=document_scope, condition=member_prune_condition,
-    outcome_factory=InterfacePruningOutcome, result_mapper=pruning_result,
+    "cisco.prune.member_sources",
+    MemberSourcesVisitor,
+    selector=document_scope,
+    condition=member_prune_condition,
+    outcome_factory=InterfacePruningOutcome,
+    result_mapper=pruning_result,
 )
 TRACK_DEPENDENCIES_RULE = CiscoVisitorRule(
-    "cisco.prune.track_dependencies", TrackDependenciesVisitor, selector=document_scope,
-    outcome_factory=InterfacePruningOutcome, result_mapper=pruning_result,
+    "cisco.prune.track_dependencies",
+    TrackDependenciesVisitor,
+    selector=document_scope,
+    outcome_factory=InterfacePruningOutcome,
+    result_mapper=pruning_result,
 )
 INTERFACE_BINDINGS_RULE = CiscoVisitorRule(
-    "cisco.prune.interface_bindings", InterfaceBindingsVisitor, selector=document_scope,
-    outcome_factory=InterfacePruningOutcome, result_mapper=pruning_result,
+    "cisco.prune.interface_bindings",
+    InterfaceBindingsVisitor,
+    selector=document_scope,
+    outcome_factory=InterfacePruningOutcome,
+    result_mapper=pruning_result,
 )

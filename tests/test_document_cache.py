@@ -121,8 +121,6 @@ class DocumentCacheTest(unittest.TestCase):
             (cisco_document._parser.interface_name, "hostname XR", None),
             (cisco_document._parser.l2transport, "interface Gi0 l2transport", True),
             (cisco_document._parser.l2transport, "interface Gi0 l2transport extra", False),
-            (cisco_document._parser.is_group, "GROUP EDGE", True),
-            (cisco_document._parser.is_group, "group ", False),
             (junos_document._parser.canonical_interface, " ge-0/0/1 . 10 ", "ge-0/0/1.10"),
             (junos_document._parser.canonical_interface, "", ""),
             (junos_document._parser.interface_kind, " ge-0/0/1 ", InterfaceKind.PHYSICAL),
@@ -173,8 +171,6 @@ class DocumentCacheTest(unittest.TestCase):
                 self.assertEqual(node.configured_inactive, inactive)
                 self.assertEqual(document._parser.base_header(header), base)
                 self.assertEqual(document._parser.output_header(header), output)
-                self.assertEqual(junos.JunosDocument._base_header(header), base)
-                self.assertEqual(junos.JunosDocument._output_header(header), output)
 
     def test_cisco_cached_mode_and_name_follow_rewrite_revisions(self):
         document = cisco.CiscoDocument("interface preconfigure Gi0/0/0/1 l2transport\n")

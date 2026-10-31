@@ -5,16 +5,17 @@ from __future__ import annotations
 import re
 
 from impl.common.errors import require_invariant
-from .document import (
-    CiscoDocument,
-    CiscoContext,
-)
 from impl.common.interface import (
     InterfaceKind,
     InterfaceSpec,
     interface_parent,
     interface_unit,
     referenced_interface_names,
+)
+
+from .document import (
+    CiscoContext,
+    CiscoDocument,
 )
 
 
@@ -124,7 +125,9 @@ def _bridge_domain_bindings(
             while stack:
                 current = stack.pop()
                 stack.extend(current.nodes)
-                if not re.match(r"^bridge-domain\b", current.header, re.IGNORECASE):
+                if not re.match(
+                    r"^bridge-domain\b", current.header, re.IGNORECASE
+                ):
                     continue
                 attachments: set[str] = set()
                 gateways: set[str] = set()
@@ -135,7 +138,9 @@ def _bridge_domain_bindings(
                         re.IGNORECASE,
                     )
                     if gateway_match:
-                        gateways.add(document.resolve_interface(gateway_match.group(1)))
+                        gateways.add(
+                            document.resolve_interface(gateway_match.group(1))
+                        )
                         continue
                     interface_match = re.match(
                         r"^interface\s+(.+)$",
@@ -143,7 +148,9 @@ def _bridge_domain_bindings(
                         re.IGNORECASE,
                     )
                     if interface_match:
-                        attachments.add(document.resolve_interface(interface_match.group(1)))
+                        attachments.add(
+                            document.resolve_interface(interface_match.group(1))
+                        )
                 result.append((attachments, gateways))
     return result
 
@@ -165,7 +172,10 @@ def _gateway_inner_vlan_hints(
         service_vlans: set[int] = set()
         for attachment in attachments:
             attachment_spec = spec_by_name.get(attachment)
-            if attachment_spec is None or attachment_spec.kind not in mappable_kinds:
+            if (
+                attachment_spec is None
+                or attachment_spec.kind not in mappable_kinds
+            ):
                 continue
             service_vlan = attachment_spec.inner_vlan or attachment_spec.vlan
             if service_vlan is not None:
@@ -205,10 +215,15 @@ def bundle_members(document: CiscoDocument) -> dict[str, str]:
             name is not None,
             "Cisco 接口节点集合中的节点必须包含接口名",
         )
-        if document.interface_kind(name) != InterfaceKind.PHYSICAL or interface_unit(name) is not None:
+        if (
+            document.interface_kind(name) != InterfaceKind.PHYSICAL
+            or interface_unit(name) is not None
+        ):
             continue
         for node in block.walk():
-            match = re.match(r"bundle\s+id\s+(\d+)\b", node.header, re.IGNORECASE)
+            match = re.match(
+                r"bundle\s+id\s+(\d+)\b", node.header, re.IGNORECASE
+            )
             if match:
                 result[name] = f"Bundle-Ether{match.group(1)}"
                 break
@@ -232,15 +247,23 @@ def logical_names_under(document: CiscoDocument, parent: str) -> list[str]:
     """
     parent = document.resolve_interface(parent)
     return sorted(
-        {spec.name for spec in document.interface_specs() if spec.parent == parent},
+        {
+            spec.name
+            for spec in document.interface_specs()
+            if spec.parent == parent
+        },
         key=lambda value: (interface_unit(value) is not None, value),
     )
 
 
 def _external_configuration_text(document):
-    """提取接口定义之外的语义命令，供接口业务引用分析使用。"""
+    """提取接口定义之外的全部有效语义命令。
+
+    协议、VRF 和 L2VPN 对接口的引用不在接口块内，合并这些文本才能识别外部依赖。
+    """
     return "\n".join(
-        text for block in document.root.nodes
+        text
+        for block in document.root.nodes
         if not block.interface_name
         for text in [block.header, *(node.header for node in block.walk())]
     )
@@ -297,7 +320,9 @@ def business_interface_names(document: CiscoDocument) -> set[str]:
     return active
 
 
-def find_interface_node(document: CiscoDocument, name: str) -> CiscoContext | None:
+def find_interface_node(
+    document: CiscoDocument, name: str
+) -> CiscoContext | None:
     """按规范化名称查找第一个仍有效的 IOS XR 接口配置块。
 
     统一规范化调用方输入可兼容接口别名；忽略非活动块则确保后续修改不会落到
@@ -315,72 +340,137 @@ def find_interface_node(document: CiscoDocument, name: str) -> CiscoContext | No
     )
 
 
-def remove_interface(document: CiscoDocument, name: str, include_children: bool = False) -> None:
+def remove_interface(
+    document: CiscoDocument, name: str, include_children: bool = False
+) -> None:
+    """从文档中逻辑删除指定接口及其可选子接口。
+
+    通过事务统一删除可保持格式分隔符和原始顺序稳定；子接口开关用于区分普通端点
+    清理与完整接口树迁移。
+    """
     canonical = document.resolve_interface(name)
     transaction = document.rewrite()
     for block in interface_nodes(document):
         current = block.interface_name
-        if current == canonical or (include_children and current and current.startswith(canonical + ".")):
+        if current == canonical or (
+            include_children and current and current.startswith(canonical + ".")
+        ):
             transaction.delete(block, "删除接口及其业务子树")
     transaction.commit()
 
 
 def rename_interface_tree(document, source, target, strip_bundle=False):
+    """把源接口及其子接口改名到目标父接口。
+
+    在同一事务中同步修改父口和子口后缀，避免目标名中途出现半套定义；移出聚合时
+    同时删除失效的 bundle 和 LACP 属性。
+    """
     from .rules.support import delete_matching
-    source, target = document.resolve_interface(source), document.resolve_interface(target)
+
+    source, target = document.resolve_interface(
+        source
+    ), document.resolve_interface(target)
     transaction = document.rewrite()
     renamed = []
     for block in interface_nodes(document):
         current = block.interface_name
-        if current != source and not (current and current.startswith(source + ".")):
+        if current != source and not (
+            current and current.startswith(source + ".")
+        ):
             continue
-        new_name = target + current[len(source):]
+        new_name = target + current[len(source) :]
         renamed.append(new_name)
-        transaction.replace_header(block, f"interface {new_name}" + (" l2transport" if block.l2transport else ""), "迁移接口名称")
+        transaction.replace_header(
+            block,
+            f"interface {new_name}"
+            + (" l2transport" if block.l2transport else ""),
+            "迁移接口名称",
+        )
         if strip_bundle:
-            delete_matching(transaction, block.nodes, re.compile(r"^(?:bundle\b|lacp\b|aggregated-)", re.I))
+            delete_matching(
+                transaction,
+                block.nodes,
+                re.compile(r"^(?:bundle\b|lacp\b|aggregated-)", re.I),
+            )
     transaction.commit()
     for name in renamed:
-        _merge_duplicate_interface(document, find_interface_node(document, name))
+        _merge_duplicate_interface(
+            document, find_interface_node(document, name)
+        )
 
 
 def _clone_fragment(original, name, strip_bundle):
+    """生成一份重命名且可选剥离聚合属性的接口片段。
+
+    先复制完整子树再格式化文本，保证注释和未知子命令一并保留，同时不修改源接口。
+    """
     from .rules.support import delete_matching, format_fragment
+
     candidate = CiscoDocument(format_fragment(original.text, 0))
     root = candidate.root.nodes[0]
     transaction = candidate.rewrite()
-    transaction.replace_header(root, f"interface {name}" + (" l2transport" if original.l2transport else ""), "克隆接口")
+    transaction.replace_header(
+        root,
+        f"interface {name}" + (" l2transport" if original.l2transport else ""),
+        "克隆接口",
+    )
     if strip_bundle:
-        delete_matching(transaction, root.nodes, re.compile(r"^(?:bundle\b|lacp\b|aggregated-)", re.I))
+        delete_matching(
+            transaction,
+            root.nodes,
+            re.compile(r"^(?:bundle\b|lacp\b|aggregated-)", re.I),
+        )
     transaction.commit()
     return candidate.source + "!\n"
 
 
 def clone_interface_tree(document, source, target, strip_bundle=False):
-    source, target = document.resolve_interface(source), document.resolve_interface(target)
-    originals = [block for block in interface_nodes(document)
-                 if block.interface_name == source or block.interface_name.startswith(source + ".")]
+    """把源接口树的全部片段复制到目标接口树。
+
+    复制后追加而不是逐项改写，使源接口可继续服务其他目标；随后合并同名目标以维持
+    每个接口只有一个活动定义。
+    """
+    source, target = document.resolve_interface(
+        source
+    ), document.resolve_interface(target)
+    originals = [
+        block
+        for block in interface_nodes(document)
+        if block.interface_name == source
+        or block.interface_name.startswith(source + ".")
+    ]
     if not originals:
         ensure_parent_interface(document, target)
         return
     fragments, names = [], []
     for original in originals:
-        name = target + original.interface_name[len(source):]
+        name = target + original.interface_name[len(source) :]
         names.append(name)
         fragments.append(_clone_fragment(original, name, strip_bundle))
     transaction = document.rewrite()
     transaction.insert_after(originals[-1], "".join(fragments), "克隆接口树")
     transaction.commit()
     for name in names:
-        _merge_duplicate_interface(document, find_interface_node(document, name))
+        _merge_duplicate_interface(
+            document, find_interface_node(document, name)
+        )
 
 
 def _merge_duplicate_interface(document, preferred):
+    """把同名接口块的唯一子命令合并到首选块。
+
+    改名或克隆可能产生重复定义，按语义身份去重可保留双方不同业务并删除冗余块。
+    """
     from .rules.support import format_fragment
+
     if preferred is None:
         return
     name = preferred.interface_name
-    duplicates = [block for block in interface_nodes(document) if block.interface_name == name]
+    duplicates = [
+        block
+        for block in interface_nodes(document)
+        if block.interface_name == name
+    ]
     if len(duplicates) < 2:
         return
     seen, fragments = set(), []
@@ -393,7 +483,11 @@ def _merge_duplicate_interface(document, preferred):
                 seen.add(identity)
                 fragments.append(format_fragment(node.text, 1))
     transaction = document.rewrite()
-    transaction.replace_subtree(preferred, preferred.header + "\n" + "".join(fragments), "合并同名接口块")
+    transaction.replace_subtree(
+        preferred,
+        preferred.header + "\n" + "".join(fragments),
+        "合并同名接口块",
+    )
     for block in duplicates:
         if block is not preferred:
             transaction.delete(block, "移除已合并的重复接口")
@@ -401,13 +495,24 @@ def _merge_duplicate_interface(document, preferred):
 
 
 def _insert_top_level_before_end(document, text):
+    """在配置终止标记前插入新的顶层接口块。
+
+    终止命令之后的内容不属于活动配置，因此新增定义必须通过统一顶层插入器进入主体。
+    """
     from .rules.support import append_top_level
+
     transaction = document.rewrite()
     append_top_level(transaction, document, text, "创建目标接口")
     transaction.commit()
 
 
 def ensure_parent_interface(document: CiscoDocument, name: str) -> None:
+    """确保目标接口的父定义存在。
+
+    新迁移目标可能尚未出现；创建最小父口并启用它，可让后续子接口和引用写入有效路径。
+    """
     canonical = document.resolve_interface(name)
     if find_interface_node(document, canonical) is None:
-        _insert_top_level_before_end(document, f"interface {canonical}\n no shutdown\n!\n")
+        _insert_top_level_before_end(
+            document, f"interface {canonical}\n no shutdown\n!\n"
+        )

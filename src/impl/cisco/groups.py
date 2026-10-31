@@ -4,21 +4,28 @@ from __future__ import annotations
 
 import copy
 import re
+from collections.abc import Iterable
 from dataclasses import dataclass, field
-from typing import Iterable
 
-from impl.common.policies import WashingPolicy
-from .document import CiscoDocument, canonical_cisco_interface
-from .antlr.parsing import CiscoSnapshot
-from .antlr.rewriting import format_fragment
 from impl.common.interface import normalized_command as _normalized_command
 from impl.common.outcomes import GroupExpansionOutcome
-from impl.common.semantic_identity import SemanticDecision, find_opaque_ambiguity
+from impl.common.policies import WashingPolicy
+from impl.common.semantic_identity import (
+    SemanticDecision,
+    find_opaque_ambiguity,
+)
+
+from .document import CiscoDocument, canonical_cisco_interface
 from .identity import resolve_cisco_identity
 
 
 @dataclass
 class _GroupStatement:
+    """表示 group 展开期间使用的可变配置语句节点。
+
+    该轻量节点保留来源和继承优先级，使合并、渲染和工作树回滚独立于正式 Cisco AST。
+    """
+
     header: str
     statements: list[_GroupStatement] = field(default_factory=list)
     is_block: bool = False
@@ -28,13 +35,25 @@ class _GroupStatement:
 
     @property
     def active(self):
+        """返回工作语句是否需要参与展开。
+
+        工作树节点在创建后保持活动，逻辑删除通过从列表移除而非状态标记完成。
+        """
         return True
 
     @property
     def is_formatting(self):
+        """返回语句是否只是空行或叹号分隔符。
+
+        格式节点不参与 identity 合并，但仍可能在最终重写中保留。
+        """
         return self.header in {"", "!"}
 
     def walk(self, *, include_self=False):
+        """按深度优先顺序遍历非格式工作语句。
+
+        跳过格式节点让 group 规则只处理实际命令，同时可选择包含当前节点。
+        """
         pending = [self] if include_self else list(reversed(self.statements))
         while pending:
             item = pending.pop()
@@ -45,7 +64,10 @@ class _GroupStatement:
 
 @dataclass(slots=True)
 class _GroupDefinition:
-    """一个 IOS XR group 定义及其静态分析结果。"""
+    """保存一个 IOS XR group 的可物化节点和静态能力标记。
+
+    在遍历前识别运行时变量和嵌套 apply 可避免使用无法安全展开的定义。
+    """
 
     body_nodes: list[_GroupStatement]
     has_runtime_variables: bool
@@ -54,7 +76,10 @@ class _GroupDefinition:
 
 @dataclass(frozen=True, slots=True)
 class _GroupApplication:
-    """一个已解析的 group 应用及其继承优先级。"""
+    """记录一个 group 引用及其继承优先级。
+
+    优先级由路径深度和同级顺序组成，用于确定同名语句的覆盖方向。
+    """
 
     name: str
     precedence: tuple[int, int]
@@ -62,7 +87,10 @@ class _GroupApplication:
 
 @dataclass(frozen=True, slots=True)
 class _GroupControls:
-    """一个配置层级中声明的 group 应用和排除控制。"""
+    """保存一个配置层级直接声明的 apply 和 exclude 名称。
+
+    将两类控制一起解析，后续可以同时抑制本地引用和从父层继承的引用。
+    """
 
     applied_group_names: tuple[str, ...]
     excluded_group_names: frozenset[str]
@@ -70,7 +98,10 @@ class _GroupControls:
 
 @dataclass(slots=True)
 class _ExpansionState:
-    """一次 group 展开中的共享状态，避免递归方法参数膨胀。"""
+    """保存一次 group 展开共享的索引、结果和失败状态。
+
+    递归阶段共享状态，避免重复加载定义或通过长参数列表传递可变结果。
+    """
 
     group_definitions: dict[str, _GroupDefinition]
     referenced_group_names: set[str]
@@ -81,51 +112,48 @@ class _ExpansionState:
 
 
 class CiscoGroupExpander:
-    """事务式展开 IOS XR group，并维护继承优先级与冲突规则。"""
+    """在工作副本上展开 IOS XR group，成功后原子提交。
+
+    分析阶段不修改正式文档，使未解析引用或冲突能够整体回滚并保留原始配置。
+    """
 
     def __init__(self, document: CiscoDocument):
-        """绑定待处理的 IOS XR 文档；构造阶段不解析或修改配置。"""
+        """绑定待处理的 IOS XR 文档。
+
+        构造阶段不解析 group 或创建工作树，避免读取负责范围之外的配置成本。
+        """
         self._document = document
 
     @property
     def vendor(self) -> str:
-        """返回底层文档的厂商标识，供冲突和审计记录使用。"""
+        """返回底层 IOS XR 文档的厂商标识。
+
+        统一标识用于冲突和报告字段，避免调用方依赖具体文档类型。
+        """
         return self._document.vendor
 
     @property
     def top_level_nodes(self) -> list[_GroupStatement]:
-        """读取底层文档虚拟根节点下的 IOS XR 顶层节点。"""
+        """把正式文档顶层节点复制为 group 工作语句。
+
+        每次读取生成独立列表，防止展开中的语句修改直接污染正式文档。
+        """
         return [from_context(node) for node in self._document.root.nodes]
 
     @top_level_nodes.setter
     def top_level_nodes(self, nodes: list[_GroupStatement]) -> None:
-        """以展开完成的新节点列表原子替换底层文档内容。"""
+        """用展开后的语句树原子替换正式文档内容。
+
+        替换只经由发布事务执行，使任何解析失败都维持原快照。
+        """
         publish_expansion(self._document, nodes)
-
-    @staticmethod
-    def parse_nodes(lines: Iterable[str], origin: str = "explicit") -> list[_GroupStatement]:
-        """把 IOS XR 块内文本解析为可供 group 合并的语法树。
-
-        ``origin`` 会写入每个节点，用来区分显式配置和继承配置；此方法是
-        厂商文档层复用的公开入口，不会修改传入文档。
-        """
-        return parse_statements(lines, origin)
-
-    @staticmethod
-    def render_nodes(nodes: list[_GroupStatement], depth: int = 1) -> list[str]:
-        """将语法树递归渲染为 IOS XR 缩进文本。
-
-        ``depth`` 表示顶层节点的空格数，子节点每深入一级增加一个空格；
-        返回新字符串列表，不修改节点本身。
-        """
-        return render_statements(nodes, depth)
 
     @staticmethod
     def _parse_group_names(command: str, control_keyword: str) -> list[str]:
         """解析 group 控制语句中按声明顺序出现的名称。
 
-        同时接受关键字单复数、单个名称、方括号列表及带引号名称；命令不
-        匹配时返回空列表，供调用方把它当作普通配置处理。
+        同时接受关键字单复数、单个名称、方括号列表及带引号名称；不匹配的命令返回
+        空列表，使调用方能够安全地把普通配置与真正的 group 控制语句区分开。
         """
         stripped = command.strip()
         if not stripped.lower().startswith(control_keyword):
@@ -218,9 +246,7 @@ class CiscoGroupExpander:
         """
         literal = re.sub(
             r"(['\"])(.*?)\1",
-            lambda item: re.sub(
-                r"[.*+?\[\](){}|\\]", "", item.group(2)
-            ),
+            lambda item: re.sub(r"[.*+?\[\](){}|\\]", "", item.group(2)),
             selector_header,
         )
         return len(literal)
@@ -232,8 +258,8 @@ class CiscoGroupExpander:
     ) -> list[_GroupStatement]:
         """定位某个 group 在目标配置路径上提供的直接子配置。
 
-        路径每深入一级，都选择所有匹配项并优先处理更具体的选择器，再把
-        它们的子节点作为下一层候选；任一级无匹配时返回空列表。
+        每层优先处理更具体的选择器，减少多个通配项同时命中时的不确定性；任一级
+        没有匹配就立即停止，防止其他分支的子配置被错误继承到当前路径。
         """
         candidate_nodes = definition_nodes
         for target_header in target_path:
@@ -266,8 +292,8 @@ class CiscoGroupExpander:
     ) -> None:
         """把一次不同值的语义覆盖追加到展开报告。
 
-        记录路径、semantic identity、胜负来源和值，并在可用时附带规则 ID；
-        归一化后内容相同的重复配置不算冲突。本方法不改工作树。
+        冲突必须保留路径、语义身份、胜负来源和值，才能解释最终为何采用某个继承值；
+        归一化后相同的重复配置不算冲突，避免重复声明产生无意义的告警。
         """
         if _normalized_command(winner_node.header) == _normalized_command(
             loser_node.header
@@ -338,7 +364,11 @@ class CiscoGroupExpander:
         group_name: str,
         precedence: tuple[int, int],
     ) -> None:
-        """在目标中不存在匹配块时创建一个可继续递归展开的继承块。"""
+        """在目标中不存在匹配块时创建继承块。
+
+        只创建具体 header 并继续递归 payload，可使后续子语句拥有真实路径；正则选择器
+        不能直接物化为配置节点，因此只匹配已有块。
+        """
         matching_block_exists = any(
             child.is_block
             and self._selector_matches(inherited_node.header, child.header)
@@ -361,15 +391,22 @@ class CiscoGroupExpander:
 
     @staticmethod
     def _statement_decisions(target_node, target_path):
-        """对当前层的显式叶子计算语义 identity，供覆盖和歧义检测共同使用。"""
+        """计算当前层显式叶子的语义 identity。
+
+        覆盖、去重和歧义判断共享同一决策列表，避免不同步骤采用不一致的命令身份。
+        """
         return [
             (child, resolve_cisco_identity(child.header, path=target_path))
-            for child in target_node.statements if not child.is_block and not child.is_formatting
+            for child in target_node.statements
+            if not child.is_block and not child.is_formatting
         ]
 
     @staticmethod
     def _find_matching_statement(decisions, key):
-        """重复 identity 时固定选择首条显式语句，与原覆盖顺序一致。"""
+        """查找 identity 对应的首条显式语句。
+
+        固定选择首条重复项可保持原有覆盖顺序，避免集合遍历导致结果漂移。
+        """
         for statement, decision in decisions:
             if decision.key == key:
                 return statement
@@ -385,24 +422,23 @@ class CiscoGroupExpander:
         outcome: GroupExpansionOutcome,
         washing_policy: WashingPolicy,
     ) -> bool:
-        """按 semantic identity 将一个继承叶子合并到目标节点。"""
-        identity_decision = resolve_cisco_identity(
-            inherited_node.header,
-            path=target_path,
-        )
-        if identity_decision.matched:
-            outcome.identity_rule_hits += 1
-        else:
-            outcome.identity_fallbacks += 1
+        """把一个继承叶子按语义 identity 合并到目标节点。
 
-        inherited_statement = _GroupStatement(
-            header=inherited_node.header,
-            origin=f"group:{group_name}",
-            rank=precedence,
-            comment=inherited_node.comment,
+        先匹配已有槽位，再处理未知命令冲突；返回值表示展开是否还能继续。
+        """
+        identity_decision, inherited_statement = self._prepare_merge(
+            inherited_node,
+            group_name,
+            precedence,
+            target_path,
+            outcome,
         )
-        existing_statement_decisions = self._statement_decisions(target_node, target_path)
-        existing_statement = self._find_matching_statement(existing_statement_decisions, identity_decision.key)
+        existing_statement_decisions = self._statement_decisions(
+            target_node, target_path
+        )
+        existing_statement = self._find_matching_statement(
+            existing_statement_decisions, identity_decision.key
+        )
         if existing_statement is not None:
             self._merge_statement_by_precedence(
                 existing_statement,
@@ -426,8 +462,45 @@ class CiscoGroupExpander:
         target_node.statements.append(inherited_statement)
         return True
 
-    def _ambiguity_record(self, identity_decision, ambiguous_existing_node, inherited_statement, target_path):
-        """统一构造未知命令族冲突的来源和路径信息。"""
+    @staticmethod
+    def _prepare_merge(
+        inherited_node: _GroupStatement,
+        group_name: str,
+        precedence: tuple[int, int],
+        target_path: list[str],
+        outcome: GroupExpansionOutcome,
+    ) -> tuple[SemanticDecision, _GroupStatement]:
+        """解析继承语句并构造带来源的独立副本。
+
+        规则命中统计和副本创建在同一阶段完成，确保后续覆盖不会修改 group 定义本身。
+        """
+        identity_decision = resolve_cisco_identity(
+            inherited_node.header,
+            path=target_path,
+        )
+        if identity_decision.matched:
+            outcome.identity_rule_hits += 1
+        else:
+            outcome.identity_fallbacks += 1
+        inherited_statement = _GroupStatement(
+            header=inherited_node.header,
+            origin=f"group:{group_name}",
+            rank=precedence,
+            comment=inherited_node.comment,
+        )
+        return identity_decision, inherited_statement
+
+    def _ambiguity_record(
+        self,
+        identity_decision,
+        ambiguous_existing_node,
+        inherited_statement,
+        target_path,
+    ):
+        """构造未知命令族冲突的可审计记录。
+
+        同时保留现有与候选语句的来源和值，使告警能够指出具体继承冲突。
+        """
         command_family = (
             identity_decision.normalized.split(maxsplit=1)[0]
             if identity_decision.normalized
@@ -455,7 +528,10 @@ class CiscoGroupExpander:
         outcome: GroupExpansionOutcome,
         washing_policy: WashingPolicy,
     ) -> bool:
-        """记录未知命令族歧义，并返回本次展开是否必须中止。"""
+        """按策略处理未覆盖 identity 的潜在冲突。
+
+        保留模式允许并存，告警模式记录风险，失败模式终止事务；统一决策避免静默选择错误值。
+        """
         if (
             identity_decision.matched
             or washing_policy.group_unknown_identity == "preserve"
@@ -468,7 +544,12 @@ class CiscoGroupExpander:
         if ambiguous_existing_node is None:
             return False
 
-        ambiguity_record = self._ambiguity_record(identity_decision, ambiguous_existing_node, inherited_statement, target_path)
+        ambiguity_record = self._ambiguity_record(
+            identity_decision,
+            ambiguous_existing_node,
+            inherited_statement,
+            target_path,
+        )
         command_family = ambiguity_record["family"]
         if ambiguity_record not in outcome.ambiguities:
             outcome.ambiguities.append(ambiguity_record)
@@ -494,7 +575,10 @@ class CiscoGroupExpander:
         target_path: list[str],
         outcome: GroupExpansionOutcome,
     ) -> None:
-        """按显式配置和 group 优先级决定叶子覆盖方向并记录冲突。"""
+        """根据显式配置和 group 优先级合并同名叶子。
+
+        显式配置始终优先，group 之间只在候选优先级更高时覆盖，并记录实际胜出方向。
+        """
         if (
             existing_statement.origin != "explicit"
             and inherited_statement.rank > existing_statement.rank
@@ -534,14 +618,7 @@ class CiscoGroupExpander:
         outcome = GroupExpansionOutcome()
         washing_policy = policy or WashingPolicy()
 
-        # 大配置通常没有活动的 apply-group。先在原树上廉价探测，避免为
-        # 不需要展开的配置克隆整棵 AST（尤其是大型 prefix-set/route-policy）。
-        if not any(
-            "apply-group" in node.header.lower()
-            for top in self.top_level_nodes
-            if top.active and not re.match(r"group\s+\S+", top.header.strip(), re.IGNORECASE)
-            for node in top.walk(include_self=True)
-        ):
+        if not self._has_applied_group():
             return outcome
 
         # 定义解析和工作树构建均不修改原根节点，便于任何失败直接回滚。
@@ -562,11 +639,7 @@ class CiscoGroupExpander:
         )
         self._expand_node(working_root, [], [], state)
         if state.has_unresolvable_reference or not outcome.success:
-            outcome.events.append(
-                "IOS XR group 展开未完整解析，已整体回滚并保留原配置"
-            )
-            outcome.conflicts.clear()
-            outcome.success = False
+            _rollback_expansion(outcome)
             return outcome
         if not state.encountered_group_names:
             return outcome
@@ -581,6 +654,19 @@ class CiscoGroupExpander:
             for name in sorted(state.encountered_group_names)
         )
         return outcome
+
+    def _has_applied_group(self) -> bool:
+        """快速判断活动配置是否包含 apply-group。
+
+        无引用时直接返回可避免克隆整棵 AST，同时字符串预筛不会漏掉实际引用。
+        """
+        return any(
+            "apply-group" in node.header.lower()
+            for top in self.top_level_nodes
+            if top.active
+            and not re.match(r"group\s+\S+", top.header.strip(), re.IGNORECASE)
+            for node in top.walk(include_self=True)
+        )
 
     def _load_group_definitions(
         self,
@@ -615,7 +701,10 @@ class CiscoGroupExpander:
         return group_definitions
 
     def _contains_nested_apply(self, nodes: list[_GroupStatement]) -> bool:
-        """判断节点树中是否存在嵌套的 apply-group 控制语句。"""
+        """递归判断 group 定义是否包含嵌套 apply-group。
+
+        当前展开器不支持嵌套引用，提前标记可在实际使用该定义时安全回滚。
+        """
         return any(
             self._parse_group_names(node.header, "apply-group")
             or self._contains_nested_apply(node.statements)
@@ -648,7 +737,9 @@ class CiscoGroupExpander:
             working_root.statements.append(
                 _GroupStatement(
                     source_node.header,
-                    clone_statements(source_node.statements, include_comments=True),
+                    clone_statements(
+                        source_node.statements, include_comments=True
+                    ),
                     is_block=source_node.is_block,
                     comment=source_node.comment,
                 )
@@ -678,7 +769,10 @@ class CiscoGroupExpander:
         self,
         root_node: _GroupStatement,
     ) -> set[str]:
-        """递归收集工作树中的全部 apply-group 引用名称。"""
+        """递归收集工作树中出现的所有 apply-group 名称。
+
+        去重集合作为依赖分析入口，使同一模板的多次引用只验证一次。
+        """
         referenced_group_names: set[str] = set()
         for child in root_node.statements:
             referenced_group_names.update(
@@ -744,7 +838,10 @@ class CiscoGroupExpander:
         applications: list[_GroupApplication],
         state: _ExpansionState,
     ) -> None:
-        """把当前路径上生效的 group payload 依次合并到目标节点。"""
+        """按优先级顺序合并当前路径的 group payload。
+
+        每个应用读取同一目标路径的片段，后处理的低优先级应用只补充未覆盖语句。
+        """
         for application in applications:
             definition = state.group_definitions.get(application.name)
             if definition is None:
@@ -767,7 +864,10 @@ class CiscoGroupExpander:
         target_node: _GroupStatement,
         referenced_group_names: set[str],
     ) -> _GroupControls:
-        """读取当前层级中属于本次展开范围的 apply/exclude 控制。"""
+        """读取当前层级可解析的 apply 和 exclude 控制。
+
+        只保留依赖集合中的名称，可隔离未使用模板中的陈旧引用。
+        """
         applied_group_names: list[str] = []
         excluded_group_names: set[str] = set()
         for child in target_node.statements:
@@ -797,7 +897,10 @@ class CiscoGroupExpander:
         group_names: tuple[str, ...],
         state: _ExpansionState,
     ) -> None:
-        """校验实际 apply 的 group 是否可以安全静态展开。"""
+        """校验活动 group 是否具备静态展开条件。
+
+        缺失定义、运行时变量和嵌套 apply 都会使依赖闭包不完整，因此统一标记失败。
+        """
         # 只校验从活动配置实际引用的 group；未使用定义不影响转换。
         for group_name in group_names:
             definition = state.group_definitions.get(group_name)
@@ -824,7 +927,10 @@ class CiscoGroupExpander:
         inherited_applications: list[_GroupApplication],
         target_depth: int,
     ) -> list[_GroupApplication]:
-        """按路径深度、列表顺序和 exclude 计算当前有效 group 应用。"""
+        """计算当前路径实际生效的 group 应用。
+
+        深层和靠前声明拥有更高优先级，exclude 会同时过滤本地及继承引用。
+        """
         local_applications = [
             _GroupApplication(
                 name=group_name,
@@ -890,7 +996,10 @@ class CiscoGroupExpander:
         working_root: _GroupStatement,
         terminal_commands: list[str],
     ) -> list[_GroupStatement]:
-        """把展开后的工作树和终止命令重新组装为 IOS XR 顶层节点。"""
+        """组装展开后的顶层节点和终止命令。
+
+        统一补充分隔符并恢复 end/commit，保证事务结果仍是完整可解析的 Cisco 配置。
+        """
         rebuilt_nodes: list[_GroupStatement] = []
         for top_level_node in working_root.statements:
             rebuilt_nodes.append(
@@ -911,15 +1020,17 @@ class CiscoGroupExpander:
 
 
 def from_context(context, origin="explicit"):
+    """把 Cisco 解析上下文复制成 group 工作语句。
+
+    保持 header、块类型、注释和来源，使后续合并可以操作独立副本而不污染正式 AST。
+    """
     return _GroupStatement(
-        context.header, [from_context(child, origin) for child in context.nodes],
-        context.is_block, origin=origin, comment=context.comment,
+        context.header,
+        [from_context(child, origin) for child in context.nodes],
+        context.is_block,
+        origin=origin,
+        comment=context.comment,
     )
-
-
-def parse_statements(lines, origin="explicit"):
-    source = format_fragment("\n".join(lines), 0)
-    return [from_context(node, origin) for node in CiscoSnapshot(source).root.nodes if not node.is_formatting]
 
 
 def clone_statements(
@@ -955,12 +1066,21 @@ def clone_statements(
     return result
 
 
-def render_statements(nodes: Iterable[_GroupStatement], depth: int = 1) -> list[str]:
-    """仅为已展开的 group 工作记录生成候选片段，不参与常规 Document 输出。"""
+def render_statements(
+    nodes: Iterable[_GroupStatement], depth: int = 1
+) -> list[str]:
+    """把 group 工作语句渲染为带缩进的配置行。
+
+    该渲染仅服务候选事务，保留格式和注释后再交给正式文档重解析。
+    """
     lines = []
     for node in nodes:
         if node.is_formatting:
-            lines.append(" " * depth + (node.comment or node.header) if node.header or node.comment else "")
+            lines.append(
+                " " * depth + (node.comment or node.header)
+                if node.header or node.comment
+                else ""
+            )
         else:
             line = " " * depth + node.header
             if node.comment:
@@ -971,16 +1091,30 @@ def render_statements(nodes: Iterable[_GroupStatement], depth: int = 1) -> list[
 
 
 def _signature(statement):
+    """生成工作语句的结构签名。
+
+    签名忽略无语义格式节点但保留注释，用于判断展开结果是否真的改变正式配置。
+    """
     return (
-        statement.header, statement.comment,
-        tuple(_signature(child) for child in statement.statements if not child.is_formatting or child.comment),
+        statement.header,
+        statement.comment,
+        tuple(
+            _signature(child)
+            for child in statement.statements
+            if not child.is_formatting or child.comment
+        ),
     )
 
 
 def publish_expansion(document, statements):
-    """只重写有语义变化的配置块，保留其他显式配置的原始文本。"""
+    """把展开结果中真正变化的块发布到正式文档。
+
+    复用原上下文删除或替换并追加新块，可保留未受影响显式配置的原始格式。
+    """
     from collections import defaultdict, deque
+
     from .rules.support import append_top_level
+
     candidates = defaultdict(deque)
     for statement in statements:
         if not statement.is_formatting:
@@ -1002,5 +1136,17 @@ def publish_expansion(document, statements):
     for statement in statements:
         if not statement.is_formatting and id(statement) not in consumed:
             text = "\n".join(render_statements([statement], 0)) + "\n"
-            append_top_level(transaction, document, text, "新增 group 继承配置块")
+            append_top_level(
+                transaction, document, text, "新增 group 继承配置块"
+            )
     transaction.commit()
+
+
+def _rollback_expansion(outcome: GroupExpansionOutcome) -> None:
+    """记录整体回滚并清除未提交的冲突明细。
+
+    失败时统一重置成功标记，防止调用方把部分分析结果当成已发布配置。
+    """
+    outcome.events.append("IOS XR group 展开未完整解析，已整体回滚并保留原配置")
+    outcome.conflicts.clear()
+    outcome.success = False

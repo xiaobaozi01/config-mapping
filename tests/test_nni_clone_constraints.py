@@ -107,7 +107,9 @@ class NniCloneConstraintsTest(unittest.TestCase):
                 NNIHandler().process(context)
                 self.assertTrue(context.has_errors)
                 self.assertEqual(context.devices["A"].document.render(), before)
-                self.assertFalse(any(mapping.is_mlag_clone for mapping in context.mappings))
+                self.assertTrue(
+                    all("is_mlag_clone" not in mapping.to_dict() for mapping in context.mappings)
+                )
 
     def test_programmatic_subinterface_target_fails_before_clone(self):
         context = context_for(Vendor.CISCO_IOSXR, "iosxr_clone_l3.cfg", 1)

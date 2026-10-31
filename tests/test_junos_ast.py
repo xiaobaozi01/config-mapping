@@ -23,10 +23,6 @@ class JunosAstTest(unittest.TestCase):
 
     def test_junos_inline_blocks_are_parsed_and_expanded(self):
         source = junos_config("inline_blocks.cfg")
-        self.assertEqual(
-            JunosDocument._expand_inline_blocks("G { mtu 9000; };"),
-            "G {\nmtu 9000;\n};",
-        )
         document = JunosDocument(source)
         outcome = document.expand_groups([])
         rendered = document.render()

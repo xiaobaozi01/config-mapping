@@ -7,7 +7,10 @@ from dataclasses import dataclass
 
 @dataclass(slots=True)
 class SimulationAdaptationPolicy:
-    """目标镜像的保守参数适配策略。"""
+    """定义目标镜像使用的保守模拟适配策略。
+
+    所有能力都通过显式字段控制，使调用方能够关闭不必要的改写并保留可审计边界。
+    """
 
     mode: str = "stable"
     ensure_data_interfaces_enabled: bool = True
@@ -16,12 +19,12 @@ class SimulationAdaptationPolicy:
     bfd_minimum_multiplier: int = 3
 
 
-ParamAdjustmentPolicy = SimulationAdaptationPolicy
-
-
 @dataclass(slots=True, frozen=True)
 class WashingPolicy:
-    """Group 未知语义及目标镜像不支持的 Junos group 处理策略。"""
+    """定义 group 未知语义和排除模板的处理策略。
+
+    策略对象不依赖具体文档，使同一转换流程可按镜像选择保留、告警或失败的语义。
+    """
 
     group_unknown_identity: str = "warn"
     junos_excluded_groups: tuple[str, ...] = ("re1",)

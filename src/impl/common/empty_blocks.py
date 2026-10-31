@@ -2,9 +2,9 @@
 
 from __future__ import annotations
 
+import re
 from dataclasses import dataclass
 from pathlib import Path
-import re
 
 import yaml
 
@@ -13,6 +13,11 @@ from .cleaning import matches_cleaning_path
 
 @dataclass(frozen=True)
 class EmptyBlockPolicy:
+    """保存空容器的默认输出动作和按完整路径匹配的规则。
+
+    规则按声明顺序求值，使更具体的镜像策略可以先于通用默认动作命中。
+    """
+
     default: str
     rules: tuple[tuple[tuple[str, ...], str], ...]
 
@@ -23,7 +28,11 @@ class EmptyBlockPolicy:
         ``*`` 恰好匹配一级，``**`` 匹配零级或多级；规则须覆盖块自身在内的完整路径。
         """
         return next(
-            (action for rule_path, action in self.rules if matches_cleaning_path(path, rule_path)),
+            (
+                action
+                for rule_path, action in self.rules
+                if matches_cleaning_path(path, rule_path)
+            ),
             self.default,
         )
 
@@ -42,11 +51,36 @@ def load_empty_block_policy(
     action_choices = "、".join(actions[:-1]) + " 或 " + actions[-1]
     with path.open("r", encoding="utf-8") as handle:
         payload = yaml.safe_load(handle)
+    default = _validate_policy_header(
+        payload, path, vendor, image, actions, action_choices
+    )
+    rules = _load_empty_block_rules(payload["rules"], path, actions)
+    return EmptyBlockPolicy(default, tuple(rules))
+
+
+def _validate_policy_header(
+    payload: object,
+    path: Path,
+    vendor: str,
+    image: str,
+    actions: tuple[str, ...],
+    action_choices: str,
+) -> str:
+    """校验空块策略文件的 schema、目标镜像和默认动作。
+
+    这些字段共同决定规则是否属于当前镜像，必须在读取规则内容前统一验证。
+    """
     if not isinstance(payload, dict) or set(payload) != {
-        "schema_version", "target", "default_when_empty", "rules"
+        "schema_version",
+        "target",
+        "default_when_empty",
+        "rules",
     }:
         raise ValueError(f"{path}: 空块规则字段无效")
-    if type(payload["schema_version"]) is not int or payload["schema_version"] != 1:
+    if (
+        type(payload["schema_version"]) is not int
+        or payload["schema_version"] != 1
+    ):
         raise ValueError(f"{path}: 空块规则版本无效")
     if payload["target"] != {"vendor": vendor, "image": image}:
         raise ValueError(f"{path}: 空块规则目标镜像无效")
@@ -56,6 +90,19 @@ def load_empty_block_policy(
     entries = payload["rules"]
     if not isinstance(entries, list):
         raise ValueError(f"{path}: rules 必须是列表")
+    return default
+
+
+def _load_empty_block_rules(
+    entries: list[object],
+    path: Path,
+    actions: tuple[str, ...],
+) -> list[tuple[tuple[str, ...], str]]:
+    """校验并读取空块路径规则。
+
+    路径和动作在加载阶段全部编译检查，避免渲染文档时才因规则错误中断输出。
+    """
+    action_choices = "、".join(actions[:-1]) + " 或 " + actions[-1]
     rules: list[tuple[tuple[str, ...], str]] = []
     seen: set[tuple[str, ...]] = set()
     for entry in entries:
@@ -77,7 +124,9 @@ def load_empty_block_policy(
                 if part not in {"*", "**"}:
                     re.compile(part, re.IGNORECASE)
         except re.error as exc:
-            raise ValueError(f"{path}: 空块路径包含无效正则 {rule_path}: {exc}") from exc
+            raise ValueError(
+                f"{path}: 空块路径包含无效正则 {rule_path}: {exc}"
+            ) from exc
         if rule_path in seen:
             raise ValueError(f"{path}: 重复的空块路径 {rule_path}")
         action = entry["action"]
@@ -85,4 +134,4 @@ def load_empty_block_policy(
             raise ValueError(f"{path}: 空块动作必须是 {action_choices}")
         seen.add(rule_path)
         rules.append((rule_path, action))
-    return EmptyBlockPolicy(default, tuple(rules))
+    return rules

@@ -83,7 +83,6 @@ class SimulationAdaptationTest(unittest.TestCase):
         self.assertEqual(cisco_profile.image, "xrv9000")
         self.assertEqual(cisco_profile.simulation_adaptation.mode, "stable")
         self.assertEqual(cisco_profile.simulation_adaptation.bfd_minimum_interval_ms, 300)
-        self.assertIs(cisco_profile.param_adjustment, cisco_profile.simulation_adaptation)
 
         source = simulation_config("iosxr.cfg")
         document = CiscoDocument(source)
@@ -103,8 +102,8 @@ class SimulationAdaptationTest(unittest.TestCase):
                 "      mode: off\n",
                 encoding="utf-8",
             )
-            legacy = load_profiles(legacy_profile)
-            self.assertEqual(legacy[Vendor.CISCO_IOSXR].simulation_adaptation.mode, "off")
+            with self.assertRaisesRegex(ValueError, "simulation_adaptation"):
+                load_profiles(legacy_profile)
 
     def test_profile_requires_nni_and_three_reserved_interfaces(self):
         defaults = load_profiles(None)

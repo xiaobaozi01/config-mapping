@@ -6,24 +6,40 @@ from collections import defaultdict
 from dataclasses import dataclass
 
 from impl.common.interface import InterfaceKind, interface_parent
-from .models import ConversionContext, DeviceContext, InterfaceMapping, Link
-from .profiles import normalize_data_interfaces
+
 from .interfaces import _report
+from .models import ConversionContext, InterfaceMapping, Link
+from .profiles import normalize_data_interfaces
 
 
 class _UnionFind:
-    """按 Excel 行号合并同一聚合链路的物理成员。"""
+    """用并查集合并属于同一聚合链路的 Excel 行号。
+
+    成员关系可能经多个端点传递，并查集能在接近常数的开销下形成稳定组件。
+    """
 
     def __init__(self, values: list[int]):
+        """为每个链路行号建立独立的并查集节点。
+
+        初始父节点指向自身，使尚未发现共享 bundle 的行保持为单行组件。
+        """
         self._parent = {value: value for value in values}
 
     def find(self, value: int) -> int:
+        """返回行号所在组件的根节点并压缩搜索路径。
+
+        路径压缩让后续多成员聚合的查找保持高效，同时不改变组件归属。
+        """
         while self._parent[value] != value:
             self._parent[value] = self._parent[self._parent[value]]
             value = self._parent[value]
         return value
 
     def union(self, left: int, right: int) -> None:
+        """合并两个行号所属的组件。
+
+        根节点相同时保持原状，避免无意义地改变最终用于选择保留行的组件结构。
+        """
         left_root, right_root = self.find(left), self.find(right)
         if left_root != right_root:
             self._parent[right_root] = left_root
@@ -31,9 +47,11 @@ class _UnionFind:
 
 @dataclass(slots=True, frozen=True)
 class NniEndpointPlan:
-    """某设备端点从源接口迁移到目标物理口的执行计划。"""
+    """保存某设备端点从源接口迁移到目标物理口的计划。
 
-    logical_sources: tuple[str, ...]
+    计划在配置树修改前完整生成，使容量和聚合校验失败时不会留下部分迁移。
+    """
+
     bundles: tuple[str, ...]
     target: str
     link_rows: tuple[int, ...]
@@ -42,7 +60,10 @@ class NniEndpointPlan:
 
 @dataclass(slots=True, frozen=True)
 class NniComponentPlan:
-    """聚合链路分组结果；键是保留行，值是组内全部行。"""
+    """保存聚合链路组件、冗余行和成员一致性警告。
+
+    保留行作为组件键让后续分配稳定复用最小 Excel 行，并保持输入排序语义。
+    """
 
     component_rows: dict[int, tuple[int, ...]]
     redundant_rows: dict[int, int]
@@ -57,59 +78,76 @@ def plan_nni_components(
     links: list[Link],
     bundles: BundleLookup,
 ) -> NniComponentPlan:
-    """做什么：把 NNI 链接行按 bundle 聚合成组件，产出保留/冗余/冲突计划。
+    """把共享 bundle 的 NNI 链接行规划为稳定组件。
 
-    为什么：Excel 中一条聚合 NNI 常拆成多行（每行一个成员接口），只有先识别
-    它们属于同一条物理链路，后续才能决定保留哪一行、把其余行标记为冗余。
-    流程：并查集合并共享 bundle 的行 → 按根行号分组 → 逐组件选保留行、标冗余、
-    校验成员一致性。规划器返回冲突原因，由流程将冲突作为错误阻止转换。
+    Excel 常把一条聚合链路拆成多个成员行，先按物理关系合并并校验成员一致性，
+    后续才能安全选择保留行并缩减冗余成员。
     """
     if not links:
         return NniComponentPlan({}, {}, ())
 
-    # 第 1 步：用并查集合并共享同一 bundle 的行。
-    # 聚合 NNI 的多行通过「两端设备对 + 端点设备名 + bundle 名」这组键识别为
-    # 同一条物理链路；并查集让传递共享的行也归入同一组件（A 与 B 同 bundle、
-    # B 与 C 同 bundle，则 A、B、C 归为一组）。
-    union = _UnionFind([link.row for link in links])
-    rows_by_bundle: dict[tuple[tuple[str, str], str, str], list[int]] = defaultdict(list)
-    for link in links:
-        sorted_pair = sorted((link.a_device, link.z_device))
-        device_pair: tuple[str, str] = (sorted_pair[0], sorted_pair[1])
-        for device_name, _ in link.endpoints():
-            # 华为等仅作为拓扑对端的设备没有 bundle 条目。
-            bundle = bundles.get((link.row, device_name))
-            if bundle:
-                rows_by_bundle[(device_pair, device_name, bundle)].append(link.row)
-    for rows in rows_by_bundle.values():
-        for row in rows[1:]:
-            union.union(rows[0], row)
-
-    # 第 2 步：按并查集根行号把全部行聚成组件；每个连通块即一个聚合组件。
-    components: dict[int, list[int]] = defaultdict(list)
-    for link in links:
-        components[union.find(link.row)].append(link.row)
-
-    # 第 3 步：逐组件选保留行（最小行号）、把其余行标为冗余，并校验成员一致性。
+    components = _component_memberships(links, bundles)
     by_row = {link.row: link for link in links}
     component_rows: dict[int, tuple[int, ...]] = {}
     redundant_rows: dict[int, int] = {}
     warnings: list[str] = []
     for rows in components.values():
-        ordered_rows = tuple(sorted(rows))
-        keep = min(ordered_rows)
+        keep, ordered_rows, warning, redundant = _plan_component(
+            rows,
+            by_row,
+            bundles,
+        )
         component_rows[keep] = ordered_rows
-        if len(ordered_rows) <= 1:
-            continue
-
-        warning = _validate_component_bundles(ordered_rows, by_row, bundles)
         if warning is not None:
             warnings.append(warning)
-        for row in ordered_rows:
-            if row != keep:
-                redundant_rows[row] = keep
+        redundant_rows.update(redundant)
 
     return NniComponentPlan(component_rows, redundant_rows, tuple(warnings))
+
+
+def _component_memberships(
+    links: list[Link],
+    bundles: BundleLookup,
+) -> dict[int, list[int]]:
+    """计算共享 bundle 的链路行组件。
+
+    同时按两端设备和聚合名建立关系，使传递关联的成员进入同一连通块。
+    """
+    union = _UnionFind([link.row for link in links])
+    rows_by_bundle: dict[tuple[tuple[str, str], str, str], list[int]] = (
+        defaultdict(list)
+    )
+    for link in links:
+        pair = tuple(sorted((link.a_device, link.z_device)))
+        for device_name, _ in link.endpoints():
+            bundle = bundles.get((link.row, device_name))
+            if bundle:
+                rows_by_bundle[(*pair, device_name, bundle)].append(link.row)
+    for rows in rows_by_bundle.values():
+        for row in rows[1:]:
+            union.union(rows[0], row)
+    components: dict[int, list[int]] = defaultdict(list)
+    for link in links:
+        components[union.find(link.row)].append(link.row)
+    return components
+
+
+def _plan_component(
+    rows: list[int],
+    by_row: dict[int, Link],
+    bundles: BundleLookup,
+) -> tuple[int, tuple[int, ...], str | None, dict[int, int]]:
+    """为单个聚合组件选择保留行并计算冗余关系。
+
+    以最小行号作为稳定保留行，并先验证成员绑定一致，避免删除仍有歧义的成员。
+    """
+    ordered_rows = tuple(sorted(rows))
+    keep = ordered_rows[0]
+    if len(ordered_rows) <= 1:
+        return keep, ordered_rows, None, {}
+    warning = _validate_component_bundles(ordered_rows, by_row, bundles)
+    redundant = {row: keep for row in ordered_rows if row != keep}
+    return keep, ordered_rows, warning, redundant
 
 
 def _validate_component_bundles(
@@ -117,11 +155,9 @@ def _validate_component_bundles(
     by_row: dict[int, Link],
     bundles: BundleLookup,
 ) -> str | None:
-    """做什么：校验一个组件内各成员行在每个设备端点上 bundle 是否一致。
+    """校验组件内每条成员行在各设备端点上的 bundle 关系是否一致。
 
-    为什么：同一物理链路上的所有成员行，在同一设备端点上应指向同一个 bundle；
-    任一设备端点上 bundle 缺失或不唯一都说明成员关系不一致。一致时返回
-    ``None``，否则返回描述不一致的文本。
+    成员缺失或指向多个聚合时无法确定应保留哪种绑定，因此返回可审计的失败原因。
     """
     row_links = [by_row[row] for row in ordered_rows]
     # 华为等仅作为拓扑对端的设备没有 bundle 条目，不参与成员一致性校验，
@@ -136,8 +172,13 @@ def _validate_component_bundles(
     )
     invalid_devices: list[str] = []
     for device_name in device_names:
-        local_bundles = [bundles.get((row, device_name)) for row in ordered_rows]
-        if any(value is None for value in local_bundles) or len(set(local_bundles)) != 1:
+        local_bundles = [
+            bundles.get((row, device_name)) for row in ordered_rows
+        ]
+        if (
+            any(value is None for value in local_bundles)
+            or len(set(local_bundles)) != 1
+        ):
             invalid_devices.append(device_name)
     if not invalid_devices:
         return None
@@ -173,8 +214,8 @@ class NNIHandler:
     def process(self, context: ConversionContext) -> None:
         """执行完整 NNI 流程，并在出错时阻止后续配置改写。
 
-        该入口依次完成端点分析、聚合组件规划、目标接口分配和逐设备迁移；
-        结果直接写入 ``context`` 中的拓扑、设备配置、映射与诊断信息。
+        端点、容量和聚合兼容性都在同一入口内完成校验后才进入迁移，确保任一错误
+        都在配置树发生变化前终止，避免留下只适配了一部分设备的中间状态。
         """
         # 预检阶段已经把越界或不支持的链路设为 inactive；这里不能让它们
         # 消耗镜像的 NNI 端口，也不能据此删除设备配置。
@@ -188,74 +229,23 @@ class NNIHandler:
         if context.has_errors:
             return
 
-        seen_sources: set[tuple[str, str]] = set()
-        for link in links:
-            for name, _ in link.endpoints():
-                if name not in context.devices:
-                    continue
-                key = (name, analysis.resolved[(link.row, name)])
-                if key in seen_sources:
-                    context.errors.append(f"设备 {name} 物理端口 {key[1]} 被多条活动拓扑链路重复占用")
-                seen_sources.add(key)
-        if context.has_errors:
+        if not self._validate_unique_sources(context, links, analysis):
             return
         skipped = self._skipped_protection(context, analysis.member_maps)
-        for link in links:
-            for name, _ in link.endpoints():
-                if name not in context.devices:
-                    continue
-                source = analysis.resolved[(link.row, name)]
-                if source in skipped[name]:
-                    message = (
-                        f"设备 {name} 的 NNI 源接口 {source} 同时属于活动链路和跳过链路的"
-                        "保护接口，不能安全迁移"
-                    )
-                    context.devices[name].errors.append(message)
-                    context.errors.append(message)
-        if context.has_errors:
+        if not self._validate_skipped_overlap(
+            context, links, analysis, skipped
+        ):
             return
 
         component_rows = self._plan_components(context, links, analysis.bundles)
-
         if context.has_errors:
             return
-        plans = self._allocate_targets(context, links, component_rows, analysis, skipped)
+        plans = self._allocate_targets(
+            context, links, component_rows, analysis, skipped
+        )
         if context.has_errors:
             return
-        # 聚合层保持单一对象；跨设备聚合缺少可靠 MC-LAG 还原资料时明确拒绝。
-        peers_by_bundle: dict[tuple[str, str], set[str]] = defaultdict(set)
-        for link in links:
-            for name, _ in link.endpoints():
-                bundle = analysis.bundles.get((link.row, name))
-                if bundle:
-                    peers_by_bundle[(name, bundle)].update(peer for peer, _ in link.endpoints() if peer != name)
-        for (name, bundle), peers in peers_by_bundle.items():
-            if len(peers) > 1:
-                message = f"设备 {name} 聚合 {bundle} 跨多个对端，缺少可验证的 MC-LAG 还原条件，不能自动拆分或复制"
-                context.errors.append(message)
-                context.devices[name].errors.append(message)
-        for link in links:
-            modes = []
-            for name, _ in link.endpoints():
-                if name not in context.devices:
-                    continue
-                doc = context.devices[name].document
-                member = analysis.resolved[(link.row, name)]
-                bundle = analysis.bundles[(link.row, name)]
-                mode = doc.bundle_mode(member) if bundle else "on"
-                modes.append(mode)
-                if mode == "unknown":
-                    context.errors.append(f"设备 {name} 成员 {member} 的聚合绑定或协商方式无法安全识别")
-                if bundle:
-                    specs = doc.interface_specs()
-                    names = doc.logical_names_under(member)
-                    if any(spec.parent == member and (spec.unit is not None) for spec in specs):
-                        context.errors.append(f"设备 {name} 聚合成员 {member} 含业务子接口，无法安全迁移")
-                if bundle and any(peer not in context.devices for peer, _ in link.endpoints()):
-                    context.warnings.append(f"设备 {name} 聚合 {bundle} 对端未参与配置转换，协商方式 {mode} 未核验")
-            if len(modes) == 2 and (("on" in modes and any(mode != "on" for mode in modes)) or modes == ["passive", "passive"]):
-                context.errors.append(f"链接表第 {link.row} 行两端聚合协商方式不兼容: {modes}")
-        if context.has_errors:
+        if not self._validate_bundle_modes(context, links, analysis):
             return
         for device_name, device_plans in plans.items():
             self._apply_device_plans(
@@ -266,31 +256,185 @@ class NNIHandler:
             )
 
     @staticmethod
+    def _validate_unique_sources(
+        context: ConversionContext,
+        links: list[Link],
+        analysis: _NniAnalysis,
+    ) -> bool:
+        """检查活动链路是否重复占用同一设备的物理端口。
+
+        重复占用会让源配置被迁移两次，因此在修改任何 AST 前终止流程。
+        """
+        seen_sources: set[tuple[str, str]] = set()
+        for link in links:
+            for name, _ in link.endpoints():
+                if name not in context.devices:
+                    continue
+                key = (name, analysis.resolved[(link.row, name)])
+                if key in seen_sources:
+                    context.errors.append(
+                        f"设备 {name} 物理端口 {key[1]} "
+                        "被多条活动拓扑链路重复占用"
+                    )
+                seen_sources.add(key)
+        return not context.has_errors
+
+    @staticmethod
+    def _validate_skipped_overlap(
+        context: ConversionContext,
+        links: list[Link],
+        analysis: _NniAnalysis,
+        skipped: dict[str, set[str]],
+    ) -> bool:
+        """检查活动 NNI 源接口是否同时属于跳过链路保护集合。
+
+        两类链路争夺同一接口时无法保持两边拓扑语义，必须提前报错而非任意选择。
+        """
+        for link in links:
+            for name, _ in link.endpoints():
+                if name not in context.devices:
+                    continue
+                source = analysis.resolved[(link.row, name)]
+                if source in skipped[name]:
+                    message = (
+                        f"设备 {name} 的 NNI 源接口 {source} "
+                        "同时属于活动链路和跳过链路的保护接口，不能安全迁移"
+                    )
+                    context.devices[name].errors.append(message)
+                    context.errors.append(message)
+        return not context.has_errors
+
+    def _validate_bundle_modes(
+        self,
+        context: ConversionContext,
+        links: list[Link],
+        analysis: _NniAnalysis,
+    ) -> bool:
+        """校验聚合归属和每条链路两端的协商方式。
+
+        先排除跨对端聚合，再按链路检查成员业务和模式，避免不安全组合进入分配阶段。
+        """
+        self._reject_cross_peer_bundles(context, links, analysis)
+        if context.has_errors:
+            return False
+        for link in links:
+            self._validate_link_modes(context, link, analysis)
+        return not context.has_errors
+
+    @staticmethod
+    def _reject_cross_peer_bundles(
+        context: ConversionContext,
+        links: list[Link],
+        analysis: _NniAnalysis,
+    ) -> None:
+        """标记同一聚合被多个对端共同引用的情况。
+
+        当前没有可验证的 MC-LAG 还原条件，伪造拆分或复制会破坏业务语义。
+        """
+        peers_by_bundle: dict[tuple[str, str], set[str]] = defaultdict(set)
+        for link in links:
+            for name, _ in link.endpoints():
+                bundle = analysis.bundles.get((link.row, name))
+                if bundle:
+                    peers_by_bundle[(name, bundle)].update(
+                        peer for peer, _ in link.endpoints() if peer != name
+                    )
+        for (name, bundle), peers in peers_by_bundle.items():
+            if len(peers) > 1:
+                message = (
+                    f"设备 {name} 聚合 {bundle} 跨多个对端，缺少可验证的 "
+                    "MC-LAG 还原条件，不能自动拆分或复制"
+                )
+                context.errors.append(message)
+                context.devices[name].errors.append(message)
+
+    @staticmethod
+    def _validate_link_modes(
+        context: ConversionContext,
+        link: Link,
+        analysis: _NniAnalysis,
+    ) -> None:
+        """校验单条活动链路两端的成员约束和协商模式。
+
+        模式或子接口不兼容时写入精确上下文，让用户能在迁移前修正源配置。
+        """
+        modes: list[str] = []
+        for name, _ in link.endpoints():
+            if name not in context.devices:
+                continue
+            doc = context.devices[name].document
+            member = analysis.resolved[(link.row, name)]
+            bundle = analysis.bundles[(link.row, name)]
+            mode = doc.bundle_mode(member) if bundle else "on"
+            modes.append(mode)
+            if mode == "unknown":
+                context.errors.append(
+                    f"设备 {name} 成员 {member} 的聚合绑定或协商方式无法安全识别"
+                )
+            if bundle and any(
+                spec.parent == member and spec.unit is not None
+                for spec in doc.interface_specs()
+            ):
+                context.errors.append(
+                    f"设备 {name} 聚合成员 {member} 含业务子接口，无法安全迁移"
+                )
+            if bundle and any(
+                peer not in context.devices for peer, _ in link.endpoints()
+            ):
+                context.warnings.append(
+                    f"设备 {name} 聚合 {bundle} 对端未参与配置转换，"
+                    f"协商方式 {mode} 未核验"
+                )
+        if len(modes) == 2 and (
+            ("on" in modes and any(mode != "on" for mode in modes))
+            or modes == ["passive", "passive"]
+        ):
+            context.errors.append(
+                f"链接表第 {link.row} 行两端聚合协商方式不兼容: {modes}"
+            )
+
+    @staticmethod
     def _skipped_protection(
         context: ConversionContext,
         members_by_device: dict[str, dict[str, str]],
     ) -> dict[str, set[str]]:
-        """保存预检跳过端点及其完整聚合树，后续不能把它们当作空闲目标。"""
-        protected: dict[str, set[str]] = {name: set() for name in context.devices}
+        """计算跳过快照必须保留的接口及完整聚合树。
+
+        目标分配不能占用这些受保护端口，否则会覆盖预检明确跳过的拓扑端点。
+        """
+        protected: dict[str, set[str]] = {
+            name: set() for name in context.devices
+        }
         for link in context.topology.links:
             if link.active:
                 continue
             for name, interface in link.endpoints():
                 if name in context.devices:
-                    protected[name].add(interface_parent(
-                        context.devices[name].document.resolve_interface(interface)
-                    ))
+                    protected[name].add(
+                        interface_parent(
+                            context.devices[name].document.resolve_interface(
+                                interface
+                            )
+                        )
+                    )
         for name, device in context.devices.items():
             protected[name].update(
-                interface_parent(device.document.resolve_interface(mapping.source_interface))
-                for mapping in device.mappings if mapping.action == "skip"
+                interface_parent(
+                    device.document.resolve_interface(mapping.source_interface)
+                )
+                for mapping in device.mappings
+                if mapping.action == "skip"
             )
             members = members_by_device[name]
             protected[name].update(
-                bundle for member, bundle in members.items() if member in protected[name]
+                bundle
+                for member, bundle in members.items()
+                if member in protected[name]
             )
             protected[name].update(
-                member for member, bundle in members.items() if bundle in protected[name]
+                member
+                for member, bundle in members.items()
+                if bundle in protected[name]
             )
         return protected
 
@@ -325,7 +469,9 @@ class NNIHandler:
                 source = device.document.resolve_interface(raw_interface)
                 parent = interface_parent(source)
                 resolved[(link.row, device_name)] = parent
-                bundles[(link.row, device_name)] = member_maps[device_name].get(parent)
+                bundles[(link.row, device_name)] = member_maps[device_name].get(
+                    parent
+                )
                 kind = device.document.interface_kind(parent)
                 if kind == InterfaceKind.PHYSICAL:
                     continue
@@ -353,8 +499,16 @@ class NNIHandler:
         plan = plan_nni_components(links, bundles)
         context.errors.extend(plan.warnings)
         for rows in plan.component_rows.values():
-            if len(rows) > 1 and any(name not in context.devices for row in rows for link in links if link.row == row for name, _ in link.endpoints()):
-                context.errors.append(f"聚合成员行 {list(rows)} 的外部对端聚合关系无法核验，不压缩未知外部链路")
+            if len(rows) > 1 and any(
+                name not in context.devices
+                for row in rows
+                for link in links
+                if link.row == row
+                for name, _ in link.endpoints()
+            ):
+                context.errors.append(
+                    f"聚合成员行 {list(rows)} 的外部对端聚合关系无法核验，不压缩未知外部链路"
+                )
         if context.has_errors:
             return {}
 
@@ -383,77 +537,19 @@ class NNIHandler:
     ) -> dict[str, list[NniEndpointPlan]]:
         """按设备为每个有效 NNI 组件分配一个镜像物理接口。
 
-        返回按设备分组的迁移计划，同时把分配结果回写到保留的拓扑链路；
-        可用接口不足时记录错误，尚不修改设备配置树。
+        分配结果先保存在计划和待回写集合中，只有全部设备容量校验通过后才更新拓扑；
+        这样接口不足时不会出现部分链路已指向新端口、部分链路仍保留旧端口的状态。
         """
-        plans: dict[str, list[NniEndpointPlan]] = defaultdict(list)
-        allocated: dict[str, int] = defaultdict(int)
-        available: dict[str, list[str]] = {}
-        for name, device in context.devices.items():
-            try:
-                if len(device.profile.interfaces) < 4:
-                    raise ValueError("镜像接口列表至少需要四个接口")
-                targets = normalize_data_interfaces(device.device.vendor, device.profile.interfaces)[:-3]
-            except ValueError as exc:
-                message = f"设备 {name} 的 NNI 目标接口无效: {exc}"
-                device.errors.append(message)
-                context.errors.append(message)
-                available[name] = []
-                continue
-            available[name] = [
-                value for value in targets if interface_parent(value) not in skipped[name]
-            ]
+        available = _available_targets(context, skipped)
         if context.has_errors:
             return {}
-        assignments: list[tuple[Link, str, str]] = []
-        # 按 Excel 行号稳定分配目标口，保证相同输入每次产生相同结果。
-        for link in sorted((item for item in links if item.active), key=lambda item: item.row):
-            for device_name, _ in link.endpoints():
-                # 仅对已加载配置的本端设备分配目标口。
-                if device_name not in context.devices:
-                    continue
-                device = context.devices[device_name]
-                index = allocated[device_name]
-                if index >= len(available[device_name]):
-                    message = (
-                        f"设备 {device_name} 的 NNI 数量超过可用物理接口数 "
-                        f"{len(available[device_name])}（已排除跳过链路的保护接口）"
-                    )
-                    device.errors.append(message)
-                    context.errors.append(message)
-                    continue
-                target = available[device_name][index]
-                allocated[device_name] += 1
-                # 同一聚合组件可以对应多行物理成员，但只占用一个目标 NNI。
-                rows = component_rows.get(link.row, (link.row,))
-                plans[device_name].append(
-                    NniEndpointPlan(
-                        # logical_sources 记录保留的业务父口。普通链路取
-                        # 物理父口，聚合链路则取 Bundle/ae；dict.fromkeys 在
-                        # 保持拓扑顺序的同时去重。
-                        logical_sources=tuple(
-                            dict.fromkeys(
-                                analysis.bundles[(row, device_name)]
-                                or analysis.resolved[(row, device_name)]
-                                for row in rows
-                            )
-                        ),
-                        bundles=tuple(
-                            dict.fromkeys(
-                                bundle
-                                for row in rows
-                                if (bundle := analysis.bundles[(row, device_name)])
-                            )
-                        ),
-                        target=target,
-                        link_rows=rows,
-                        source_members=tuple(
-                            analysis.resolved[(row, device_name)] for row in rows
-                        ),
-                    )
-                )
-                assignments.append((link, device_name, target))
-        # 容量错误不能造成部分设备接口迁移，也不能回写半套目标拓扑。
+        plans, assignments = _assign_targets(
+            context,
+            links,
+            component_rows,
+            analysis,
+            available,
+        )
         if context.has_errors:
             return {}
         for link, device_name, target in assignments:
@@ -461,52 +557,39 @@ class NNIHandler:
         return plans
 
     def _apply_device_plans(
-        self, context: ConversionContext, device_name: str,
-        plans: list[NniEndpointPlan], members: dict[str, str],
+        self,
+        context: ConversionContext,
+        device_name: str,
+        plans: list[NniEndpointPlan],
+        members: dict[str, str],
     ) -> None:
-        """仅迁移物理成员；聚合主口、子口和其业务引用保留。"""
+        """按计划迁移物理成员并保留聚合主口及业务子树。
+
+        先暂存全部源树再删除和改名，避免多个源目标彼此覆盖，并维持引用稳定。
+        """
         device = context.devices[device_name]
         doc = device.document
         bundles = {bundle for plan in plans for bundle in plan.bundles}
-        staged = []
-        selected = set()
-        for index, plan in enumerate(plans):
-            source = plan.source_members[0]
-            selected.add(source)
-            placeholder = f"ADAPT-NNI-{index}"
-            doc.clone_interface_tree(source, placeholder, strip_bundle=False)
-            staged.append((source, placeholder, plan))
-        # 所有源已暂存，再统一删除，防止源目标同名相互覆盖。
-        removed_members = {member for member, bundle in members.items() if bundle in bundles}
+        staged, selected = _stage_plans(doc, plans)
+        removed_members = {
+            member for member, bundle in members.items() if bundle in bundles
+        }
         for source in selected | removed_members:
             doc.remove_interface(source, include_children=True)
-        if not self._clean_removed_members(context, device_name, removed_members - selected):
+        if not self._clean_removed_members(
+            context, device_name, removed_members - selected
+        ):
             return
-        for source, placeholder, plan in staged:
-            doc.rename_interface_tree(placeholder, plan.target, strip_bundle=False)
-            doc.ensure_parent_interface(plan.target)
-            self._record_endpoint_mappings(device, device_name, source, plan)
-        for member in sorted(removed_members - selected):
-            device.mappings.append(InterfaceMapping(
-                device=device_name, source_interface=member, role="NNI", action="remove",
-                target_interface=None, reason="缩减冗余聚合成员",
-            ))
-        for bundle in sorted(bundles):
-            for name in dict.fromkeys([bundle, *doc.logical_names_under(bundle)]):
-                device.mappings.append(InterfaceMapping(
-                    device=device_name, source_interface=name, role="NNI", action="preserve",
-                    target_interface=name, reason="保留聚合业务接口类型和引用",
-                ))
-            outcome = doc.adapt_bundle(bundle)
-            device.errors.extend(outcome.errors)
-            device.warnings.extend(outcome.warnings)
-            for warning in outcome.warnings:
-                context.add_event("bundle-adaptation-warning", warning, device=device_name, interface=bundle)
-            for change in outcome.changes:
-                context.add_event("bundle-adaptation", f"设备 {device_name} 调整聚合门限", device=device_name, **change)
+        _apply_staged_plans(device, device_name, staged)
+        _record_removed_members(device, device_name, removed_members - selected)
+        _record_preserved_bundles(context, device, device_name, bundles)
 
     @staticmethod
     def _clean_removed_members(context, device_name, removed):
+        """清理聚合缩减后不再保留的物理成员依赖。
+
+        删除集合先写入设备上下文再报告，使最终引用校验能看到完整失效范围。
+        """
         if not removed:
             return True
         device = context.devices[device_name]
@@ -517,13 +600,217 @@ class NNIHandler:
 
     @staticmethod
     def _record_endpoint_mappings(device, device_name, source, plan):
-        """父口和已有子口分别记录映射，不对保留的聚合业务改名。"""
-        target_names = dict.fromkeys([plan.target, *device.document.logical_names_under(plan.target)])
+        """记录目标父口及其逻辑子口的接口映射。
+
+        同一后缀逐一映射可保留已有 unit 业务，同时让审计记录与最终接口树一致。
+        """
+        target_names = dict.fromkeys(
+            [plan.target, *device.document.logical_names_under(plan.target)]
+        )
         for target_name in target_names:
-            suffix = target_name[len(plan.target):]
-            device.mappings.append(InterfaceMapping(
-                device=device_name, source_interface=source + suffix,
-                role="NNI", action="map-member" if plan.bundles else "map",
-                target_interface=target_name, link_rows=list(plan.link_rows),
-                reason="聚合物理成员映射，逻辑聚合保留" if plan.bundles else "NNI 物理接口映射",
-            ))
+            suffix = target_name[len(plan.target) :]
+            device.mappings.append(
+                InterfaceMapping(
+                    device=device_name,
+                    source_interface=source + suffix,
+                    role="NNI",
+                    action="map-member" if plan.bundles else "map",
+                    target_interface=target_name,
+                    link_rows=list(plan.link_rows),
+                    reason="聚合物理成员映射，逻辑聚合保留"
+                    if plan.bundles
+                    else "NNI 物理接口映射",
+                )
+            )
+
+
+def _available_targets(
+    context: ConversionContext,
+    skipped: dict[str, set[str]],
+) -> dict[str, list[str]]:
+    """计算每台设备可用于 NNI 迁移的目标接口。
+
+    预留末尾接口并排除跳过链路保护端口，避免分配覆盖实验保留口或已知缺失端点。
+    """
+    available: dict[str, list[str]] = {}
+    for name, device in context.devices.items():
+        try:
+            if len(device.profile.interfaces) < 4:
+                raise ValueError("镜像接口列表至少需要四个接口")
+            targets = normalize_data_interfaces(
+                device.device.vendor, device.profile.interfaces
+            )[:-3]
+        except ValueError as exc:
+            message = f"设备 {name} 的 NNI 目标接口无效: {exc}"
+            device.errors.append(message)
+            context.errors.append(message)
+            available[name] = []
+            continue
+        available[name] = [
+            value
+            for value in targets
+            if interface_parent(value) not in skipped[name]
+        ]
+    return available
+
+
+def _assign_targets(
+    context: ConversionContext,
+    links: list[Link],
+    component_rows: dict[int, tuple[int, ...]],
+    analysis: _NniAnalysis,
+    available: dict[str, list[str]],
+) -> tuple[dict[str, list[NniEndpointPlan]], list[tuple[Link, str, str]]]:
+    """按拓扑顺序为设备端点分配目标接口并生成迁移计划。
+
+    分配结果先暂存，只有全部设备容量充足时才回写拓扑，避免部分端点发生迁移。
+    """
+    plans: dict[str, list[NniEndpointPlan]] = defaultdict(list)
+    allocated: dict[str, int] = defaultdict(int)
+    assignments: list[tuple[Link, str, str]] = []
+    for link in sorted(
+        (item for item in links if item.active), key=lambda item: item.row
+    ):
+        for device_name, _ in link.endpoints():
+            if device_name not in context.devices:
+                continue
+            device = context.devices[device_name]
+            index = allocated[device_name]
+            if index >= len(available[device_name]):
+                message = (
+                    f"设备 {device_name} 的 NNI 数量超过可用物理接口数 "
+                    f"{len(available[device_name])}"
+                    "（已排除跳过链路的保护接口）"
+                )
+                device.errors.append(message)
+                context.errors.append(message)
+                continue
+            target = available[device_name][index]
+            allocated[device_name] += 1
+            rows = component_rows.get(link.row, (link.row,))
+            plans[device_name].append(
+                _build_endpoint_plan(device_name, target, rows, analysis)
+            )
+            assignments.append((link, device_name, target))
+    return plans, assignments
+
+
+def _build_endpoint_plan(
+    device_name: str,
+    target: str,
+    rows: tuple[int, ...],
+    analysis: _NniAnalysis,
+) -> NniEndpointPlan:
+    """构造一个聚合组件在单台设备上的端点计划。
+
+    同时对逻辑父口和物理成员去重，使普通链路与聚合链路共享同一计划模型。
+    """
+    return NniEndpointPlan(
+        bundles=tuple(
+            dict.fromkeys(
+                bundle
+                for row in rows
+                if (bundle := analysis.bundles[(row, device_name)])
+            )
+        ),
+        target=target,
+        link_rows=rows,
+        source_members=tuple(
+            analysis.resolved[(row, device_name)] for row in rows
+        ),
+    )
+
+
+def _stage_plans(
+    doc,
+    plans: list[NniEndpointPlan],
+) -> tuple[list[tuple[str, str, NniEndpointPlan]], set[str]]:
+    """把计划涉及的源接口克隆到唯一占位名称。
+
+    暂存全部源后再删除，可避免源目标重名时原地改名破坏后续成员。
+    """
+    staged = []
+    selected = set()
+    for index, plan in enumerate(plans):
+        source = plan.source_members[0]
+        selected.add(source)
+        placeholder = f"ADAPT-NNI-{index}"
+        doc.clone_interface_tree(source, placeholder, strip_bundle=False)
+        staged.append((source, placeholder, plan))
+    return staged, selected
+
+
+def _apply_staged_plans(device, device_name: str, staged) -> None:
+    """把暂存接口移动到目标名称并写入审计映射。
+
+    每个占位名称只使用一次，确保重命名不会再次发生目标冲突。
+    """
+    doc = device.document
+    for source, placeholder, plan in staged:
+        doc.rename_interface_tree(placeholder, plan.target, strip_bundle=False)
+        doc.ensure_parent_interface(plan.target)
+        NNIHandler._record_endpoint_mappings(device, device_name, source, plan)
+
+
+def _record_removed_members(
+    device,
+    device_name: str,
+    removed: set[str],
+) -> None:
+    """记录聚合缩减中被删除的物理成员。
+
+    删除记录保留原接口名称和原因，使报告可以解释没有进入输出配置的成员。
+    """
+    for member in sorted(removed):
+        device.mappings.append(
+            InterfaceMapping(
+                device=device_name,
+                source_interface=member,
+                role="NNI",
+                action="remove",
+                target_interface=None,
+                reason="缩减冗余聚合成员",
+            )
+        )
+
+
+def _record_preserved_bundles(
+    context: ConversionContext,
+    device,
+    device_name: str,
+    bundles: set[str],
+) -> None:
+    """记录聚合主口及子接口的保留映射并适配门限。
+
+    聚合业务保持原名称和类型，只调整影响模拟成员数的属性，避免破坏跨设备引用。
+    """
+    doc = device.document
+    for bundle in sorted(bundles):
+        for name in dict.fromkeys([bundle, *doc.logical_names_under(bundle)]):
+            device.mappings.append(
+                InterfaceMapping(
+                    device=device_name,
+                    source_interface=name,
+                    role="NNI",
+                    action="preserve",
+                    target_interface=name,
+                    reason="保留聚合业务接口类型和引用",
+                )
+            )
+        outcome = doc.adapt_bundle(bundle)
+        device.errors.extend(outcome.errors)
+        device.warnings.extend(outcome.warnings)
+        for warning in outcome.warnings:
+            context.add_event(
+                "bundle-adaptation-warning",
+                warning,
+                device=device_name,
+                interface=bundle,
+            )
+        for change in outcome.changes:
+            context.add_event(
+                "bundle-adaptation",
+                f"设备 {device_name} 调整聚合门限",
+                device=device_name,
+                **change,
+            )

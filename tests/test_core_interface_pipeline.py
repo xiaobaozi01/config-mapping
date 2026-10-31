@@ -69,36 +69,40 @@ class CoreInterfacePipelineTest(unittest.TestCase):
             self.assertEqual(json.loads((output / "report.json").read_text())["status"], "failed")
 
     def test_failed_rerun_archives_generated_outputs_and_preserves_user_files(self):
-        for legacy in (False, True):
-            with self.subTest(legacy=legacy), tempfile.TemporaryDirectory() as directory:
-                root = Path(directory)
-                configs = root / "input"
-                shutil.copytree(FIXTURES / "iosxr_bundle" / "configs", configs)
-                output = root / "output"
-                topology = FIXTURES / "iosxr_bundle" / "topology.xlsx"
-                first = convert(topology, configs, output)
-                self.assertFalse(first.has_errors)
-                old_config = (output / "configs" / "R1.cfg").read_bytes()
-                if legacy:
-                    (output / ".generated-artifacts.json").unlink()
-                user_file = output / "configs" / "user-notes.cfg"
-                user_file.write_text("user owned content")
-                shutil.copyfile(FIXTURES / "core_pruning" / "iosxr_unknown.cfg", configs / "R1.cfg")
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            configs = root / "input"
+            shutil.copytree(FIXTURES / "iosxr_bundle" / "configs", configs)
+            output = root / "output"
+            topology = FIXTURES / "iosxr_bundle" / "topology.xlsx"
+            first = convert(topology, configs, output)
+            self.assertFalse(first.has_errors)
+            old_config = (output / "configs" / "R1.cfg").read_bytes()
+            user_file = output / "configs" / "user-notes.cfg"
+            user_file.write_text("user owned content")
+            shutil.copyfile(
+                FIXTURES / "core_pruning" / "iosxr_unknown.cfg",
+                configs / "R1.cfg",
+            )
 
-                failed = convert(topology, configs, output)
+            failed = convert(topology, configs, output)
 
-                self.assertTrue(failed.has_errors)
-                self.assertFalse((output / "configs" / "R1.cfg").exists())
-                self.assertFalse((output / "configs" / "R2.cfg").exists())
-                self.assertFalse((output / "topology-adapted.xlsx").exists())
-                self.assertFalse((output / "README.txt").exists())
-                self.assertEqual(user_file.read_text(), "user owned content")
-                report = json.loads((output / "report.json").read_text())
-                self.assertEqual(report["status"], "failed")
-                archived = next(event for event in report["events"] if event["kind"] == "previous-output-archived")
-                archive = output / archived["archive"]
-                self.assertEqual((archive / "configs" / "R1.cfg").read_bytes(), old_config)
-                self.assertTrue((archive / "topology-adapted.xlsx").is_file())
+            self.assertTrue(failed.has_errors)
+            self.assertFalse((output / "configs" / "R1.cfg").exists())
+            self.assertFalse((output / "configs" / "R2.cfg").exists())
+            self.assertFalse((output / "topology-adapted.xlsx").exists())
+            self.assertFalse((output / "README.txt").exists())
+            self.assertEqual(user_file.read_text(), "user owned content")
+            report = json.loads((output / "report.json").read_text())
+            self.assertEqual(report["status"], "failed")
+            archived = next(
+                event
+                for event in report["events"]
+                if event["kind"] == "previous-output-archived"
+            )
+            archive = output / archived["archive"]
+            self.assertEqual((archive / "configs" / "R1.cfg").read_bytes(), old_config)
+            self.assertTrue((archive / "topology-adapted.xlsx").is_file())
 
     def run_failure(self, config: Path):
         with tempfile.TemporaryDirectory() as directory:

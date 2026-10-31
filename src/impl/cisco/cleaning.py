@@ -6,9 +6,9 @@ import re
 
 from impl.common.lab_account import LAB_PASSWORD, LAB_USERNAME
 from impl.common.outcomes import CleanupOutcome
-from .document import CiscoDocument
-from .rules.support import delete_matching, append_top_level
 
+from .document import CiscoDocument
+from .rules.support import append_top_level, delete_matching
 
 # 模块级预编译，避免每次调用重复编译正则，并把清洗数据与遍历逻辑分离。
 _MANAGEMENT_TOP_LEVEL: tuple[tuple[str, re.Pattern[str]], ...] = (
@@ -48,7 +48,11 @@ def clean_management_access(document: CiscoDocument) -> CleanupOutcome:
             continue
         header = block.header.strip()
         matched = next(
-            (category for category, pattern in _MANAGEMENT_TOP_LEVEL if pattern.match(header)),
+            (
+                category
+                for category, pattern in _MANAGEMENT_TOP_LEVEL
+                if pattern.match(header)
+            ),
             None,
         )
         if matched:
@@ -57,7 +61,8 @@ def clean_management_access(document: CiscoDocument) -> CleanupOutcome:
             continue
         if re.match(r"^line\b", header, re.IGNORECASE):
             removed = delete_matching(
-                transaction, block.nodes,
+                transaction,
+                block.nodes,
                 _LINE_AUTH_PATTERN,
                 match_anywhere=True,
             )
@@ -73,6 +78,10 @@ def add_lab_account(document: CiscoDocument) -> None:
     标记之前可确保账号落在配置主体内，又不破坏结束标记之后的任何内容。
     """
     transaction = document.rewrite()
-    account = f"username {LAB_USERNAME}\n secret 0 {LAB_PASSWORD}\n group root-system\n!\n"
+    account = (
+        f"username {LAB_USERNAME}\n"
+        f" secret 0 {LAB_PASSWORD}\n"
+        " group root-system\n!\n"
+    )
     append_top_level(transaction, document, account, "建立实验账号")
     transaction.commit()

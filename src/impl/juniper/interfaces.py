@@ -12,6 +12,7 @@ from impl.common.interface import (
     interface_unit,
     referenced_interface_names,
 )
+
 from .document import (
     JunosDocument,
     JunosNode,
@@ -31,7 +32,9 @@ def interface_specs(document: JunosDocument) -> list[InterfaceSpec]:
         units = document._unit_nodes(node)
         if not units:
             result.append(
-                InterfaceSpec(parent, parent, None, None, document.interface_kind(parent))
+                InterfaceSpec(
+                    parent, parent, None, None, document.interface_kind(parent)
+                )
             )
             continue
         for unit in units:
@@ -101,7 +104,11 @@ def logical_names_under(document: JunosDocument, parent: str) -> list[str]:
     """
     parent = document.resolve_interface(parent)
     return sorted(
-        {spec.name for spec in document.interface_specs() if spec.parent == parent},
+        {
+            spec.name
+            for spec in document.interface_specs()
+            if spec.parent == parent
+        },
         key=lambda value: (interface_unit(value) is not None, value),
     )
 
@@ -114,58 +121,16 @@ def business_interface_names(document: JunosDocument) -> set[str]:
     二层接口收集 VLAN ID/名称，并沿 bridge-domain 或 vlans 配置激活对应 IRB。
     这样可识别真正关联的网关，避免仅因 IRB 配有地址就误判为活跃业务。
     """
-    parser = document._parser
     specs = document.interface_specs()
     known = {spec.name for spec in specs}
     kinds = {spec.name: spec.kind for spec in specs}
     mappable_kinds = {InterfaceKind.PHYSICAL, InterfaceKind.BUNDLE}
-    active: set[str] = set()
-    business_pattern = re.compile(
-        r"\b(?:family\s+(?:inet6?|ccc|bridge|ethernet-switching)|"
-        r"encapsulation\s+(?:ethernet-ccc|vlan-ccc)|input-vlan-map|output-vlan-map)\b"
-    )
-    for node in document._interface_nodes():
-        parent = document._interface_name(node)
-        units = document._unit_nodes(node)
-        if not units:
-            rendered = document._render_effective_node(node, 0)
-            if document.interface_kind(parent) in mappable_kinds and business_pattern.search(rendered):
-                active.add(parent)
-            continue
-        parent_business = any(
-            parser.is_effective(child)
-            and child not in units
-            and business_pattern.search(document._render_effective_node(child, 0))
-            for child in node.children or []
-        )
-        for unit in units:
-            rendered = document._render_effective_node(unit, 0)
-            name = f"{parent}.{document._unit_number(unit)}"
-            if kinds.get(name) in mappable_kinds and (
-                parent_business or business_pattern.search(rendered)
-            ):
-                active.add(name)
+    active = _collect_interface_business(document, kinds, mappable_kinds)
+    active.update(_collect_reference_business(document, specs, known, kinds))
 
-    external = "\n".join(
-        document._render_effective_node(node, 0)
-        for node in (document.root.children or [])
-        if parser.is_effective(node)
-        and parser.base_header(node.header) not in {"interfaces", "groups"}
+    active_vlans, active_vlan_names = _collect_active_vlans(
+        document, active, specs
     )
-    referenced = referenced_interface_names(
-        external, known | {spec.parent for spec in specs}
-    )
-    for name in known & referenced:
-        if kinds.get(name) in mappable_kinds:
-            active.add(name)
-    specs_by_parent: dict[str, list[InterfaceSpec]] = {}
-    for spec in specs:
-        specs_by_parent.setdefault(spec.parent, []).append(spec)
-    for parent, parent_specs in specs_by_parent.items():
-        if parent in referenced and parent_specs[0].kind in mappable_kinds:
-            active.update(spec.name for spec in parent_specs)
-
-    active_vlans, active_vlan_names = _collect_active_vlans(document, active, specs)
 
     _activate_domain_gateways(
         document,
@@ -178,6 +143,83 @@ def business_interface_names(document: JunosDocument) -> set[str]:
     for spec in specs:
         if spec.kind == InterfaceKind.GATEWAY and spec.vlan in active_vlans:
             active.add(spec.name)
+    return active
+
+
+def _collect_interface_business(
+    document: JunosDocument,
+    kinds: dict[str, InterfaceKind],
+    mappable_kinds: set[InterfaceKind],
+) -> set[str]:
+    """根据接口自身的有效业务语句识别活跃接口。
+
+    父口业务需要传播到 unit，而独立 unit 只按自身内容判断，避免无关逻辑单元被迁移。
+    """
+    parser = document._parser
+    active: set[str] = set()
+    business_pattern = re.compile(
+        r"\b(?:family\s+(?:inet6?|ccc|bridge|ethernet-switching)|"
+        r"encapsulation\s+(?:ethernet-ccc|vlan-ccc)|"
+        r"input-vlan-map|output-vlan-map)\b"
+    )
+    for node in document._interface_nodes():
+        parent = document._interface_name(node)
+        units = document._unit_nodes(node)
+        if not units:
+            rendered = document._render_effective_node(node, 0)
+            if document.interface_kind(
+                parent
+            ) in mappable_kinds and business_pattern.search(rendered):
+                active.add(parent)
+            continue
+        parent_business = any(
+            parser.is_effective(child)
+            and child not in units
+            and business_pattern.search(
+                document._render_effective_node(child, 0)
+            )
+            for child in node.children or []
+        )
+        for unit in units:
+            rendered = document._render_effective_node(unit, 0)
+            name = f"{parent}.{document._unit_number(unit)}"
+            if kinds.get(name) in mappable_kinds and (
+                parent_business or business_pattern.search(rendered)
+            ):
+                active.add(name)
+    return active
+
+
+def _collect_reference_business(
+    document: JunosDocument,
+    specs: list[InterfaceSpec],
+    known: set[str],
+    kinds: dict[str, InterfaceKind],
+) -> set[str]:
+    """找出被接口树之外的有效配置显式引用的业务接口。
+
+    路由、VPN 等全局配置可能没有出现在接口块中，扫描这些引用才能保留仍被业务依赖的口。
+    """
+    parser = document._parser
+    mappable_kinds = {InterfaceKind.PHYSICAL, InterfaceKind.BUNDLE}
+    external = "\n".join(
+        document._render_effective_node(node, 0)
+        for node in (document.root.children or [])
+        if parser.is_effective(node)
+        and parser.base_header(node.header) not in {"interfaces", "groups"}
+    )
+    referenced = referenced_interface_names(
+        external, known | {spec.parent for spec in specs}
+    )
+    active = {
+        name for name in known & referenced if kinds.get(name) in mappable_kinds
+    }
+    specs_by_parent: dict[str, list[InterfaceSpec]] = {}
+    for spec in specs:
+        specs_by_parent.setdefault(spec.parent, []).append(spec)
+    for parent, parent_specs in specs_by_parent.items():
+        if parent in referenced and parent_specs[0].kind in mappable_kinds:
+            active.update(spec.name for spec in parent_specs)
     return active
 
 
@@ -222,33 +264,17 @@ def _activate_domain_gateways(
         for domain in node.children:
             if not parser.is_effective(domain) or domain.children is None:
                 continue
-            rendered = document._render_effective_node(domain, 0)
-            interfaces = {
-                document.resolve_interface(value)
-                for value in re.findall(
-                    r"(?<![-\w])interface\s+([^;\s]+)\s*;",
-                    rendered,
-                )
-            }
-            gateways = {
-                document.resolve_interface(value)
-                for value in re.findall(
-                    r"\b(?:routing-interface|l3-interface)\s+([^;\s]+)\s*;",
-                    rendered,
-                )
-            }
-            vlan_ids = {
-                int(value)
-                for value in re.findall(r"\bvlan-id\s+(\d+)\s*;", rendered)
-                if 1 <= int(value) <= 4094
-            }
-            domain_name = parser.base_header(domain.header).split()[0].rstrip(";")
+            interfaces, gateways, vlan_ids, domain_name = _domain_gateways(
+                document, domain
+            )
             if (
                 interfaces & active
                 or vlan_ids & active_vlans
                 or domain_name in active_vlan_names
             ):
-                active.update(gateway for gateway in gateways if gateway in known)
+                active.update(
+                    gateway for gateway in gateways if gateway in known
+                )
     for child in node.children:
         if parser.is_effective(child):
             _activate_domain_gateways(
@@ -259,6 +285,39 @@ def _activate_domain_gateways(
                 active_vlan_names,
                 known,
             )
+
+
+def _domain_gateways(
+    document: JunosDocument,
+    domain: JunosNode,
+) -> tuple[set[str], set[str], set[int], str]:
+    """提取广播域的接入接口、网关、VLAN ID 和域名。
+
+    从渲染文本中一次收集四类信息，使后续激活判断基于同一份规范化配置视图。
+    """
+    parser = document._parser
+    rendered = document._render_effective_node(domain, 0)
+    interfaces = {
+        document.resolve_interface(value)
+        for value in re.findall(
+            r"(?<![-\w])interface\s+([^;\s]+)\s*;",
+            rendered,
+        )
+    }
+    gateways = {
+        document.resolve_interface(value)
+        for value in re.findall(
+            r"\b(?:routing-interface|l3-interface)\s+([^;\s]+)\s*;",
+            rendered,
+        )
+    }
+    vlan_ids = {
+        int(value)
+        for value in re.findall(r"\bvlan-id\s+(\d+)\s*;", rendered)
+        if 1 <= int(value) <= 4094
+    }
+    domain_name = parser.base_header(domain.header).split()[0].rstrip(";")
+    return interfaces, gateways, vlan_ids, domain_name
 
 
 def _collect_active_vlans(
@@ -274,17 +333,7 @@ def _collect_active_vlans(
     spec_by_name = {spec.name: spec for spec in specs}
     active_vlans: set[int] = set()
     active_vlan_names: set[str] = set()
-    # 每个活跃 unit 都线性查找父接口会随接口数平方增长。一次建立索引，
-    # 同名接口和重复 unit 均保留首个，维持 find_interface_node/next 的语义。
-    parents: dict[str, JunosNode] = {}
-    units: dict[tuple[str, str], JunosNode] = {}
-    for node in document._interface_nodes():
-        parent = document._interface_name(node)
-        if parent in parents:
-            continue
-        parents[parent] = node
-        for unit in document._unit_nodes(node):
-            units.setdefault((parent, document._unit_number(unit)), unit)
+    parents, units = _interface_index(document)
     for name in list(active):
         spec = spec_by_name.get(name)
         if not spec or spec.kind == InterfaceKind.GATEWAY:
@@ -297,30 +346,67 @@ def _collect_active_vlans(
         if unit is None:
             continue
         rendered = document._render_effective_node(unit, 0)
-        is_l2 = bool(
-            re.search(
-                r"\b(?:family\s+(?:ccc|bridge|ethernet-switching)|"
-                r"encapsulation\s+(?:ethernet-ccc|vlan-ccc)|"
-                r"vlan-id-list|vlan\s+members|input-vlan-map|output-vlan-map)\b",
-                rendered,
-            )
-        )
-        if is_l2 and spec.vlan is not None:
-            active_vlans.add(spec.vlan)
-        for match in re.finditer(r"vlan-id-list\s+\[([^\]]+)\]", rendered):
-            active_vlans.update(_expand_vlan_tokens(match.group(1)))
-        for match in re.finditer(
-            r"vlan\s+members\s+(?:\[([^\]]+)\]|([^;\s]+))\s*;",
+        _update_active_vlans(
             rendered,
-        ):
-            payload = match.group(1) or match.group(2) or ""
-            active_vlans.update(_expand_vlan_tokens(payload))
-            active_vlan_names.update(
-                token
-                for token in re.findall(r"[A-Za-z_][A-Za-z0-9_.-]*", payload)
-                if not token.isdigit()
-            )
+            spec.vlan,
+            active_vlans,
+            active_vlan_names,
+        )
     return active_vlans, active_vlan_names
+
+
+def _interface_index(
+    document: JunosDocument,
+) -> tuple[dict[str, JunosNode], dict[tuple[str, str], JunosNode]]:
+    """建立父接口和逻辑单元的快速查找索引。
+
+    一次遍历接口树可避免每个活跃单元都重复线性查找父节点，同时保持首个定义的语义。
+    """
+    parents: dict[str, JunosNode] = {}
+    units: dict[tuple[str, str], JunosNode] = {}
+    for node in document._interface_nodes():
+        parent = document._interface_name(node)
+        if parent in parents:
+            continue
+        parents[parent] = node
+        for unit in document._unit_nodes(node):
+            units.setdefault((parent, document._unit_number(unit)), unit)
+    return parents, units
+
+
+def _update_active_vlans(
+    rendered: str,
+    own_vlan: int | None,
+    active_vlans: set[int],
+    active_vlan_names: set[str],
+) -> None:
+    """从一个活跃接口的渲染文本提取 VLAN ID 和名称。
+
+    只解析二层终结和 VLAN 成员语句，避免把三层接口上的普通数字误当作 VLAN 依赖。
+    """
+    is_l2 = bool(
+        re.search(
+            r"\b(?:family\s+(?:ccc|bridge|ethernet-switching)|"
+            r"encapsulation\s+(?:ethernet-ccc|vlan-ccc)|"
+            r"vlan-id-list|vlan\s+members|input-vlan-map|output-vlan-map)\b",
+            rendered,
+        )
+    )
+    if is_l2 and own_vlan is not None:
+        active_vlans.add(own_vlan)
+    for match in re.finditer(r"vlan-id-list\s+\[([^\]]+)\]", rendered):
+        active_vlans.update(_expand_vlan_tokens(match.group(1)))
+    for match in re.finditer(
+        r"vlan\s+members\s+(?:\[([^\]]+)\]|([^;\s]+))\s*;",
+        rendered,
+    ):
+        payload = match.group(1) or match.group(2) or ""
+        active_vlans.update(_expand_vlan_tokens(payload))
+        active_vlan_names.update(
+            token
+            for token in re.findall(r"[A-Za-z_][A-Za-z0-9_.-]*", payload)
+            if not token.isdigit()
+        )
 
 
 def find_interface_node(document: JunosDocument, name: str) -> JunosNode | None:
@@ -340,7 +426,9 @@ def find_interface_node(document: JunosDocument, name: str) -> JunosNode | None:
     )
 
 
-def remove_interface(document: JunosDocument, name: str, include_children: bool = False) -> None:
+def remove_interface(
+    document: JunosDocument, name: str, include_children: bool = False
+) -> None:
     """逻辑停用指定接口所在的整个 Junos 父接口节点。
 
     Junos 的 unit 是父节点的子树，因此停用父节点会自然包含全部 unit；
@@ -424,7 +512,9 @@ def clone_interface_tree(
     _merge_duplicate_interface(document, clone)
 
 
-def _merge_duplicate_interface(document: JunosDocument, preferred: JunosNode) -> None:
+def _merge_duplicate_interface(
+    document: JunosDocument, preferred: JunosNode
+) -> None:
     """合并同名接口节点的非重复子树，并停用首选节点之外的副本。
 
     接口改名或克隆可能与已有目标节点碰撞；以渲染后的子节点文本判重可保留双方
@@ -442,9 +532,7 @@ def _merge_duplicate_interface(document: JunosDocument, preferred: JunosNode) ->
         preferred.children is not None,
         "Junos 重复接口合并的首选节点必须是块节点",
     )
-    existing = {
-        document._render_node(child, 0) for child in preferred.children
-    }
+    existing = {document._render_node(child, 0) for child in preferred.children}
     for node in duplicates:
         if node is preferred or node.children is None:
             continue
@@ -456,9 +544,11 @@ def _merge_duplicate_interface(document: JunosDocument, preferred: JunosNode) ->
         node.active = False
 
 
-
 def ensure_parent_interface(document: JunosDocument, name: str) -> None:
-    """仅确保父接口存在；NNI 原有封装和 unit 语义保持不变。"""
+    """确保父接口存在而不重建其业务子树。
+
+    迁移目标可能尚无定义，只创建父节点可让后续改名和映射成功，同时不伪造封装或 unit。
+    """
     if find_interface_node(document, name) is not None:
         return
     interfaces = document._interfaces_block(create=True)

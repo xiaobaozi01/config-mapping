@@ -35,7 +35,6 @@ Cisco 五类代码规则统一使用 `CiscoVisitorRule`，通过 `session.edits`
 | `delete(context, reason, **details)` | 删除完整子树，必要时整理删除造成的相邻分隔符 |
 | `insert_before/insert_after(context, text, reason, **details)` | 插入同级片段，同位置按声明顺序处理 |
 | `append_child(context, text, reason, **details)` | 追加子片段；根上追加表示新增顶层配置 |
-| `replace_document(text, reason)` | 原子替换完整候选源码，用于确需整体变更的业务 |
 | `preview()` | 获取候选文本，不发布，也不保证候选语法已通过验证 |
 | `commit()` | 重写、重新解析、发布并返回实际变更；失败保持原快照 |
 

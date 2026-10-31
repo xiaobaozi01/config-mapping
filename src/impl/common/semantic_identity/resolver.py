@@ -3,12 +3,10 @@
 from __future__ import annotations
 
 from collections.abc import Iterable
-from functools import lru_cache
 from typing import TypeVar
 
 from .matcher import expand_identity, match_rule, normalize, rule_specificity
 from .models import MergeKind, SemanticDecision, SemanticRule, StatementContext
-
 
 _T = TypeVar("_T")
 
@@ -53,9 +51,20 @@ class SemanticResolver:
         可让解析器安全地被模块级 ``lru_cache`` 复用。
         """
         self._rules = rules
+        self._cache: dict[StatementContext, SemanticDecision] = {}
 
-    @lru_cache(maxsize=16_384)
     def resolve(self, context: StatementContext) -> SemanticDecision:
+        """返回语句的语义决策，并复用同一解析器中的命中结果。
+
+        以不可变上下文为缓存键可避免重复规则匹配，同时限制缓存规模以支持长时间运行。
+        """
+        if context not in self._cache:
+            if len(self._cache) >= 16_384:
+                self._cache.clear()
+            self._cache[context] = self._resolve_uncached(context)
+        return self._cache[context]
+
+    def _resolve_uncached(self, context: StatementContext) -> SemanticDecision:
         """把一条语句解析成 ``SemanticDecision``。
 
         先归一化并收集所有命中规则，再按具体度取最精确者；等具体度的平局属于规则
@@ -89,7 +98,8 @@ class SemanticResolver:
             names = ", ".join(sorted(item[1].rule_id for item in winners))
             raise ValueError(
                 f"配置语句同时命中多条等优先级 identity 规则: {names}; "
-                f"path={' / '.join(context.path) or '<root>'}; statement={context.statement}"
+                f"path={' / '.join(context.path) or '<root>'}; "
+                f"statement={context.statement}"
             )
         _score, rule, captures = winners[0]
         return SemanticDecision(

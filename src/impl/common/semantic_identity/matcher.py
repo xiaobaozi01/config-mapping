@@ -4,14 +4,14 @@ from __future__ import annotations
 
 import ipaddress
 import re
-from functools import lru_cache
+from functools import cache
 
 from .models import SemanticRule, StatementContext
 
-
-_TOKEN_RE = re.compile(r'''(?:[^\s'\"]+|'[^']*'|"[^"]*")+''')
+_TOKEN_RE = re.compile(r"""(?:[^\s'\"]+|'[^']*'|"[^"]*")+""")
 _CAPTURE_RE = re.compile(
-    r"^\{(?P<name>[a-zA-Z_][a-zA-Z0-9_-]*)(?P<rest>\.\.\.)?(?::(?P<constraint>[^}]+))?\}$"
+    r"^\{(?P<name>[a-zA-Z_][a-zA-Z0-9_-]*)"
+    r"(?P<rest>\.\.\.)?(?::(?P<constraint>[^}]+))?\}$"
 )
 
 
@@ -82,7 +82,9 @@ def match_tokens(
         capture = _CAPTURE_RE.match(expected)
         if capture and capture.group("rest"):
             if pattern_index != len(pattern) - 1:
-                raise ValueError(f"只有最后一个 token 才能使用 ... capture: {expected}")
+                raise ValueError(
+                    f"只有最后一个 token 才能使用 ... capture: {expected}"
+                )
             values = actual[actual_index:]
             name = capture.group("name")
             previous = result.get(name)
@@ -153,7 +155,9 @@ def _match_path_recursive(
     )
 
 
-def match_rule(rule: SemanticRule, context: StatementContext) -> dict[str, tuple[str, ...]] | None:
+def match_rule(
+    rule: SemanticRule, context: StatementContext
+) -> dict[str, tuple[str, ...]] | None:
     """判断一条规则是否命中当前语句，命中时返回 capture 字典。
 
     先校验 node_kind 再匹配路径，可快速淘汰类型不符的规则；路径和语句使用同一
@@ -164,7 +168,9 @@ def match_rule(rule: SemanticRule, context: StatementContext) -> dict[str, tuple
     path_captures = _match_path_recursive(rule.path, context.path, 0, 0, {})
     if path_captures is None:
         return None
-    return match_tokens(rule.statement, tokenize(context.statement), path_captures)
+    return match_tokens(
+        rule.statement, tokenize(context.statement), path_captures
+    )
 
 
 def expand_identity(
@@ -186,19 +192,29 @@ def expand_identity(
     return tuple(result)
 
 
-@lru_cache(maxsize=None)
+@cache
 def rule_specificity(rule: SemanticRule) -> tuple[int, int, int, int, int]:
     """计算稳定的规则具体度，不依赖 YAML 顺序。
 
     多个规则可能同时命中，具体度用于挑选更精确的一条（字面量多、路径更完整、带
     类型约束者优先，``...`` 越宽泛越靠后）；规则文件顺序因此不会影响最终判定。
     """
-    path_tokens = [token for component in rule.path if component != "**" for token in tokenize(component)]
+    path_tokens = [
+        token
+        for component in rule.path
+        if component != "**"
+        for token in tokenize(component)
+    ]
     statement_tokens = list(rule.statement)
     path_literals = sum(not _CAPTURE_RE.match(token) for token in path_tokens)
-    statement_literals = sum(not _CAPTURE_RE.match(token) for token in statement_tokens)
+    statement_literals = sum(
+        not _CAPTURE_RE.match(token) for token in statement_tokens
+    )
     typed = sum(
-        bool((capture := _CAPTURE_RE.match(token)) and capture.group("constraint"))
+        bool(
+            (capture := _CAPTURE_RE.match(token))
+            and capture.group("constraint")
+        )
         for token in [*path_tokens, *statement_tokens]
     )
     rest = sum(

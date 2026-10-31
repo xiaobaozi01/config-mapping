@@ -9,17 +9,42 @@ from .interface import InterfaceSpec
 
 
 class _AnalysisNode(Protocol):
-    @property
-    def header(self) -> str: ...
+    """描述接口分析缓存所需的最小节点读取协议。
+
+    缓存只依赖 header、活动状态、注释和子节点，避免绑定 Cisco 或 Junos 具体节点类型。
+    """
 
     @property
-    def active(self) -> bool: ...
+    def header(self) -> str:
+        """返回参与签名比较的原始节点头。
+
+        头文本变化必须使缓存失效，因此该字段直接进入树签名。
+        """
+        ...
 
     @property
-    def comment(self) -> str | None: ...
+    def active(self) -> bool:
+        """返回节点是否仍参与当前配置逻辑。
+
+        活动状态变化会改变业务接口集合，因此缓存必须读取它。
+        """
+        ...
 
     @property
-    def children(self) -> Sequence[_AnalysisNode] | None: ...
+    def comment(self) -> str | None:
+        """返回节点的独立注释状态。
+
+        接口分析只关心注释是否存在，注释内容不会改变分类结果。
+        """
+        ...
+
+    @property
+    def children(self) -> Sequence[_AnalysisNode] | None:
+        """返回子节点序列或表示叶子的 ``None``。
+
+        子节点数量和层级同时构成树签名，以捕获直接修改 AST 后的结构变化。
+        """
+        ...
 
 
 _TreeSignature = tuple[tuple[str, bool, bool, int], ...]
@@ -38,21 +63,33 @@ def _tree_signature(root: _AnalysisNode) -> _TreeSignature:
     while pending:
         node = pending.pop()
         children = node.children
-        parts.append((
-            node.header,
-            node.active,
-            node.comment is not None,
-            -1 if children is None else len(children),
-        ))
+        parts.append(
+            (
+                node.header,
+                node.active,
+                node.comment is not None,
+                -1 if children is None else len(children),
+            )
+        )
         if children:
             pending.extend(reversed(children))
     return tuple(parts)
 
 
 def copy_interface_specs(specs: list[InterfaceSpec]) -> list[InterfaceSpec]:
-    """复制规格及列表，避免调用方修改返回值时污染缓存。"""
+    """复制接口规格列表及其中的不可变规格对象。
+
+    调用方可能对返回列表排序或替换元素，独立容器可保护缓存中的原始结果。
+    """
     return [
-        InterfaceSpec(spec.name, spec.parent, spec.unit, spec.vlan, spec.kind, spec.inner_vlan)
+        InterfaceSpec(
+            spec.name,
+            spec.parent,
+            spec.unit,
+            spec.vlan,
+            spec.kind,
+            spec.inner_vlan,
+        )
         for spec in specs
     ]
 
@@ -64,11 +101,18 @@ class InterfaceAnalysisCache:
     """
 
     def __init__(self) -> None:
+        """创建空签名和空查询结果缓存。
+
+        首次读取会根据当前树重新计算全部结果，避免构造阶段触发昂贵的接口分析。
+        """
         self._signature: _TreeSignature | None = None
         self._results: dict[str, object] = {}
 
-    def __deepcopy__(self, memo: dict[int, object]) -> InterfaceAnalysisCache:
-        """复制文档时重新按其树计算结果，不复制原文档的缓存状态。"""
+    def __deepcopy__(self, _memo: dict[int, object]) -> InterfaceAnalysisCache:
+        """为复制后的文档创建空接口分析缓存。
+
+        复制后的树可能继续独立修改，复用旧缓存会返回与当前结构不一致的结果。
+        """
         return type(self)()
 
     def read(
@@ -78,6 +122,10 @@ class InterfaceAnalysisCache:
         collect: Callable[[], _Result],
         copy_result: Callable[[_Result], _Result],
     ) -> _Result:
+        """返回指定查询的结果，并在树结构变化时自动失效缓存。
+
+        每次读取先比较轻量树签名，使直接修改 AST 的调用方也能得到当前修订的数据。
+        """
         signature = _tree_signature(root)
         if signature != self._signature:
             self._signature = signature

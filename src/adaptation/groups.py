@@ -5,7 +5,9 @@ from __future__ import annotations
 from collections import defaultdict
 
 from impl.common.interface import interface_parent
+
 from .models import ConversionContext
+
 
 class GroupExpansionHandler:
     """按 Group 策略把厂商继承配置物化到后续可分析的配置树中。
@@ -31,7 +33,9 @@ class GroupExpansionHandler:
                 continue
             for device_name, interface in link.endpoints():
                 if device_name in context.devices:
-                    known_by_device[device_name].add(interface_parent(interface))
+                    known_by_device[device_name].add(
+                        interface_parent(interface)
+                    )
 
         for device_name in sorted(context.devices):
             device = context.devices[device_name]
@@ -39,39 +43,47 @@ class GroupExpansionHandler:
                 known_by_device[device_name],
                 policy=context.washing_policy,
             )
-            device.warnings.extend(outcome.warnings)
-            for message in outcome.events:
-                context.add_event(
-                    "group-expansion",
-                    f"设备 {device_name}: {message}",
-                    device=device_name,
-                )
-            for conflict in outcome.conflicts:
-                context.add_event(
-                    "group-conflict",
-                    f"设备 {device_name} 的 group 配置冲突已按继承优先级处理",
-                    device=device_name,
-                    **conflict,
-                )
-            for ambiguity in outcome.ambiguities:
-                context.add_event(
-                    "group-identity-ambiguous",
-                    f"设备 {device_name} 存在规则未覆盖的潜在 group 语义冲突",
-                    device=device_name,
-                    **ambiguity,
-                )
-            identity_total = outcome.identity_rule_hits + outcome.identity_fallbacks
-            if identity_total:
-                context.add_event(
-                    "group-identity-coverage",
-                    f"设备 {device_name} 的 group 语义规则命中统计",
-                    device=device_name,
-                    matched=outcome.identity_rule_hits,
-                    fallback=outcome.identity_fallbacks,
-                    total=identity_total,
-                    coverage=round(outcome.identity_rule_hits / identity_total, 4),
-                )
-            if not outcome.success:
-                message = f"设备 {device_name} 的配置 group 无法安全完整展开"
-                device.errors.append(message)
-                context.errors.append(message)
+            self._record_outcome(context, device_name, device, outcome)
+
+    @staticmethod
+    def _record_outcome(context, device_name, device, outcome) -> None:
+        """把一次 group 展开结果转换为经验证的事件、警告和错误。
+
+        所有结果在调度层统一落地，使厂商展开器只负责计算，并让失败状态终止后续处理。
+        """
+        device.warnings.extend(outcome.warnings)
+        for message in outcome.events:
+            context.add_event(
+                "group-expansion",
+                f"设备 {device_name}: {message}",
+                device=device_name,
+            )
+        for conflict in outcome.conflicts:
+            context.add_event(
+                "group-conflict",
+                f"设备 {device_name} 的 group 配置冲突已按继承优先级处理",
+                device=device_name,
+                **conflict,
+            )
+        for ambiguity in outcome.ambiguities:
+            context.add_event(
+                "group-identity-ambiguous",
+                f"设备 {device_name} 存在规则未覆盖的潜在 group 语义冲突",
+                device=device_name,
+                **ambiguity,
+            )
+        identity_total = outcome.identity_rule_hits + outcome.identity_fallbacks
+        if identity_total:
+            context.add_event(
+                "group-identity-coverage",
+                f"设备 {device_name} 的 group 语义规则命中统计",
+                device=device_name,
+                matched=outcome.identity_rule_hits,
+                fallback=outcome.identity_fallbacks,
+                total=identity_total,
+                coverage=round(outcome.identity_rule_hits / identity_total, 4),
+            )
+        if not outcome.success:
+            message = f"设备 {device_name} 的配置 group 无法安全完整展开"
+            device.errors.append(message)
+            context.errors.append(message)

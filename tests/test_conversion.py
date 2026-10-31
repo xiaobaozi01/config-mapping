@@ -526,7 +526,9 @@ class ConversionTest(unittest.TestCase):
             self.assertFalse((output / "configs").exists())
             self.assertTrue(any("外部对端" in error for error in context.errors))
             self.assertIn("interface Bundle-Ether10", context.devices["R1"].document.render())
-            self.assertFalse(any(mapping.is_mlag_clone for mapping in context.mappings))
+            self.assertTrue(
+                all("is_mlag_clone" not in mapping.to_dict() for mapping in context.mappings)
+            )
 
     def test_iosxr_cross_peer_bundle_requires_explicit_mlag_support(self):
         """不同设备不默认视作同一个聚合系统，不能复制逻辑业务。"""
@@ -538,7 +540,9 @@ class ConversionTest(unittest.TestCase):
             self.assertFalse((output / "configs").exists())
             self.assertFalse((output / "topology-adapted.xlsx").exists())
             self.assertIn("interface Bundle-Ether10.100", context.devices["A"].document.render())
-            self.assertFalse(any(mapping.is_mlag_clone for mapping in context.mappings))
+            self.assertTrue(
+                all("is_mlag_clone" not in mapping.to_dict() for mapping in context.mappings)
+            )
 
     def test_junos_l3_mlag_is_rejected_before_duplicate_addresses_are_generated(self):
         """ae0.0 的同一三层地址不能复制到两个独立物理口。"""
@@ -554,7 +558,9 @@ class ConversionTest(unittest.TestCase):
             report = json.loads((output / "report.json").read_text(encoding="utf-8"))
             self.assertEqual(report["status"], "failed")
             self.assertTrue(any("ae0" in error and "设备 JA" in error for error in report["errors"]))
-            self.assertFalse(any(mapping.is_mlag_clone for mapping in context.mappings))
+            self.assertTrue(
+                all("is_mlag_clone" not in mapping.to_dict() for mapping in context.mappings)
+            )
             mappings = json.loads((output / "interface-mapping.json").read_text(encoding="utf-8"))
             removed_irb = next(item for item in mappings if item["source_interface"] == "irb.400")
             self.assertEqual(removed_irb["role"], "NON_NNI")

@@ -17,7 +17,9 @@ class MlagMetadataTest(unittest.TestCase):
                 context = prepare_context(folder / "topology.xlsx", folder / "configs")
                 build_default_pipeline().execute(context)
                 self.assertTrue(context.has_errors)
-                self.assertFalse(any(mapping.is_mlag_clone for mapping in context.mappings))
+                self.assertTrue(
+                    all("is_mlag_clone" not in mapping.to_dict() for mapping in context.mappings)
+                )
 
     def test_single_peer_bundle_has_identity_logical_mapping(self):
         folder = FIXTURES / "iosxr_bundle"
@@ -27,8 +29,10 @@ class MlagMetadataTest(unittest.TestCase):
         mapping = next(item for item in context.mappings if item.source_interface == "Bundle-Ether10")
         self.assertEqual(mapping.target_interface, "Bundle-Ether10")
         self.assertEqual(mapping.action, "preserve")
-        self.assertFalse(mapping.is_mlag_clone)
-        self.assertEqual(mapping.mlag_peers, [])
+        serialized = mapping.to_dict()
+        self.assertNotIn("is_mlag_clone", serialized)
+        self.assertNotIn("mlag_group_id", serialized)
+        self.assertNotIn("mlag_peers", serialized)
 
 
 if __name__ == "__main__":

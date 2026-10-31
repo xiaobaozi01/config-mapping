@@ -8,16 +8,20 @@ from pathlib import Path
 from impl.common.config_paths import config_path
 from impl.common.empty_blocks import (
     EmptyBlockPolicy,
+)
+from impl.common.empty_blocks import (
     load_empty_block_policy as _load_empty_block_policy,
 )
-
 
 _RULE_FILE = config_path("rules", "juniper", "vmx", "empty_blocks.yaml")
 _ACTIONS = ("omit", "semicolon", "braces")
 
 
 def load_empty_block_policy(path: Path) -> EmptyBlockPolicy:
-    """按本厂商的目标镜像和动作集合加载策略，保留原单参数入口。"""
+    """按 vMX 镜像加载并校验空块输出策略。
+
+    厂商参数在此固定，调用方只需提供规则文件，避免每次调用重复声明镜像身份。
+    """
     return _load_empty_block_policy(
         path, vendor="juniper_junos", image="vmx", actions=_ACTIONS
     )
@@ -25,4 +29,8 @@ def load_empty_block_policy(path: Path) -> EmptyBlockPolicy:
 
 @lru_cache(maxsize=1)
 def vmx_empty_block_policy() -> EmptyBlockPolicy:
+    """返回缓存后的 vMX 默认空块策略。
+
+    策略文件随程序发布且不会在一次运行中变化，缓存可避免每台设备重复读取和校验。
+    """
     return load_empty_block_policy(_RULE_FILE)

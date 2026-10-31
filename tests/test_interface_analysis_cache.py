@@ -275,7 +275,7 @@ class InterfaceCacheDifferentialTest(unittest.TestCase):
             stack.enter_context(patch.object(
                 document._interface_analysis_cache,
                 "read",
-                side_effect=lambda root, query, collect, copy_result: copy_result(collect()),
+                side_effect=lambda *args: args[-1](args[-2]()),
             ))
             for name, parser in vars(document._parser).items():
                 if callable(parser) and hasattr(parser, "cache_info"):
