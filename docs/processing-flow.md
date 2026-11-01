@@ -766,16 +766,16 @@ Junos 会跳过 `interfaces` 定义本身，只递归更新其他层级中的引
 
 ## 10. 统一清洗规则
 
-`CleaningRulesHandler` 同时执行 YAML 规则和实现 `ExecutableCleaningRule` 的代码规则。YAML 规则固定在 `post_rewrite`，一次批量提交给 Document，最多遍历 AST 两轮。代码规则只能选择 `pre_analysis` 或 `post_rewrite`；banner 在分析前处理，认证替换晚于 YAML 清洗：
+`CleaningRulesHandler` 同时执行 YAML 规则和实现 `ExecutableCleaningRule` 的代码规则。YAML 规则固定在 `post_rewrite`，一次批量提交给 Document。代码规则只能选择 `pre_analysis` 或 `post_rewrite`；banner 在分析前处理，认证替换晚于 YAML 清洗：
 
 ```text
-第一轮 delete  → 每个节点只执行首条匹配的删除规则，命中后跳过子树
-第二轮 replace → 剩余节点只执行首条匹配的替换规则，不连续替换
+delete 逻辑轮  → 每个节点只执行首条匹配的删除规则，命中后跳过子树
+replace 逻辑轮 → 剩余节点只执行首条匹配的替换规则，不连续替换
 ```
 
-两组规则分别保留 YAML 内的相对顺序，跨动作固定删除在前。A→B、B→C 两条替换规则作用于 A 时只得到 B。替换父节点后使用新 header 匹配后代路径；审计事件按删除组、替换组、代码规则的顺序输出。路径候选列表只在本轮调用中复用，不保存为全局或 Document 长期缓存。
+Cisco 在单次 AST 遍历中模拟上述逻辑两轮，最终只重解析并发布一次候选配置；Junos 在内存树中执行两次遍历。两组规则分别保留 YAML 内的相对顺序，跨动作固定删除在前。A→B、B→C 两条替换规则作用于 A 时只得到 B。替换父节点后使用新 header 匹配后代路径；审计事件按删除组、替换组、代码规则的顺序输出。路径候选列表和预筛正则只在本轮调用中复用，不保存为全局或 Document 长期缓存。
 
-可用 `PYTHONPATH=src python benchmarks/cleaning_rules.py --lines 40000 --rules 100` 对比旧逐规则遍历和新两轮遍历。基准包含编译时间，并独立统计节点访问、路径及命令正则搜索次数。
+可用 `PYTHONPATH=src python benchmarks/cleaning_rules.py --lines 40000 --rules 100` 对比旧逐规则遍历和批量优化执行。基准包含编译时间，并独立统计节点访问、路径及命令正则搜索次数。
 
 示例：
 

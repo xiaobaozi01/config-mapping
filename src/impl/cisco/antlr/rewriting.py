@@ -1,9 +1,8 @@
-"""薄事务封装：ANTLR TokenStreamRewriter 负责重写，成功重解析后才发布。"""
+"""薄事务封装：按字符区间重写，成功重解析后才发布。"""
 
 import re
+from bisect import bisect_left, bisect_right
 from dataclasses import dataclass
-
-from antlr4.TokenStreamRewriter import TokenStreamRewriter
 
 from impl.common.outcomes import SimulationChangeAction
 
@@ -57,6 +56,80 @@ def format_fragment(text: str, indent: int, newline: str = "\n") -> str:
     return newline.join(rendered) + newline
 
 
+def _render_candidate(
+    source: str, events: list[tuple[int, int, int, int, str]]
+) -> str:
+    """按原始字符坐标一次性拼接互不重叠的插入与替换。"""
+    parts = []
+    cursor = 0
+    for position, kind, _, stop, text in sorted(events):
+        parts.extend((source[cursor:position], text))
+        cursor = stop if kind else position
+    parts.append(source[cursor:])
+    return "".join(parts)
+
+
+class _RewriteEditIndex:
+    """用有序区间索引即时检测事务内的重叠编辑。
+
+    已接受的替换区间彼此不重叠，因此只需检查新编辑的前后邻区；插入点单独按位置
+    索引，用于拒绝落入替换区间内部的插入。
+    """
+
+    def __init__(self) -> None:
+        """建立空的替换区间与插入点索引。"""
+        self._range_starts: list[int] = []
+        self._ranges: list[tuple[int, int, object]] = []
+        self._insertion_starts: list[int] = []
+        self._insertions: list[tuple[int, object]] = []
+
+    def check_and_add(self, start: int, stop: int, context: object) -> None:
+        """校验一个编辑区间后把它加入索引。"""
+        if start > stop:
+            self._check_insertion(start, context)
+            position = bisect_right(self._insertion_starts, start)
+            self._insertion_starts.insert(position, start)
+            self._insertions.insert(position, (start, context))
+            return
+        self._check_replacement(start, stop, context)
+        position = bisect_left(self._range_starts, start)
+        self._range_starts.insert(position, start)
+        self._ranges.insert(position, (start, stop, context))
+
+    def _check_replacement(
+        self, start: int, stop: int, context: object
+    ) -> None:
+        """拒绝与替换区间相交或落在替换区间内部的编辑。"""
+        position = bisect_right(self._range_starts, stop)
+        if position:
+            _, old_stop, _ = self._ranges[position - 1]
+            if old_stop >= start:
+                raise RewriteConflictError(
+                    "重叠修改：不能同时修改同一区间或祖先与后代"
+                )
+        first = bisect_left(self._insertion_starts, start)
+        last = bisect_right(self._insertion_starts, start)
+        for index in range(first, last):
+            if self._insertions[index][1] is context:
+                raise RewriteConflictError(
+                    "修改区间包含已声明的插入位置"
+                )
+        if bisect_right(self._insertion_starts, stop) > last:
+            raise RewriteConflictError("修改区间包含已声明的插入位置")
+
+    def _check_insertion(self, start: int, context: object) -> None:
+        """拒绝插入到替换区间内部。"""
+        position = bisect_right(self._range_starts, start)
+        if position:
+            old_start, old_stop, _ = self._ranges[position - 1]
+            if old_start < start <= old_stop or (
+                old_start == start and self._ranges[position - 1][2] is context
+            ):
+                raise RewriteConflictError(
+                    "插入位置位于被删除或替换的区间内"
+                )
+
+
 class RewriteTransaction:
     """收集一次文档修订上的文本操作，并在验证后原子发布。
 
@@ -71,6 +144,7 @@ class RewriteTransaction:
         self._document = document
         self.snapshot = document.snapshot
         self._operations = []
+        self._edit_index = _RewriteEditIndex()
         self._finished = False
         self._child_insertions = set()
         self._header_operations = set()
@@ -118,33 +192,7 @@ class RewriteTransaction:
         )
         if original == text:
             return
-        for old_start, old_stop, _, _, old_context, _ in self._operations:
-            if (
-                start <= stop
-                and old_start <= old_stop
-                and max(start, old_start) <= min(stop, old_stop)
-            ):
-                raise RewriteConflictError(
-                    "重叠修改：不能同时修改同一区间或祖先与后代"
-                )
-            if (
-                start > stop
-                and old_start <= old_stop
-                and (
-                    old_start < start <= old_stop
-                    or (start == old_start and old_context is context)
-                )
-            ):
-                raise RewriteConflictError("插入位置位于被删除或替换的区间内")
-            if (
-                old_start > old_stop
-                and start <= stop
-                and (
-                    start < old_start <= stop
-                    or (start == old_start and old_context is context)
-                )
-            ):
-                raise RewriteConflictError("修改区间包含已声明的插入位置")
+        self._edit_index.check_and_add(start, stop, context)
         self._operations.append(
             (start, stop, text, reason, context, dict(details))
         )
@@ -318,19 +366,36 @@ class RewriteTransaction:
 
         同一位置的插入按子节点优先和声明顺序合并，避免多次修改产生不确定顺序。
         """
-        rewriter = TokenStreamRewriter(self.snapshot.tokens)
         inserts = {}
         for order, (start, stop, text, _, _, _) in enumerate(self._operations):
             if start > stop:
                 priority = 0 if order in self._child_insertions else 1
                 inserts.setdefault(start, []).append((priority, order, text))
-            else:
-                rewriter.replaceRange(start, stop, text)
-        for index, fragments in inserts.items():
-            rewriter.insertBeforeIndex(
-                index, "".join(text for _, _, text in sorted(fragments))
+        events = [
+            (
+                self.snapshot.tokens.tokens[start].start,
+                0,
+                order,
+                self.snapshot.tokens.tokens[start].start,
+                "".join(text for _, _, text in sorted(fragments)),
             )
-        return rewriter.getDefaultText()
+            for start, fragments in inserts.items()
+            for order in (fragments[0][1],)
+        ]
+        events.extend(
+            (
+                self.snapshot.tokens.tokens[start].start,
+                1,
+                order,
+                self.snapshot.tokens.tokens[stop].stop + 1,
+                text,
+            )
+            for order, (start, stop, text, _, _, _) in enumerate(
+                self._operations
+            )
+            if start <= stop
+        )
+        return _render_candidate(self.snapshot.text, events)
 
     def preview(self):
         """返回候选配置文本，但不修改文档快照。

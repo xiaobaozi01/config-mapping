@@ -335,7 +335,7 @@ class CleaningBatchTest(unittest.TestCase):
                 self.assertEqual(document.apply_cleaning_rule((), "old", "replace", None), 1)
                 self.assertEqual(nodes(document)[0].header, expected)
 
-    def test_one_hundred_rules_visit_each_node_only_twice(self):
+    def test_one_hundred_rules_visit_cisco_once_and_junos_twice(self):
         operations = [
             CleaningOperation((), f"^missing-{index}$", action, "replacement")
             for index in range(50) for action in ("delete", "replace")
@@ -347,7 +347,7 @@ class CleaningBatchTest(unittest.TestCase):
             lambda node: visited.append(node) or original(node)
         )):
             self.assertEqual(cisco.apply_cleaning_rules(operations), [0] * 100)
-        self.assertEqual(len(visited), 40)
+        self.assertEqual(len(visited), 20)
 
         junos = JunosDocument(" ".join(f"node-{index};" for index in range(20)))
         with patch.object(junos._parser, "is_effective", wraps=junos._parser.is_effective) as visit:

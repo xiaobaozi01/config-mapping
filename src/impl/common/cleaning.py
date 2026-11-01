@@ -110,6 +110,7 @@ class _CleaningPhase:
         self._candidates: dict[
             tuple[str, ...], tuple[_CompiledOperation, ...]
         ] = {}
+        self._prefilters: dict[tuple[str, ...], re.Pattern[str] | None] = {}
 
     def candidates(
         self, ancestors: tuple[str, ...]
@@ -128,6 +129,52 @@ class _CleaningPhase:
                 if operation.path in matching_paths
             )
         return self._candidates[ancestors]
+
+    def matching_operations(
+        self, ancestors: tuple[str, ...], header: str
+    ) -> tuple[_CompiledOperation, ...]:
+        """先用合并正则排除整组不命中的规则。
+
+        合并正则只回答“是否存在可能命中的规则”，真正命中仍按原顺序逐条确认，
+        因此不会改变首条命中语义。没有命中的节点只执行一次正则搜索。
+        """
+        operations = self.candidates(ancestors)
+        if len(operations) < 2:
+            return operations
+        if ancestors not in self._prefilters:
+            self._prefilters[ancestors] = _combine_cleaning_prefilter(
+                operations
+            )
+        prefilter = self._prefilters[ancestors]
+        if prefilter is not None and prefilter.search(header) is None:
+            return ()
+        return operations
+
+
+_CLEANING_BACKREFERENCE = re.compile(
+    r"""\\(?:[1-9]|g<|k<)|\(\?P=|\(\?\("""
+)
+
+
+def _combine_cleaning_prefilter(
+    operations: Sequence[_CompiledOperation],
+) -> re.Pattern[str] | None:
+    """把候选规则组合成无捕获副作用的命中预筛。
+
+    含数字反向引用、命名反向引用或条件组的规则不能安全合并，此时返回 ``None``
+    并保留逐条匹配，优先保证与单规则执行完全一致。
+    """
+    patterns = [operation.pattern.pattern for operation in operations]
+    if any(_CLEANING_BACKREFERENCE.search(pattern) for pattern in patterns):
+        return None
+    try:
+        return re.compile(
+            "|".join(f"(?:{pattern})" for pattern in patterns),
+            re.IGNORECASE,
+        )
+    except re.error:
+        # 全局内联标志等只允许位于表达式开头的写法无法安全合并。
+        return None
 
 
 def _compile_cleaning_operation(

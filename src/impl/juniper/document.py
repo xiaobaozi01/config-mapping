@@ -1146,7 +1146,7 @@ class JunosDocument(VendorConfiguration):
         header = parser.base_header(node.header).rstrip(";").strip()
         if ancestors == ("interfaces",):
             interface = header
-        operations = phase.candidates(ancestors)
+        operations = phase.matching_operations(ancestors, header)
         if self._apply_cleaning_phase(
             node,
             phase,

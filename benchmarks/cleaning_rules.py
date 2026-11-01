@@ -1,4 +1,4 @@
-"""合成大配置的清洗基准：旧式逐规则遍历与固定两轮执行。
+"""合成大配置的清洗基准：旧式逐规则遍历与批量优化执行。
 
 运行：PYTHONPATH=src python benchmarks/cleaning_rules.py --lines 40000 --rules 100
 耗时包含规则编译，不含输入解析；访问和正则搜索次数在独立 profile 中统计。
@@ -103,7 +103,7 @@ def run(vendor: str, line_count: int, rule_count: int, repeat: int) -> None:
     source, rules = configuration(vendor, line_count), operations(vendor, rule_count)
     results = []
     reference = None
-    for name, execute in (("legacy", legacy_clean), ("two-pass", batch_clean)):
+    for name, execute in (("legacy", legacy_clean), ("optimized", batch_clean)):
         timings = []
         for _ in range(repeat):
             document = cls(source)
@@ -111,10 +111,15 @@ def run(vendor: str, line_count: int, rule_count: int, repeat: int) -> None:
             start = time.perf_counter()
             counts = execute(document, rules)
             timings.append(time.perf_counter() - start)
+            comparable = (
+                document.source
+                if isinstance(document, CiscoDocument)
+                else document.root
+            )
             if reference is None:
-                reference = (document.root, counts)
+                reference = (comparable, counts)
             else:
-                assert document.root == reference[0] and counts == reference[1]
+                assert comparable == reference[0] and counts == reference[1]
         document = cls(source)
         profile = cProfile.Profile()
         profile.runcall(execute, document, rules)
