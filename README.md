@@ -111,6 +111,6 @@ XRv9000 7.11.1 的默认适配会识别 IOS XR `interface preconfigure`，并在
 
 同目录重跑时，先前发布的配置、拓扑和说明会隔离到 `.previous-outputs/`，其位置记入报告；本次加载或校验失败时不会继续留下可被当成本次成果的旧导出。内部 `.generated-artifacts.json` 记录本程序负责的文件，额外的用户文件保持原位。
 
-聚合识别从拓扑物理口的成员绑定出发，聚合及子接口不需要出现在 Excel 中。逻辑接口 `action=preserve` 自映射；成员 `action=map-member` 映射物理口。归属不明且有业务的聚合报错，不按表外接口直接裁剪。Junos 硬件清洗按叶子匹配，保留 `802.3ad` 和 ae 的必要 options；Cisco 保留成员 `bundle id`。静态/LACP 模式不单边更改。
+聚合识别从拓扑物理口的成员绑定出发，聚合及子接口不需要出现在 Excel 中。逻辑接口 `action=preserve` 自映射；成员 `action=map-member` 映射物理口。没有拓扑物理成员的聚合作为非 NNI 删除；拓扑成员与配置绑定无法对应时才报错。Junos 硬件清洗按叶子匹配，保留 `802.3ad` 和 ae 的必要 options；Cisco 保留成员 `bundle id`。静态/LACP 模式不单边更改。
 
 XRv9000 保留 Bundle 时还需在实际镜像核验 Bundle MAC 与虚拟网卡的聚合支持。Cisco 输入未显式设置 Bundle MAC 时会给出核验告警，不自动编造 MAC 或更改全局 LACP 标识；自动测试不替代聚合 up、commit 和邻居建立验证。

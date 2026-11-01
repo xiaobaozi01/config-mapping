@@ -84,15 +84,40 @@ class PreserveBundleTest(unittest.TestCase):
                 self.assertTrue(context.has_errors)
                 self.assertFalse(any(mapping.action == 'map-member' for mapping in context.mappings))
 
-    def test_orphan_business_bundle_is_not_deleted_as_non_nni(self):
-        context = context_for(Vendor.CISCO_IOSXR)
-        doc = context.devices['A'].document
-        for name in ['Hu0/0/0/0', 'Hu0/0/0/1']:
-            doc.remove_interface(name)
-        build_default_pipeline().execute(context)
-        self.assertTrue(context.has_errors)
-        self.assertTrue(any('归属不明' in error for error in context.devices['A'].errors))
-        self.assertIn('interface Bundle-Ether10', doc.render())
+    def test_business_bundle_without_members_is_deleted_as_non_nni(self):
+        cases = [
+            (
+                Vendor.CISCO_IOSXR,
+                ['HundredGigE0/0/0/0', 'HundredGigE0/0/0/1'],
+                'Bundle-Ether10',
+                'interface Bundle-Ether10\n',
+            ),
+            (
+                Vendor.JUNIPER_JUNOS,
+                ['ge-0/0/10', 'ge-0/0/11'],
+                'ae10',
+                'ae10 {',
+            ),
+        ]
+        for vendor, members, bundle, bundle_header in cases:
+            with self.subTest(vendor=vendor):
+                filename = (
+                    'iosxr.cfg'
+                    if vendor == Vendor.CISCO_IOSXR
+                    else 'junos.cfg'
+                )
+                document = parse_document(
+                    vendor.value,
+                    (FIXTURES / filename).read_text(),
+                )
+                for member in members:
+                    document.remove_interface(member)
+
+                outcome = document.prune_non_nni(set())
+
+                self.assertFalse(outcome.errors, outcome.errors)
+                self.assertIn(bundle, outcome.removed_interfaces)
+                self.assertNotIn(bundle_header, document.render())
 
     def test_conflicting_junos_lacp_modes_fail_before_mapping(self):
         context = context_for(Vendor.JUNIPER_JUNOS, filename_override='junos_conflicting_lacp.cfg')

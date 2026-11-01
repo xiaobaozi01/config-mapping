@@ -635,33 +635,11 @@ class _CiscoPruner:
                     node, (node.header,), "镜像会话的目的接口已删除", references
                 )
 
-    def check_bundle_ownership(self):
-        """校验仍承载业务的 Bundle 能否解析到物理成员。
-
-        失去成员归属的业务聚合无法安全裁剪，必须在任何删除前作为错误阻止转换。
-        """
-        members = self.document.bundle_members()
-        business = self.document.business_interface_names()
-        orphans = {
-            spec.parent
-            for spec in self.document.interface_specs()
-            if spec.kind == InterfaceKind.BUNDLE
-            and spec.name in business
-            and spec.parent not in set(members.values())
-        }
-        if orphans:
-            self.outcome.errors.append(
-                f"业务聚合没有可解析的物理成员，归属不明: {', '.join(sorted(orphans))}"
-            )
-        return not orphans
-
     def analyze(self):
         """按依赖顺序执行全部非 NNI 裁剪分析。
 
         先建立广播域和接口删除集合，再清理协议依赖，避免后续规则基于过时边界判断。
         """
-        if not self.check_bundle_ownership():
-            return
         self.prune_domains()
         self.prune_p2p()
         self.prune_interfaces()

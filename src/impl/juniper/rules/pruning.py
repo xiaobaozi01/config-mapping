@@ -580,33 +580,11 @@ class _JunosPruner:
                 continue
             self.clean(child, child_path)
 
-    def check_bundle_ownership(self):
-        """检查业务聚合是否仍能找到物理成员归属。
-
-        无法解析成员的业务聚合不能安全裁剪，提前失败可避免输出缺少底层成员的主口。
-        """
-        members = self.document.bundle_members()
-        business = self.document.business_interface_names()
-        orphans = {
-            spec.parent
-            for spec in self.document.interface_specs()
-            if spec.kind == InterfaceKind.BUNDLE
-            and spec.name in business
-            and spec.parent not in set(members.values())
-        }
-        if orphans:
-            self.result.errors.append(
-                f"业务聚合没有可解析的物理成员，归属不明: {', '.join(sorted(orphans))}"
-            )
-        return not orphans
-
     def run(self):
         """按依赖顺序执行完整 Junos 非 NNI 裁剪并返回审计结果。
 
         先建立索引和域状态，再删除接口及业务引用，最后统一验证残留引用。
         """
-        if not self.check_bundle_ownership():
-            return self.result
         self.collect_payloads()
         self.collect_domains()
         self.prune_domains()
