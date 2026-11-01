@@ -40,7 +40,7 @@ def context_for(vendor, split_peer=False, filename_override=None):
     return ConversionContext(topology, loaded)
 
 
-def _context_with_unbundled_peer_member():
+def _context_with_unbundled_peer_member(member_mode='on'):
     context = context_for(Vendor.CISCO_IOSXR)
     third_a = 'HundredGigE0/0/0/2'
     third_b = 'HundredGigE0/0/0/2'
@@ -51,7 +51,7 @@ def _context_with_unbundled_peer_member():
     a_source = a_path.read_text().replace(
         'interface Bundle-Ether10\n',
         'interface HundredGigE0/0/0/2\n'
-        ' bundle id 10 mode on\n'
+        f' bundle id 10 mode {member_mode}\n'
         '!\n'
         'interface Bundle-Ether10\n',
         1,
@@ -64,7 +64,7 @@ def _context_with_unbundled_peer_member():
         ' bundle id 10 mode on\n'
         '!\n',
         'interface HundredGigE0/0/0/1\n'
-        ' bundle id 10 mode on\n'
+        f' bundle id 10 mode {member_mode}\n'
         '!\n'
         'interface HundredGigE0/0/0/2\n'
         ' description INDEPENDENT\n'
@@ -73,6 +73,22 @@ def _context_with_unbundled_peer_member():
     )
     context.devices['B'].document = parse_document(
         Vendor.CISCO_IOSXR.value, b_source
+    )
+    return context
+
+
+def _context_with_junos_member_business():
+    context = context_for(Vendor.JUNIPER_JUNOS)
+    source = (FIXTURES / 'junos.cfg').read_text().replace(
+        '    ge-0/0/10 { gigether-options { 802.3ad ae10; speed 100g; } }',
+        '    ge-0/0/10 {\n'
+        '        gigether-options { 802.3ad ae10; speed 100g; }\n'
+        '        unit 200 { family inet { address 192.0.2.10/31; } }\n'
+        '    }',
+        1,
+    )
+    context.devices['A'].document = parse_document(
+        Vendor.JUNIPER_JUNOS.value, source
     )
     return context
 
@@ -131,6 +147,34 @@ class PreserveBundleTest(unittest.TestCase):
             for mapping in context.devices['B'].mappings
         ))
 
+    def test_lacp_member_with_unbundled_peer_is_preserved_with_warning(self):
+        context = _context_with_unbundled_peer_member(member_mode='active')
+
+        build_default_pipeline().execute(context)
+
+        device = context.devices['A']
+        self.assertFalse(context.has_errors, context.errors + device.errors)
+        self.assertTrue(any(
+            '非对称混合链路' in warning for warning in context.warnings
+        ))
+        self.assertFalse(any(
+            '第 3 行' in warning and '协商方式不兼容' in warning
+            for warning in context.warnings
+        ))
+        self.assertIn('bundle id 10 mode active', device.document.render())
+
+    def test_passive_member_with_unbundled_peer_is_preserved_with_warning(self):
+        context = _context_with_unbundled_peer_member(member_mode='passive')
+
+        build_default_pipeline().execute(context)
+
+        device = context.devices['A']
+        self.assertFalse(context.has_errors, context.errors + device.errors)
+        self.assertTrue(any(
+            '非对称混合链路' in warning for warning in context.warnings
+        ))
+        self.assertIn('bundle id 10 mode passive', device.document.render())
+
     def test_junos_binding_and_ae_units_survive_stable_simulation(self):
         context = context_for(Vendor.JUNIPER_JUNOS)
         build_default_pipeline().execute(context)
@@ -142,7 +186,7 @@ class PreserveBundleTest(unittest.TestCase):
         self.assertNotIn('speed 100g', output)
         self.assertEqual(context.devices['A'].document.bundle_members(), {'ge-0/0/0': 'ae10'})
 
-    def test_lacp_is_preserved_and_static_lacp_mismatch_fails(self):
+    def test_lacp_is_preserved_without_enforcing_peer_mode_consistency(self):
         context = context_for(Vendor.CISCO_IOSXR, filename_override='iosxr_lacp.cfg')
         build_default_pipeline().execute(context)
         self.assertFalse(context.has_errors, context.errors)
@@ -150,16 +194,71 @@ class PreserveBundleTest(unittest.TestCase):
         context = context_for(Vendor.CISCO_IOSXR)
         context.devices['B'].document = parse_document(Vendor.CISCO_IOSXR.value, (FIXTURES/'iosxr_lacp.cfg').read_text())
         build_default_pipeline().execute(context)
-        self.assertTrue(context.has_errors)
-        self.assertTrue(any('协商方式不兼容' in error for error in context.errors))
+        self.assertFalse(context.has_errors, context.errors)
+        self.assertTrue(any(
+            '协商方式不兼容' in warning for warning in context.warnings
+        ))
+        self.assertIn('bundle id 10 mode on', context.devices['A'].document.render())
+        self.assertIn(
+            'bundle id 10 mode active',
+            context.devices['B'].document.render(),
+        )
 
-    def test_member_business_and_conflicting_binding_fail_before_migration(self):
-        for filename in ['iosxr_member_business.cfg', 'iosxr_conflicting_binding.cfg']:
-            with self.subTest(filename=filename):
-                context = context_for(Vendor.CISCO_IOSXR, filename_override=filename)
-                build_default_pipeline().execute(context)
-                self.assertTrue(context.has_errors)
-                self.assertFalse(any(mapping.action == 'map-member' for mapping in context.mappings))
+    def test_cisco_member_business_is_preserved_without_compression(self):
+        context = context_for(
+            Vendor.CISCO_IOSXR,
+            filename_override='iosxr_member_business.cfg',
+        )
+
+        build_default_pipeline().execute(context)
+
+        self.assertFalse(context.has_errors, context.errors)
+        self.assertEqual(
+            [link.row for link in context.topology.links if link.active],
+            [2, 3],
+        )
+        self.assertEqual(len(context.devices['A'].document.bundle_members()), 2)
+        self.assertTrue(any(
+            '独立业务' in warning
+            for warning in context.warnings + context.devices['A'].warnings
+        ))
+        self.assertIn(
+            'ipv4 address 192.0.2.1 255.255.255.0',
+            context.devices['A'].document.render(),
+        )
+
+    def test_conflicting_bundle_binding_fails_before_migration(self):
+        context = context_for(
+            Vendor.CISCO_IOSXR,
+            filename_override='iosxr_conflicting_binding.cfg',
+        )
+
+        build_default_pipeline().execute(context)
+
+        self.assertTrue(context.has_errors)
+        self.assertFalse(any(
+            mapping.action == 'map-member' for mapping in context.mappings
+        ))
+
+    def test_junos_member_business_is_preserved_without_compression(self):
+        context = _context_with_junos_member_business()
+
+        build_default_pipeline().execute(context)
+
+        self.assertFalse(context.has_errors, context.errors)
+        self.assertEqual(
+            [link.row for link in context.topology.links if link.active],
+            [2, 3],
+        )
+        self.assertEqual(len(context.devices['A'].document.bundle_members()), 2)
+        self.assertTrue(any(
+            '独立业务' in warning
+            for warning in context.warnings + context.devices['A'].warnings
+        ))
+        self.assertIn(
+            'address 192.0.2.10/31;',
+            context.devices['A'].document.render(),
+        )
 
     def test_business_bundle_without_members_is_deleted_as_non_nni(self):
         cases = [
@@ -196,11 +295,13 @@ class PreserveBundleTest(unittest.TestCase):
                 self.assertIn(bundle, outcome.removed_interfaces)
                 self.assertNotIn(bundle_header, document.render())
 
-    def test_conflicting_junos_lacp_modes_fail_before_mapping(self):
+    def test_junos_lacp_modes_are_preserved_without_consistency_validation(self):
         context = context_for(Vendor.JUNIPER_JUNOS, filename_override='junos_conflicting_lacp.cfg')
         build_default_pipeline().execute(context)
-        self.assertTrue(context.has_errors)
-        self.assertFalse(any(mapping.action == 'map-member' for mapping in context.mappings))
+        self.assertFalse(context.has_errors, context.errors)
+        rendered = context.devices['A'].document.render()
+        self.assertIn('active;', rendered)
+        self.assertIn('passive;', rendered)
 
     def test_same_physical_port_cannot_be_copied_to_two_targets(self):
         context = context_for(Vendor.CISCO_IOSXR)

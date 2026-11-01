@@ -293,11 +293,11 @@ flowchart TB
 | 路径 | 职责 | 新人是否应先读 |
 | --- | --- | --- |
 | `adaptation/service.py` | 准备上下文、执行流程、写输出 | 是 |
-| `adaptation/topology.py`、`groups.py`、`interfaces.py`、`nni.py`、`cleaning_rules.py`、`simulation.py` | 十二个业务阶段 | 是，核心 |
+| `adaptation/topology.py`、`groups.py`、`interfaces.py`、`nni.py`、`cleaning_rules.py`、`simulation.py` | 十三个业务阶段 | 是，核心 |
 | `adaptation/models.py` | 设备、链路、映射、Profile、上下文 | 是 |
 | `adaptation/pipeline.py` | Stage 协议和停止规则 | 是 |
 | `adaptation/nni.py` | 聚合链路分组的纯计算 | NNI 业务时读 |
-| `adaptation/interfaces.py` | 接口预清理、分类、NNI 保留闭包、引用改写、目标兼容与最终校验 | 修改接口保留范围时读 |
+| `adaptation/interfaces.py` | 接口预清理、源语义预检、分类、NNI 保留闭包、引用改写、目标兼容与最终校验 | 修改接口保留范围时读 |
 | `impl/common/contracts.py` | 两家厂商显式实现、应用层依赖的能力协议 | 是，理解边界 |
 | `impl/cisco/document.py、impl/juniper/document.py` | AST、解析、渲染及兼容 Facade | 第二阶段读 |
 | `impl/cisco/groups.py、impl/juniper/groups.py` | 厂商 Group 事务式展开 | 专项阅读 |
@@ -405,7 +405,7 @@ classDiagram
 
 逻辑自映射不会生成 Bundle 到物理口的字符串替换。普通物理口和子接口仍按目标口重写引用。
 
-## 7. 十二个核心 Stage
+## 7. 十三个核心 Stage
 
 | 顺序 | Stage | 主要职责 |
 | --- | --- | --- |
@@ -413,16 +413,17 @@ classDiagram
 | 2 | `TopologyPreflightHandler` | 校验链路端点、保留跳过端点的 NNI 身份 |
 | 3 | `GroupExpansionHandler` | 事务式展开并校验 Group |
 | 4 | `PreconfiguredInterfaceCleanupHandler` | 忽略未实例化候选接口 |
-| 5 | `InterfaceClassificationHandler` | 按厂商白名单分类 |
-| 6 | `NonNNICleanupHandler` | 计算原始 NNI 闭包，删除非 NNI 与业务依赖 |
-| 7 | `NNIHandler` | 分组、成员压缩、聚合保留、端口分配 |
-| 8 | `ReferenceRewriteHandler` | 更新保留 NNI 的全局引用 |
-| 9 | `CleaningRulesHandler(post_rewrite)` | 路径清洗与认证替换 |
-| 10 | `InterfaceCompatibilityHandler` | 按目标接口上下文处理已知限制 |
-| 11 | `SimulationAdaptationHandler` | 目标口启用、硬件参数清理和 BFD 稳定性调整 |
-| 12 | `FinalInterfaceValidationHandler` | 检查最终接口状态和已知非法残留 |
+| 5 | `SourceSemanticValidationHandler` | 在映射前检查一次源配置语义 |
+| 6 | `InterfaceClassificationHandler` | 按厂商白名单分类 |
+| 7 | `NonNNICleanupHandler` | 计算原始 NNI 闭包，删除非 NNI 与业务依赖 |
+| 8 | `NNIHandler` | 分组、成员压缩、聚合保留、端口分配 |
+| 9 | `ReferenceRewriteHandler` | 更新保留 NNI 的全局引用 |
+| 10 | `CleaningRulesHandler(post_rewrite)` | 路径清洗与认证替换 |
+| 11 | `InterfaceCompatibilityHandler` | 按目标接口上下文处理已知限制 |
+| 12 | `SimulationAdaptationHandler` | 目标口启用、硬件参数清理和 BFD 稳定性调整 |
+| 13 | `FinalInterfaceValidationHandler` | 严格检查最终接口，并仅降级可追溯的源语义错误 |
 
-任一阶段写入错误后，`ConversionPipeline` 停止后续阶段，不输出设备配置。目标兼容和最终校验不受模拟参数 `off` 模式影响。
+任一阶段写入错误后，`ConversionPipeline` 停止后续阶段，不输出设备配置。源配置语义问题只在映射前检查一次：默认写 warning，`strict_input_validation=True` 时写 error。最终校验只检查目标兼容、聚合绑定和引用完整性，不重复执行源语义规则，也不受模拟参数 `off` 或严格输入开关影响。
 
 ## 8. Group 展开
 
@@ -480,7 +481,7 @@ Excel 只列物理链路。Group 展开后从成员绑定反查 Bundle/ae，再�
 
 同一对端经两端确认的聚合多链路缩减为最早一条，物理成员按 Profile 映射；逻辑聚合名、子接口、IP/VRF/封装和协议引用保持。成员使用 `bundle id` 或 `802.3ad` 重新关联原聚合，单成员门限定向调整。后续清洗和模拟适配必须保留绑定与原协商方式。
 
-跨对端同聚合默认失败，不猜测 MC-LAG 或复制逻辑业务。两端聚合/协商不一致、源成员混有独立业务、拓扑成员与配置绑定无法对应时，均在迁移前报错。没有拓扑物理成员的聚合作为非 NNI 删除。已跳过端点仍受保护，最后三个口继续预留。
+跨对端同聚合默认失败，不猜测 MC-LAG 或复制逻辑业务。同一本地 Bundle 扇出到同一对端多个 Bundle、拓扑成员与配置绑定无法对应时，在迁移前报错。聚合协商方式按输入原值保留，不判断两端模式能否实际建立会话；单端 Bundle、对端普通口的链路作为非对称混合链路保留并告警。源成员带地址、VRF、L2 transport、bridge/unit/family 或子接口时保留为单链路并告警，不参与压缩。没有拓扑物理成员的聚合作为非 NNI 删除。已跳过端点仍受保护，最后三个口继续预留。
 
 物理改名使用占位口避开源目标重名；业务主口始终保持 Bundle/ae 类型。
 
@@ -608,6 +609,8 @@ YAML 规则固定先删除、后替换，最多两轮 AST 遍历。每个节点�
 
 - 未识别的接口类型被原样保留，不参与物理映射。
 - Huawei 设备不参与配置转换，只作为拓扑对端保留。
+- 聚合成员带独立业务，保留为单链路而不压缩。
+- 默认模式下发现的源配置语义冲突。
 
 典型 Error：
 
@@ -662,6 +665,17 @@ context = convert(
 ```
 
 `convert()` 返回 `ConversionContext`。调用方应检查 `context.has_errors`；失败详情同时写入输出目录的 `report.json`。
+
+如需将源配置语义问题作为质量门禁错误，传入 `strict_input_validation=True`：
+
+```python
+context = convert(
+    topology_path=Path("topology.xlsx"),
+    config_dir=Path("configs"),
+    output_dir=Path("output"),
+    strict_input_validation=True,
+)
+```
 
 ### 14.3 运行测试
 
@@ -841,7 +855,7 @@ git diff --check
 1. 本文第 1～4 节，建立业务和总流程。
 2. `adaptation/models.py`，认识 Context、Link、Mapping 和 Profile。
 3. `adaptation/service.py` 的 `convert()`。
-4. `adaptation/pipeline.py` 的 `build_default_pipeline()` 和十二个 Stage 类名。
+4. `adaptation/pipeline.py` 的 `build_default_pipeline()` 和十三个 Stage 类名。
 5. 选一个 `tests/test_conversion.py` 的端到端用例，从输入断言看到输出。
 
 如果有半天：

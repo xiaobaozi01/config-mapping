@@ -78,6 +78,39 @@ class CiscoCompatibilityTest(unittest.TestCase):
             with self.subTest(fragment=fragment):
                 self.assertIn(fragment, text)
 
+    def test_source_semantic_conflicts_become_warnings_when_not_strict(self):
+        document = CiscoDocument((FIXTURES / "iosxr_invalid.cfg").read_text())
+
+        outcome = validate_interfaces(
+            document,
+            TARGETS,
+            strict_input_validation=False,
+        )
+
+        self.assertFalse(outcome.errors, outcome.errors)
+        rendered = "\n".join(outcome.warnings)
+        self.assertIn("三层地址或 VRF", rendered)
+        self.assertIn("L2VPN routed interface", rendered)
+
+    def test_target_compatibility_errors_stay_blocking_in_warning_mode(self):
+        document = CiscoDocument(
+            "interface GigabitEthernet0/0/0/0\n"
+            " speed 100\n"
+            " ipv4 address 192.0.2.1 255.255.255.0\n"
+            "!\n"
+            "end\n"
+        )
+
+        outcome = validate_interfaces(
+            document,
+            {"GigabitEthernet0/0/0/0"},
+            strict_input_validation=False,
+        )
+
+        self.assertTrue(any(
+            "残留不兼容属性" in error for error in outcome.errors
+        ))
+
     def test_ethertype_collision_is_reported_without_overwriting_source(self):
         document = CiscoDocument((FIXTURES / "iosxr_targets.cfg").read_text())
         parent = find_interface_node(document, "GigabitEthernet0/0/0/0")

@@ -14,6 +14,7 @@ from .interfaces import (
     NonNNICleanupHandler,
     PreconfiguredInterfaceCleanupHandler,
     ReferenceRewriteHandler,
+    SourceSemanticValidationHandler,
 )
 from .models import ConversionContext
 from .nni import NNIHandler
@@ -81,6 +82,7 @@ def build_default_pipeline() -> ConversionPipeline:
             TopologyPreflightHandler(),
             GroupExpansionHandler(),
             PreconfiguredInterfaceCleanupHandler(),
+            SourceSemanticValidationHandler(),
             InterfaceClassificationHandler(),
             NonNNICleanupHandler(),
             NNIHandler(),

@@ -11,20 +11,14 @@ from .interfaces import ensure_parent_interface, find_interface_node
 def bundle_mode(document, member) -> BundleMode:
     """读取聚合成员唯一绑定的 LACP 模式。
 
-    地址、VRF、l2transport 或冲突绑定都会令模式不可判定，因此必须返回未知而
-    不能按普通物理口处理。
+    绑定语法冲突时返回未知；地址、VRF 和 l2transport 等业务由独立检查保留，
+    不影响模式解析。
     """
     block = find_interface_node(document, member)
     if block is None:
         return BundleMode.UNKNOWN
     bindings = []
     for node in block.walk():
-        if re.match(
-            r"^(?:ipv[46]\s+(?:address|unnumbered)|vrf|l2transport|xconnect)\b",
-            node.header,
-            re.I,
-        ):
-            return BundleMode.UNKNOWN
         if re.match(r"^bundle\s+id\b", node.header, re.I):
             match = re.fullmatch(
                 r"bundle\s+id\s+(\d+)(?:\s+mode\s+(on|active|passive))?",

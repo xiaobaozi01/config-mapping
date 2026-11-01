@@ -23,7 +23,11 @@ from . import compatibility, pruning, simulation
 PRUNE_RULES = (
     FunctionRule(
         "juniper.prune.non_nni",
-        lambda doc, ctx: pruning._JunosPruner(doc, ctx.protected_parents).run(),
+        lambda doc, ctx: pruning._JunosPruner(
+            doc,
+            ctx.protected_parents,
+            strict_input_validation=ctx.strict_input_validation,
+        ).run(),
     ),
 )
 ADAPT_RULES = ()
@@ -32,9 +36,26 @@ COMPATIBILITY_VALIDATION_RULES = (
         "juniper.validate.reference_bindings",
         compatibility.validate_reference_bindings,
     ),
+    FunctionRule(
+        "juniper.validate.gateway_role",
+        compatibility.validate_gateway_role,
+    ),
+    FunctionRule("juniper.validate.units", compatibility.validate_units),
+)
+SOURCE_SEMANTIC_VALIDATION_RULES = (
+    FunctionRule(
+        "juniper.validate.gateway_role",
+        compatibility.validate_gateway_role,
+    ),
     FunctionRule("juniper.validate.units", compatibility.validate_units),
 )
 VALIDATION_RULES = COMPATIBILITY_VALIDATION_RULES
+FINAL_INTEGRITY_VALIDATION_RULES = (
+    FunctionRule(
+        "juniper.validate.reference_bindings",
+        compatibility.validate_reference_bindings,
+    ),
+)
 SIMULATION_RULES = (
     FunctionRule(
         "juniper.simulate.empty_options",
@@ -56,12 +77,15 @@ SIMULATION_RULES = (
 )
 
 
-def prune_non_nni(document, protected_parents):
+def prune_non_nni(document, protected_parents, *, strict_input_validation=True):
     """执行 Junos 非 NNI 接口裁剪规则。
 
     保护集合来自原始拓扑，使接口迁移不会改变裁剪边界。
     """
-    context = PruneContext(frozenset(protected_parents))
+    context = PruneContext(
+        frozenset(protected_parents),
+        strict_input_validation=strict_input_validation,
+    )
     return merge_interface_results(
         execute_prune_rules(PRUNE_RULES, document, context),
         InterfacePruningOutcome(),
@@ -80,11 +104,26 @@ def adapt_interfaces(document, target_interfaces):
     )
 
 
+def validate_source_semantics(document, target_interfaces):
+    """在映射前执行 Junos 源配置语义校验。
+
+    网关定义缺失和删除引用完整性不进入该入口。
+    """
+    context = ValidationContext(
+        frozenset(target_interfaces),
+        strict_input_validation=True,
+    )
+    results = execute_rules(SOURCE_SEMANTIC_VALIDATION_RULES, document, context)
+    return merge_interface_results(results, InterfaceAdaptationOutcome())
+
+
 def validate_interfaces(
     document,
     target_interfaces,
     removed_interfaces,
     deferred_interface_references=(),
+    *,
+    strict_input_validation=True,
 ):
     """执行 Junos 接口和删除引用校验。
 
@@ -94,8 +133,28 @@ def validate_interfaces(
         frozenset(target_interfaces),
         frozenset(removed_interfaces),
         frozenset(deferred_interface_references),
+        strict_input_validation,
     )
     results = execute_rules(VALIDATION_RULES, document, context)
+    return merge_interface_results(results, InterfaceAdaptationOutcome())
+
+
+def validate_final_integrity(
+    document,
+    target_interfaces,
+    removed_interfaces,
+    deferred_interface_references=(),
+):
+    """校验适配产物的引用完整性。
+
+    unit 和网关角色等源配置语义已在前置阶段处理，这里只检查删除后引用。
+    """
+    context = ValidationContext(
+        frozenset(target_interfaces),
+        frozenset(removed_interfaces),
+        frozenset(deferred_interface_references),
+    )
+    results = execute_rules(FINAL_INTEGRITY_VALIDATION_RULES, document, context)
     return merge_interface_results(results, InterfaceAdaptationOutcome())
 
 

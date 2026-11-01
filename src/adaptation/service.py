@@ -281,10 +281,13 @@ def prepare_context(
     topology_path: Path,
     config_dir: Path,
     profiles_path: Path | None = None,
+    *,
+    strict_input_validation: bool = False,
 ) -> ConversionContext:
     """加载转换输入并创建所有阶段共享的初始上下文。
 
-    拓扑、profile 和配置在此一次性读取，使后续阶段基于同一快照执行并统一报告输入错误。
+    拓扑、profile 和配置在此一次性读取，使后续阶段基于同一快照执行并统一
+    报告输入错误。``strict_input_validation`` 控制源配置语义问题的严重级别。
     """
     topology = load_topology(topology_path)
     profiles = load_profiles(profiles_path)
@@ -305,6 +308,7 @@ def prepare_context(
         errors=errors,
         events=input_events,
         external_devices=external_devices,
+        strict_input_validation=strict_input_validation,
     )
 
 
@@ -313,12 +317,15 @@ def convert(
     config_dir: Path,
     output_dir: Path,
     profiles_path: Path | None = None,
+    *,
+    strict_input_validation: bool = False,
 ) -> ConversionContext:
     """执行完整转换；即使失败也写 report，便于定位输入问题。
 
     可预期的业务失败由各阶段写入 ``context.errors``。内部不变量或其他
     未预期异常仍会继续向调用方抛出，但在此之前先写入失败报告，使 CLI
-    操作者不会只得到一条无上下文的错误。
+    操作者不会只得到一条无上下文的错误。源配置语义问题默认告警，显式严格
+    模式将其恢复为错误。
     """
     # 输入加载本身也可能失败；空上下文只用于生成失败诊断和撤下旧成果。
     context = ConversionContext(
@@ -327,7 +334,12 @@ def convert(
     )
     phase = "输入加载"
     try:
-        context = prepare_context(topology_path, config_dir, profiles_path)
+        context = prepare_context(
+            topology_path,
+            config_dir,
+            profiles_path,
+            strict_input_validation=strict_input_validation,
+        )
         if not context.errors:
             phase = "清洗规则加载"
             pipeline = build_default_pipeline()

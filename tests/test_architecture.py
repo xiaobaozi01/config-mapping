@@ -97,6 +97,30 @@ class NniPlanningTest(unittest.TestCase):
         self.assertIn("Bundle-Ether20", plan.warnings[0])
         self.assertIn("Bundle-Ether30", plan.warnings[0])
 
+    def test_uncompressible_member_remains_a_single_link_component(self):
+        links = [
+            Link(2, "link-2", "A", "Gi0", "B", "Gi0"),
+            Link(3, "link-3", "A", "Gi1", "B", "Gi1"),
+            Link(4, "link-4", "A", "Gi2", "B", "Gi2"),
+        ]
+        bundles = {
+            (row, device): bundle
+            for row in (2, 3, 4)
+            for device, bundle in (
+                ("A", "Bundle-Ether10"),
+                ("B", "Bundle-Ether20"),
+            )
+        }
+
+        plan = plan_nni_components(
+            links,
+            bundles,
+            uncompressible_rows=frozenset({4}),
+        )
+
+        self.assertEqual(plan.component_rows, {2: (2, 3), 4: (4,)})
+        self.assertEqual(plan.redundant_rows, {3: 2})
+
 
 class ConversionPipelineTest(unittest.TestCase):
     def test_default_pipeline_cleans_before_mapping_and_validates_last(self):
@@ -104,7 +128,8 @@ class ConversionPipelineTest(unittest.TestCase):
             [type(stage).__name__ for stage in build_default_pipeline().stages],
             [
                 "CleaningRulesHandler", "TopologyPreflightHandler", "GroupExpansionHandler",
-                "PreconfiguredInterfaceCleanupHandler", "InterfaceClassificationHandler",
+                "PreconfiguredInterfaceCleanupHandler", "SourceSemanticValidationHandler",
+                "InterfaceClassificationHandler",
                 "NonNNICleanupHandler", "NNIHandler", "ReferenceRewriteHandler",
                 "CleaningRulesHandler", "InterfaceCompatibilityHandler",
                 "SimulationAdaptationHandler", "FinalInterfaceValidationHandler",

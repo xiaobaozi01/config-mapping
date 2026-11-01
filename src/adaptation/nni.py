@@ -86,6 +86,8 @@ BundleLookup = dict[tuple[int, str], str | None]
 def plan_nni_components(
     links: list[Link],
     bundles: BundleLookup,
+    *,
+    uncompressible_rows: frozenset[int] = frozenset(),
 ) -> NniComponentPlan:
     """把共享 bundle 的 NNI 链接行规划为稳定组件。
 
@@ -95,7 +97,11 @@ def plan_nni_components(
     if not links:
         return NniComponentPlan({}, {}, ())
 
-    components = _component_memberships(links, bundles)
+    components = _component_memberships(
+        links,
+        bundles,
+        uncompressible_rows,
+    )
     by_row = {link.row: link for link in links}
     component_rows: dict[int, tuple[int, ...]] = {}
     redundant_rows: dict[int, int] = {}
@@ -162,6 +168,7 @@ def _validate_peer_bundle_fanout(
 def _component_memberships(
     links: list[Link],
     bundles: BundleLookup,
+    uncompressible_rows: frozenset[int],
 ) -> dict[int, list[int]]:
     """计算已确认聚合关系和未知外部聚合的链路行组件。
 
@@ -174,6 +181,8 @@ def _component_memberships(
         tuple[tuple[str, str], tuple[tuple[str, str], ...]], list[int]
     ] = defaultdict(list)
     for link in links:
+        if link.row in uncompressible_rows:
+            continue
         pair = tuple(sorted((link.a_device, link.z_device)))
         endpoints = [
             (device_name, bundles[(link.row, device_name)])
@@ -260,12 +269,14 @@ class _NniAnalysis:
     ``member_maps`` 记录各设备的物理成员到聚合口映射，``resolved`` 保存按链路行
     和设备定位的规范化父接口，``bundles`` 保存对应逻辑聚合口。把这些只读索引
     集中传给规划阶段，可保证所有校验基于同一份原始配置，避免边修改接口树边重新
-    查询而得到前后不一致的结果。
+    查询而得到前后不一致的结果。``uncompressible_rows`` 保存带独立业务、不能
+    作为冗余成员删除的拓扑行。
     """
 
     member_maps: dict[str, dict[str, str]]
     resolved: dict[tuple[int, str], str]
     bundles: dict[tuple[int, str], str | None]
+    uncompressible_rows: frozenset[int]
 
 
 class NNIHandler:
@@ -302,7 +313,7 @@ class NNIHandler:
         ):
             return
 
-        component_rows = self._plan_components(context, links, analysis.bundles)
+        component_rows = self._plan_components(context, links, analysis)
         if context.has_errors:
             return
         plans = self._allocate_targets(
@@ -375,9 +386,10 @@ class NNIHandler:
         links: list[Link],
         analysis: _NniAnalysis,
     ) -> bool:
-        """校验聚合归属和每条链路两端的协商方式。
+        """校验聚合归属、成员可识别性和混合链路处理。
 
-        先排除跨对端聚合，再按链路检查成员业务和模式，避免不安全组合进入分配阶段。
+        先排除跨对端聚合，再按链路检查成员业务和模式是否可识别；两端模式
+        是否能够实际建立协商不由本转换器审计。
         """
         self._reject_cross_peer_bundles(context, links, analysis)
         if context.has_errors:
@@ -419,9 +431,9 @@ class NNIHandler:
         link: Link,
         analysis: _NniAnalysis,
     ) -> None:
-        """校验单条活动链路两端的成员约束和协商模式。
+        """校验单条活动链路的成员约束和可识别模式。
 
-        模式或子接口不兼容时写入精确上下文，让用户能在迁移前修正源配置。
+        只有绑定归属不唯一时阻断；模式组合和成员业务只影响告警与压缩范围。
         """
         modes: list[str] = []
         for name, _ in link.endpoints():
@@ -432,16 +444,9 @@ class NNIHandler:
             bundle = analysis.bundles[(link.row, name)]
             mode = doc.bundle_mode(member) if bundle else BundleMode.ON
             modes.append(mode)
-            if mode == BundleMode.UNKNOWN:
+            if bundle and doc.bundle_binding_is_ambiguous(member):
                 context.errors.append(
-                    f"设备 {name} 成员 {member} 的聚合绑定或协商方式无法安全识别"
-                )
-            if bundle and any(
-                spec.parent == member and spec.unit is not None
-                for spec in doc.interface_specs()
-            ):
-                context.errors.append(
-                    f"设备 {name} 聚合成员 {member} 含业务子接口，无法安全迁移"
+                    f"设备 {name} 成员 {member} 声明了多个不同的聚合绑定"
                 )
             if bundle and any(
                 peer not in context.devices for peer, _ in link.endpoints()
@@ -450,16 +455,36 @@ class NNIHandler:
                     f"设备 {name} 聚合 {bundle} 对端未参与配置转换，"
                     f"协商方式 {mode} 未核验"
                 )
+        NNIHandler._record_mode_warning(context, link, analysis, modes)
         NNIHandler._record_mixed_bundle_warning(context, link, analysis, modes)
-        if len(modes) == 2 and (
-            (
-                BundleMode.ON in modes
-                and any(mode != BundleMode.ON for mode in modes)
-            )
-            or modes == [BundleMode.PASSIVE, BundleMode.PASSIVE]
-        ):
-            context.errors.append(
-                f"链接表第 {link.row} 行两端聚合协商方式不兼容: {modes}"
+
+    @staticmethod
+    def _record_mode_warning(
+        context: ConversionContext,
+        link: Link,
+        analysis: _NniAnalysis,
+        modes: list[BundleMode],
+    ) -> None:
+        """告警两端已聚合链路的协商方式差异。
+
+        转换器保留原值而不判断实际可运行性；普通口混合链路由独立告警描述。
+        """
+        if not link.active:
+            return
+        local_bundles = [
+            analysis.bundles[(link.row, name)]
+            for name, _ in link.endpoints()
+            if name in context.devices
+        ]
+        if len(modes) != 2 or any(bundle is None for bundle in local_bundles):
+            return
+        if (
+            BundleMode.ON in modes
+            and any(mode != BundleMode.ON for mode in modes)
+        ) or modes == [BundleMode.PASSIVE, BundleMode.PASSIVE]:
+            context.warnings.append(
+                f"链接表第 {link.row} 行两端聚合协商方式不兼容，"
+                f"按输入保留: {modes}"
             )
 
     @staticmethod
@@ -469,8 +494,11 @@ class NNIHandler:
         analysis: _NniAnalysis,
         modes: list[BundleMode],
     ) -> None:
-        """报告静态模式下单端 Bundle、对端普通口的混合链路。"""
-        if len(modes) != 2 or any(mode != BundleMode.ON for mode in modes):
+        """报告单端 Bundle、对端普通口的混合链路。
+
+        混合链路保留两端原模式和接口类型，不做协商可行性判断。
+        """
+        if len(modes) != 2:
             return
         bundled = [
             (name, analysis.resolved[(link.row, name)], bundle)
@@ -559,6 +587,7 @@ class NNIHandler:
         # 两端可能分别采用普通物理口和聚合口，不能只按行号存一个结果。
         resolved: dict[tuple[int, str], str] = {}
         bundles: dict[tuple[int, str], str | None] = {}
+        uncompressible_rows: set[int] = set()
         for link in links:
             for device_name, raw_interface in link.endpoints():
                 # 华为等仅作为拓扑对端的设备不加载配置，只适配本端。
@@ -570,9 +599,14 @@ class NNIHandler:
                 source = device.document.resolve_interface(raw_interface)
                 parent = interface_parent(source)
                 resolved[(link.row, device_name)] = parent
-                bundles[(link.row, device_name)] = member_maps[device_name].get(
-                    parent
-                )
+                bundle = member_maps[device_name].get(parent)
+                bundles[(link.row, device_name)] = bundle
+                if bundle and device.document.interface_has_business(parent):
+                    uncompressible_rows.add(link.row)
+                    context.warnings.append(
+                        f"链接表第 {link.row} 行：设备 {device_name} 的聚合成员 "
+                        f"{parent} 含独立业务，不参与聚合压缩"
+                    )
                 kind = device.document.interface_kind(parent)
                 if kind == InterfaceKind.PHYSICAL:
                     continue
@@ -582,13 +616,18 @@ class NNIHandler:
                 )
                 device.errors.append(message)
                 context.errors.append(message)
-        return _NniAnalysis(member_maps, resolved, bundles)
+        return _NniAnalysis(
+            member_maps,
+            resolved,
+            bundles,
+            frozenset(uncompressible_rows),
+        )
 
     @staticmethod
     def _plan_components(
         context: ConversionContext,
         links: list[Link],
-        bundles: dict[tuple[int, str], str | None],
+        analysis: _NniAnalysis,
     ) -> dict[int, tuple[int, ...]]:
         """把同一逻辑聚合的成员链路合并为一个 NNI 组件。
 
@@ -597,7 +636,11 @@ class NNIHandler:
         """
         # planner 只根据拓扑和聚合关系做纯计算，不接触配置 AST。成员关系
         # 不一致时不能让多个逻辑聚合共用一个物理目标，必须停止转换。
-        plan = plan_nni_components(links, bundles)
+        plan = plan_nni_components(
+            links,
+            analysis.bundles,
+            uncompressible_rows=analysis.uncompressible_rows,
+        )
         context.errors.extend(plan.warnings)
         for rows in plan.component_rows.values():
             if len(rows) > 1 and any(
@@ -694,7 +737,10 @@ class NNIHandler:
         if not removed:
             return True
         device = context.devices[device_name]
-        outcome = device.document.prune_interface_dependencies(removed)
+        outcome = device.document.prune_interface_dependencies(
+            removed,
+            strict_input_validation=context.strict_input_validation,
+        )
         device.removed_interfaces.update(removed)
         device.deferred_interface_references.update(
             outcome.deferred_interface_references

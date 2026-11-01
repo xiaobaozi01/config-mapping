@@ -60,6 +60,19 @@ def _normal(command):
     return " ".join(command.lower().split())
 
 
+def _record_input_semantic(session, outcome, message):
+    """按运行策略记录源配置语义问题，严格模式保留错误级阻断。
+
+    目标镜像兼容与映射完整性错误不经过此入口。
+    """
+    destination = (
+        outcome.errors
+        if session.context.strict_input_validation
+        else outcome.warnings
+    )
+    destination.append(message)
+
+
 class AggregationAttributesVisitor(CiscoRuleVisitor):
     """把目标接口上的聚合属性迁移到物理父口。
 
@@ -247,27 +260,37 @@ def l2vpn_scope(document, context):
     )
 
 
-def _validate_command_types(name, command, kind, l2, unit, outcome):
+def _validate_command_types(
+    name, command, kind, l2, unit, outcome, session
+):
     """校验单条命令与接口类型及层级的匹配关系。
 
     所有非法组合追加到同一结果，使一次转换可以完整报告需要人工处理的冲突。
     """
     if l2 and _ADDRESSING.match(command):
-        outcome.errors.append(
+        _record_input_semantic(
+            session,
+            outcome,
             f"L2 接口 {name} 不能包含三层地址或 VRF 命令: {command}"
         )
     if l2 and re.match(r"^mac(?:-|\s+)address\b", command, re.IGNORECASE):
-        outcome.errors.append(
+        _record_input_semantic(
+            session,
+            outcome,
             f"L2 接口 {name} 不能包含三层 MAC 地址命令: {command}"
         )
     if not l2 and re.match(r"^rewrite\b", command, re.IGNORECASE):
-        outcome.errors.append(
+        _record_input_semantic(
+            session,
+            outcome,
             f"三层接口 {name} 不能包含 L2 标签改写命令: {command}"
         )
     if kind == InterfaceKind.GATEWAY and re.match(
         r"^(?:encapsulation|rewrite)\b", command, re.IGNORECASE
     ):
-        outcome.errors.append(
+        _record_input_semantic(
+            session,
+            outcome,
             f"BVI 接口 {name} 不能包含以太网子接口命令: {command}"
         )
     if (
@@ -275,7 +298,9 @@ def _validate_command_types(name, command, kind, l2, unit, outcome):
         and unit is None
         and re.match(r"^encapsulation\b", command, re.IGNORECASE)
     ):
-        outcome.errors.append(
+        _record_input_semantic(
+            session,
+            outcome,
             f"物理主口 {name} 不能包含子接口封装命令: {command}"
         )
     if (
@@ -283,13 +308,17 @@ def _validate_command_types(name, command, kind, l2, unit, outcome):
         and unit is not None
         and _ETHERTYPE.match(command)
     ):
-        outcome.errors.append(f"子接口 {name} 残留主口专属命令: {command}")
+        _record_input_semantic(
+            session,
+            outcome,
+            f"子接口 {name} 残留主口专属命令: {command}",
+        )
 
 
 class EndVisitor(CiscoRuleVisitor):
     """检查 Cisco ``end`` 之后不存在活动配置。
 
-    终端标记之后的内容不会被设备加载，提前报错可避免输出被静默截断。
+    终端标记之后的内容不会被设备加载；默认告警，严格模式恢复为错误。
     """
 
     def __init__(self, session):
@@ -310,7 +339,9 @@ class EndVisitor(CiscoRuleVisitor):
         if node.header.lower() == "end":
             self.ended = True
         elif self.ended:
-            self.session.result.errors.append(
+            _record_input_semantic(
+                self.session,
+                self.session.result,
                 f"配置终止标记 end 后存在活动配置: {node.header.split()[0]}"
             )
         return None
@@ -341,7 +372,9 @@ class ScalarValuesVisitor(CiscoRuleVisitor):
                     decision.identity, decision.normalized
                 )
                 if previous != decision.normalized:
-                    self.session.result.errors.append(
+                    _record_input_semantic(
+                        self.session,
+                        self.session.result,
                         f"接口 {block.interface_name} 的单值配置 "
                         f"{' '.join(decision.identity)} 存在冲突"
                     )
@@ -351,7 +384,8 @@ class ScalarValuesVisitor(CiscoRuleVisitor):
 class InterfaceTypesVisitor(CiscoRuleVisitor):
     """校验接口类型和业务命令的兼容关系。
 
-    物理主口、子接口、聚合和网关允许的命令集合不同，提前检查可阻止非法输出。
+    物理主口、子接口、聚合和网关允许的命令集合不同；默认保留并告警，
+    严格输入校验时恢复为错误。
     """
 
     def __init__(self, session):
@@ -374,25 +408,62 @@ class InterfaceTypesVisitor(CiscoRuleVisitor):
         document, outcome = self.session.document, self.session.result
         name = block.interface_name
         kind = document.interface_kind(name)
-        if (
-            name in self.members
-            and document.bundle_mode(name) == BundleMode.UNKNOWN
-        ):
-            outcome.errors.append(f"聚合成员 {name} 含非法业务或冲突绑定")
         l2, unit = _is_l2(block), interface_unit(name)
         if kind == InterfaceKind.GATEWAY and (l2 or unit is not None):
-            outcome.errors.append(f"网关接口 {name} 必须保留 BVI 三层接口类型")
+            _record_input_semantic(
+                self.session,
+                outcome,
+                f"网关接口 {name} 必须保留 BVI 三层接口类型",
+            )
         for node in block.nodes:
             if not node.is_formatting:
                 _validate_command_types(
-                    name, node.header, kind, l2, unit, outcome
+                    name,
+                    node.header,
+                    kind,
+                    l2,
+                    unit,
+                    outcome,
+                    self.session,
                 )
         if kind == InterfaceKind.PHYSICAL and unit is not None:
             parent = self.blocks.get(interface_parent(name))
             if parent is not None and _is_l2(parent):
-                outcome.errors.append(
-                    f"子接口 {name} 的物理父口不能配置为 l2transport"
+                _record_input_semantic(
+                    self.session,
+                    outcome,
+                    f"子接口 {name} 的物理父口不能配置为 l2transport",
                 )
+        return None
+
+
+class BundleBindingsVisitor(CiscoRuleVisitor):
+    """检查聚合成员是否声明了无法唯一解释的绑定。
+
+    该完整性检查不依赖源语义告警策略，始终阻断冲突绑定。
+    """
+
+    def __init__(self, session):
+        """缓存物理成员集合，供每个接口块快速判断。
+
+        索引只在当前只读校验会话内使用。
+        """
+        super().__init__(session)
+        self.members = session.document.bundle_members()
+
+    def visitNode(self, block):
+        """把成员绑定歧义作为始终阻断的完整性错误。
+
+        无法唯一确定 Bundle 时不能猜测目标聚合关系。
+        """
+        name = block.interface_name
+        if (
+            name in self.members
+            and self.session.document.bundle_mode(name) == BundleMode.UNKNOWN
+        ):
+            self.session.result.errors.append(
+                f"聚合成员 {name} 包含冲突绑定"
+            )
         return None
 
 
@@ -468,22 +539,32 @@ class L2vpnVisitor(CiscoRuleVisitor):
                 document.interface_kind(name) != InterfaceKind.GATEWAY
                 or interface_unit(name) is not None
             ):
-                outcome.errors.append(
+                _record_input_semantic(
+                    self.session,
+                    outcome,
                     f"L2VPN routed interface 必须引用 BVI，不能引用 {name}"
                 )
             elif name not in self.blocks:
-                outcome.errors.append(
+                _record_input_semantic(
+                    self.session,
+                    outcome,
                     f"L2VPN routed interface 引用不存在的 BVI: {name}"
                 )
         elif attachment:
             name = document.resolve_interface(attachment.group(1))
             target = self.blocks.get(name)
             if target is not None and not _is_l2(target):
-                outcome.errors.append(
+                _record_input_semantic(
+                    self.session,
+                    outcome,
                     f"L2VPN 接入接口 {name} 必须配置 l2transport"
                 )
             elif target is None and _in_scope(name, self.parents):
-                outcome.errors.append(f"L2VPN 引用不存在的目标接入接口: {name}")
+                _record_input_semantic(
+                    self.session,
+                    outcome,
+                    f"L2VPN 引用不存在的目标接入接口: {name}",
+                )
         return self.visitChildren(node)
 
 
@@ -543,6 +624,12 @@ SCALAR_VALUES_RULE = CiscoVisitorRule(
 INTERFACE_TYPES_RULE = CiscoVisitorRule(
     "cisco.validate.interface_types",
     InterfaceTypesVisitor,
+    selector=compatibility_interfaces_scope,
+    readonly=True,
+)
+BUNDLE_BINDINGS_RULE = CiscoVisitorRule(
+    "cisco.validate.bundle_bindings",
+    BundleBindingsVisitor,
     selector=compatibility_interfaces_scope,
     readonly=True,
 )

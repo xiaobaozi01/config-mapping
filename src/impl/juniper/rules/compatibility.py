@@ -5,7 +5,7 @@ from __future__ import annotations
 import re
 from typing import TYPE_CHECKING
 
-from impl.common.interface import referenced_interface_names
+from impl.common.interface import interface_parent, referenced_interface_names
 from impl.common.outcomes import (
     DeferredInterfaceReference,
     InterfacePruningOutcome,
@@ -27,6 +27,57 @@ def _walk(document: JunosDocument, node: JunosNode, path: tuple[str, ...] = ()):
         child_path = (*path, header)
         yield child, child_path
         yield from _walk(document, child, child_path)
+
+
+def _record_input_semantic(outcome, strict, message):
+    """按运行策略记录 Junos 源配置语义问题。
+
+    引用悬空等映射完整性错误不经过此入口。
+    """
+    destination = outcome.errors if strict else outcome.warnings
+    destination.append(message)
+
+
+def _validate_gateway_reference(
+    header,
+    path,
+    actual_names,
+    result,
+    strict,
+    *,
+    check_role=True,
+    check_missing=True,
+):
+    """校验一个网关引用形态及其定义是否存在。
+
+    非法 IRB 类型属于源语义问题，缺失定义仍属于引用完整性错误。
+    """
+    gateway = re.fullmatch(
+        r"(?:routing-interface|l3-interface)\s+(\S+)", header.rstrip(";")
+    )
+    if not gateway:
+        return
+    name = gateway.group(1)
+    if check_role and not re.fullmatch(r"irb\.\d+", name):
+        _record_input_semantic(
+            result,
+            strict,
+            f"非法网关引用：{' / '.join(path)} 必须引用原生 irb 逻辑接口",
+        )
+    elif check_missing and name not in actual_names:
+        result.errors.append(
+            f"网关接口缺失：{' / '.join(path)} 引用的 {name} 没有有效定义"
+        )
+
+
+def _validation_strict(context, explicit):
+    """解析校验上下文与显式覆盖参数中的严格模式。
+
+    上下文优先，缺省时保持低层校验默认严格。
+    """
+    if context is not None:
+        return context.strict_input_validation
+    return True if explicit is None else explicit
 
 
 def validate_pruned_references(
@@ -55,6 +106,7 @@ def _validate_reference_bindings(
     deferred_interface_references=(),
     *,
     defer_unknown=False,
+    strict_input_validation=True,
 ) -> InterfacePruningOutcome:
     """使用给定删除集合检查引用绑定和网关角色。
 
@@ -93,29 +145,33 @@ def _validate_reference_bindings(
                     f"未知活动接口引用：{' / '.join(path)} 引用了已删除接口 "
                     f"{', '.join(sorted(unexpected))}"
                 )
-        gateway = re.fullmatch(
-            r"(?:routing-interface|l3-interface)\s+(\S+)", header.rstrip(";")
+        _validate_gateway_reference(
+            header,
+            path,
+            actual_names,
+            result,
+            strict_input_validation,
+            check_role=False,
         )
-        if gateway:
-            name = gateway.group(1)
-            if not re.fullmatch(r"irb\.\d+", name):
-                result.errors.append(
-                    f"非法网关引用：{' / '.join(path)} 必须引用原生 irb 逻辑接口"
-                )
-            elif name not in actual_names:
-                result.errors.append(
-                    f"网关接口缺失：{' / '.join(path)} 引用的 {name} 没有有效定义"
-                )
     return result
 
 
-def validate_units(document, context):
+def validate_units(document, context, *, strict_input_validation=None):
     """校验逻辑单元编号唯一性及二三层模式互斥。
 
-    重复 unit 或混合 bridge 与 inet family 会产生不可预测的配置语义，必须阻止输出。
+    重复 unit 或混合 bridge 与 inet family 属于源配置语义问题，默认告警；
+    严格输入校验时恢复为阻断错误。
     """
     result = InterfacePruningOutcome()
+    strict = _validation_strict(context, strict_input_validation)
+    targeted_parents = {
+        interface_parent(document.resolve_interface(name))
+        for name in getattr(context, "target_interfaces", ())
+    }
     for parent in document._interface_nodes():
+        parent_name = document._interface_name(parent)
+        if targeted_parents and interface_parent(parent_name) not in targeted_parents:
+            continue
         seen = set()
         for unit in document._unit_nodes(parent):
             number = document._unit_number(unit)
@@ -124,7 +180,11 @@ def validate_units(document, context):
                 f"unit {number}"
             )
             if number in seen:
-                result.errors.append(f"重复逻辑接口：{path}")
+                _record_input_semantic(
+                    result,
+                    strict,
+                    f"重复逻辑接口：{path}",
+                )
             seen.add(number)
             families = {
                 document._parser.base_header(child.header)
@@ -142,7 +202,37 @@ def validate_units(document, context):
                 "ccc",
                 "vpls",
             } and families & {"inet", "inet6"}:
-                result.errors.append(f"逻辑接口二三层模式冲突：{path}")
+                _record_input_semantic(
+                    result,
+                    strict,
+                    f"逻辑接口二三层模式冲突：{path}",
+                )
+    return result
+
+
+def validate_gateway_role(
+    document,
+    context,
+    *,
+    strict_input_validation=None,
+):
+    """只校验网关引用是否使用原生 IRB 接口。
+
+    缺失定义属于引用完整性，由引用绑定校验单独阻断。
+    """
+    result = InterfacePruningOutcome()
+    strict = _validation_strict(context, strict_input_validation)
+    actual_names = {spec.name for spec in document.interface_specs()}
+    for node, path in _walk(document, document.root):
+        header = document._parser.base_header(node.header)
+        _validate_gateway_reference(
+            header,
+            path,
+            actual_names,
+            result,
+            strict,
+            check_missing=False,
+        )
     return result
 
 
@@ -152,6 +242,7 @@ def _validate_pruned_references(
     deferred_interface_references=(),
     *,
     defer_unknown=False,
+    strict_input_validation=True,
 ):
     """合并引用绑定和逻辑单元检查。
 
@@ -162,8 +253,22 @@ def _validate_pruned_references(
         removed,
         deferred_interface_references,
         defer_unknown=defer_unknown,
+        strict_input_validation=strict_input_validation,
     )
-    result.errors.extend(validate_units(document, None).errors)
+    gateway_roles = validate_gateway_role(
+        document,
+        None,
+        strict_input_validation=strict_input_validation,
+    )
+    result.errors.extend(gateway_roles.errors)
+    result.warnings.extend(gateway_roles.warnings)
+    units = validate_units(
+        document,
+        None,
+        strict_input_validation=strict_input_validation,
+    )
+    result.errors.extend(units.errors)
+    result.warnings.extend(units.warnings)
     return result
 
 
@@ -180,4 +285,5 @@ def validate_reference_bindings(document, context):
         document,
         set(context.removed_interfaces) - actual,
         context.deferred_interface_references,
+        strict_input_validation=context.strict_input_validation,
     )

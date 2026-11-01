@@ -1,8 +1,8 @@
 """NNI-only Junos 剪枝保留业务角色并验证依赖边界。"""
 
 import importlib.util
-from pathlib import Path
 import unittest
+from pathlib import Path
 
 from impl.juniper import rules as juniper_rules
 from impl.juniper.document import JunosDocument
@@ -11,7 +11,6 @@ from impl.juniper.rules.pruning import (
     prune_interface_dependencies,
     prune_non_nni,
 )
-
 
 FIXTURES = Path(__file__).parent / "fixtures" / "interfaces"
 
@@ -124,6 +123,51 @@ class JunosNniPruningTest(unittest.TestCase):
         self.assertTrue(any("重复逻辑接口" in error for error in outcome.errors))
         self.assertTrue(any("非法网关引用" in error for error in outcome.errors))
         self.assertTrue(any("网关接口缺失" in error and "irb.999" in error for error in outcome.errors))
+
+    def test_final_validation_warns_for_source_semantic_conflicts_by_default(self):
+        document = load("junos_nni_pruning_invalid.cfg")
+
+        outcome = document.validate_interfaces(
+            set(),
+            set(),
+            strict_input_validation=False,
+        )
+
+        self.assertEqual(
+            len(outcome.errors),
+            1,
+            outcome.errors,
+        )
+        self.assertTrue(any(
+            "网关接口缺失" in error and "irb.999" in error
+            for error in outcome.errors
+        ))
+        rendered = "\n".join(outcome.warnings)
+        self.assertIn("二三层模式冲突", rendered)
+        self.assertIn("重复逻辑接口", rendered)
+        self.assertIn("非法网关引用", rendered)
+
+    def test_pruning_propagates_strict_input_validation_policy(self):
+        loose = prune_non_nni(
+            load("junos_nni_pruning_invalid.cfg"),
+            {"ge-0/0/0"},
+            strict_input_validation=False,
+        )
+        strict = prune_non_nni(
+            load("junos_nni_pruning_invalid.cfg"),
+            {"ge-0/0/0"},
+            strict_input_validation=True,
+        )
+
+        self.assertFalse(any(
+            "二三层模式冲突" in error for error in loose.errors
+        ))
+        self.assertTrue(any(
+            "二三层模式冲突" in warning for warning in loose.warnings
+        ))
+        self.assertTrue(any(
+            "二三层模式冲突" in error for error in strict.errors
+        ))
 
     def test_final_reference_validation_is_read_only(self):
         document = load("junos_nni_pruning_unknown.cfg")

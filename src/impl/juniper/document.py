@@ -824,6 +824,20 @@ class JunosDocument(VendorConfiguration):
             dict,
         )
 
+    def interface_has_business(self, name: str) -> bool:
+        """判断物理聚合成员是否含 unit、family 等独立业务。
+
+        该结果用于让成员退出压缩，而不是判断源配置是否正确。
+        """
+        return self._interfaces().interface_has_business(self, name)
+
+    def bundle_binding_is_ambiguous(self, name: str) -> bool:
+        """判断物理成员是否声明了多个不同 ae 绑定。
+
+        多个绑定无法唯一映射，仍作为转换错误处理。
+        """
+        return self._interfaces().bundle_binding_is_ambiguous(self, name)
+
     def resolve_interface(self, value: str) -> str:
         """把拓扑中的 Junos 接口写法转换为解析器的规范形式。
 
@@ -942,7 +956,10 @@ class JunosDocument(VendorConfiguration):
         return validate_nni_clone(self, source, target_interfaces)
 
     def prune_non_nni(
-        self, protected_parents: set[str]
+        self,
+        protected_parents: set[str],
+        *,
+        strict_input_validation: bool = True,
     ) -> InterfacePruningOutcome:
         """基于原始接口身份删除非 NNI 接入接口及明确依赖。
 
@@ -950,10 +967,17 @@ class JunosDocument(VendorConfiguration):
         """
         from .rules.pruning import prune_non_nni
 
-        return prune_non_nni(self, protected_parents)
+        return prune_non_nni(
+            self,
+            protected_parents,
+            strict_input_validation=strict_input_validation,
+        )
 
     def prune_interface_dependencies(
-        self, removed_interfaces: set[str]
+        self,
+        removed_interfaces: set[str],
+        *,
+        strict_input_validation: bool = True,
     ) -> InterfacePruningOutcome:
         """清理聚合缩减后已删除成员口的可识别引用。
 
@@ -961,7 +985,11 @@ class JunosDocument(VendorConfiguration):
         """
         from .rules.pruning import prune_interface_dependencies
 
-        return prune_interface_dependencies(self, removed_interfaces)
+        return prune_interface_dependencies(
+            self,
+            removed_interfaces,
+            strict_input_validation=strict_input_validation,
+        )
 
     def adapt_interfaces(
         self, target_interfaces: set[str]
@@ -974,11 +1002,43 @@ class JunosDocument(VendorConfiguration):
 
         return adapt_interfaces(self, target_interfaces)
 
+    def validate_source_semantics(
+        self, target_interfaces: set[str]
+    ) -> InterfaceAdaptationOutcome:
+        """在映射前校验 Junos 源配置语义。
+
+        目标引用完整性和删除引用校验由最终阶段负责。
+        """
+        from .rules import validate_source_semantics
+
+        return validate_source_semantics(self, target_interfaces)
+
+    def validate_final_integrity(
+        self,
+        target_interfaces: set[str],
+        removed_interfaces: set[str],
+        deferred_interface_references=(),
+    ) -> InterfaceAdaptationOutcome:
+        """校验适配产物的引用完整性。
+
+        unit 和网关角色等源配置语义已在前置阶段处理。
+        """
+        from .rules import validate_final_integrity
+
+        return validate_final_integrity(
+            self,
+            target_interfaces,
+            removed_interfaces,
+            deferred_interface_references,
+        )
+
     def validate_interfaces(
         self,
         target_interfaces: set[str],
         removed_interfaces: set[str],
         deferred_interface_references=(),
+        *,
+        strict_input_validation=True,
     ) -> InterfaceAdaptationOutcome:
         """执行最终接口引用、网关和 unit 约束检查。
 
@@ -991,6 +1051,7 @@ class JunosDocument(VendorConfiguration):
             target_interfaces,
             removed_interfaces,
             deferred_interface_references,
+            strict_input_validation=strict_input_validation,
         )
 
     def adapt_to_simulation(

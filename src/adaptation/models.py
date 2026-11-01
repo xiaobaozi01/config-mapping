@@ -313,6 +313,8 @@ class ConversionContext:
     # 拓扑中存在、本次不加载配置但仍作为链路端点参与转换的设备。
     # 例如华为设备：只适配链路对端，不读取、不生成自身配置。
     external_devices: set[str] = field(default_factory=set)
+    # 源配置语义问题默认只告警；显式严格模式恢复为转换错误。
+    strict_input_validation: bool = False
 
     def add_event(
         self, kind: EventKind | str, message: str, **details: Any

@@ -37,13 +37,11 @@ def bundle_mode(document, member) -> BundleMode:
 def _member_bundle(document, node) -> str | None:
     """返回成员唯一绑定的 ae 名称。
 
-    含业务语句或出现多个绑定时返回 ``None``，避免把不明确归属复制到新的聚合接口。
+    业务 unit 与绑定解析分离；只有缺失或出现多个绑定时才返回 ``None``。
     """
     bindings = []
     for child in _walk(document, node):
         base = document._parser.base_header(child.header).rstrip(";")
-        if re.match(r"^(?:unit|family|address)\b", base):
-            return None
         if base.startswith("802.3ad "):
             bindings.append(base.split()[1])
     if len(set(bindings)) != 1:

@@ -42,7 +42,7 @@
 1. NNI 按 Excel 链接表行号稳定排序。
 2. 每条有效 NNI 链路在两端分别按本端厂商和镜像 Profile 分配目标物理接口；Cisco XRv9000 与 Juniper vMX 可以互联，两端目标接口名称不要求一致。
 3. 同一对端间经两端确认属于同一聚合的多条成员链路压缩为一条，保留最早 Excel 行并映射物理成员；Bundle/ae 主口与子接口保留名称、地址、封装及协议引用。成员绑定随目标物理口重建，最小活动成员数调整为 1，最小活动带宽门限删除并报告，静态/LACP 模式保持原值。
-4. 同一聚合跨不同对端时，缺少可靠的跨设备聚合还原支持，当前默认报错，不拆分或复制逻辑业务。两端聚合关系不一致、已知 LACP 模式冲突、物理成员混入三层业务或拓扑成员与配置绑定无法对应时均失败。
+4. 同一聚合跨不同对端时，缺少可靠的跨设备聚合还原支持，当前默认报错，不拆分或复制逻辑业务。同一本地 Bundle 扇出到同一对端的多个 Bundle 或拓扑成员与配置绑定无法对应时失败。链路两端聚合协商方式不作正确性审计，按输入原值保留；单端 Bundle、对端普通口的链路作为非对称混合链路保留并告警。带地址、VRF、L2 transport、bridge/unit/family 或子接口的独立业务成员保留且不参与压缩，其他成员仍可压缩。
 5. 普通 NNI 物理接口的配置和全局引用改为目标物理接口。
 6. NNI 数量超过可分配物理接口时，转换失败并报告错误。
 7. 系统不审计链路两端的 IP、VLAN、MTU 或封装一致性，此类业务一致性由输入配置保证。
@@ -58,7 +58,7 @@
 5. 被预检跳过但已明确为 NNI 的接口保留 NNI 身份，不能误删。Loopback、管理口、已知控制虚拟口和未知接口不按非 NNI 物理口删除。
 6. 删除记录使用 `role=NON_NNI`、`action=remove`、空目标接口，写入映射与报告。
 7. BGP 本地源依赖被删除接口或地址时，以邻居或被依赖模板为单位裁剪；IPv6 源地址按规范化地址比较。模板缺失、重复、循环或多源冲突由输入方保证语义正确，prune 保留相关配置并记录 warning，不自行判定输入非法。
-8. 跳过端点占用的端口及聚合闭包不得重新分配；接口别名规范化后目标必须唯一。已知单值配置（如 MTU、主 IPv4 地址、封装）冲突使最终校验失败。
+8. 跳过端点占用的端口及聚合闭包不得重新分配；接口别名规范化后目标必须唯一。已知单值配置（如 MTU、主 IPv4 地址、封装）冲突默认告警并保留输入值；严格输入校验模式下恢复为错误。
 9. 地址及 VLAN 关联按 VRF／routing-instance 作用域判断，不能借用其他实例的同值对象。邻居显式配置优先于模板默认源；源失效时不得连带删除具有有效显式覆盖的邻居及所需模板公共参数。
 
 聚合主口和子接口只生成自映射（`action=preserve`）；选中的物理成员生成 `action=map-member`，冗余成员删除。不能生成 Bundle/ae 到物理接口的替换关系。没有拓扑物理成员的聚合作为非 NNI 删除；拓扑成员已声明聚合绑定但配置无法解释时，必须报错。
@@ -108,7 +108,8 @@ GNS3 实验只验证路由协议。聚合类型与成员绑定保持；实验范
 
 ```text
 CleaningRulesHandler(pre_analysis) -> TopologyPreflightHandler -> GroupExpansionHandler
--> PreconfiguredInterfaceCleanupHandler -> InterfaceClassificationHandler -> NonNNICleanupHandler
+-> PreconfiguredInterfaceCleanupHandler -> SourceSemanticValidationHandler
+-> InterfaceClassificationHandler -> NonNNICleanupHandler
 -> NNIHandler -> ReferenceRewriteHandler -> CleaningRulesHandler(post_rewrite)
 -> InterfaceCompatibilityHandler -> SimulationAdaptationHandler -> FinalInterfaceValidationHandler
 ```
@@ -189,6 +190,8 @@ CleaningRulesHandler(pre_analysis) -> TopologyPreflightHandler -> GroupExpansion
 - 已知目标接口类型冲突无法安全转换，或最终接口校验失败。
 - 同一有效链路端点映射不完整。
 - 配置语法结构无法安全解析。
+
+源配置语义问题只在映射前检查一次，默认作为 warning 输出，包括单值/主地址冲突、接口类型与命令组合不匹配、L2VPN/网关角色不符合预期、重复 unit 及二三层 family 混用。调用方可用 `strict_input_validation=True` 将这些 warning 恢复为 error。最终阶段只检查适配产物的目标镜像兼容、聚合绑定和引用完整性，不重复执行源语义规则。解析失败、映射不唯一、聚合关系无法表达、目标兼容失败和转换后悬空引用不受该开关豁免。
 
 未知但结构完整的非认证命令默认保留并产生可选告警。
 

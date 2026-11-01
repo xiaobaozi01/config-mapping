@@ -82,6 +82,45 @@ def _report_diagnostics(
             )
 
 
+def _source_semantic_parents(
+    context: ConversionContext,
+    device_name: str,
+    device,
+) -> set[str]:
+    """收集映射前需要审计的拓扑接口、聚合闭包和网关父口。
+
+    仅消费活动链路，并纳入已选 Bundle 的全部物理成员，避免审计遗漏
+    未直接出现在拓扑表中的同 Bundle 成员。
+    """
+    members = device.document.bundle_members()
+    parents = set()
+    selected_bundles = set()
+    for link in context.topology.links:
+        if not link.active:
+            continue
+        for endpoint_name, raw_interface in link.endpoints():
+            if endpoint_name != device_name:
+                continue
+            parent = interface_parent(
+                device.document.resolve_interface(raw_interface)
+            )
+            parents.add(parent)
+            if bundle := members.get(parent):
+                parents.add(bundle)
+                selected_bundles.add(bundle)
+    parents.update(
+        member
+        for member, bundle in members.items()
+        if bundle in selected_bundles
+    )
+    parents.update(
+        spec.parent
+        for spec in device.document.interface_specs()
+        if spec.kind == InterfaceKind.GATEWAY
+    )
+    return parents
+
+
 class PreconfiguredInterfaceCleanupHandler:
     """在接口分类前删除 IOS XR 尚未实例化的接口候选块。
 
@@ -112,6 +151,50 @@ class PreconfiguredInterfaceCleanupHandler:
                     device=device_name,
                     removed_by_type={"preconfigured-interface": removed},
                 )
+
+
+class SourceSemanticValidationHandler:
+    """在接口裁剪和映射前检查源配置语义。
+
+    默认模式只对既有源问题告警，严格模式则在任何映射前阻断。
+    """
+
+    def process(self, context: ConversionContext) -> None:
+        """审计拓扑相关源接口，并按严格策略报告既有语义问题。
+
+        默认模式把问题写成 warning，严格模式直接写成 error 并终止流水线。
+        """
+        for device_name in sorted(context.devices):
+            device = context.devices[device_name]
+            parents = _source_semantic_parents(
+                context,
+                device_name,
+                device,
+            )
+            outcome = device.document.validate_source_semantics(parents)
+            if context.strict_input_validation:
+                _report(
+                    context,
+                    device_name,
+                    EventKind.INTERFACE_VALIDATION,
+                    outcome,
+                )
+                continue
+            source_errors = set(outcome.errors)
+            outcome.warnings.extend(outcome.errors)
+            outcome.errors.clear()
+            for diagnostic in outcome.diagnostics:
+                if (
+                    diagnostic["level"] == "error"
+                    and diagnostic["message"] in source_errors
+                ):
+                    diagnostic["level"] = "warning"
+            _report(
+                context,
+                device_name,
+                EventKind.INTERFACE_VALIDATION,
+                outcome,
+            )
 
 
 class InterfaceClassificationHandler:
@@ -175,7 +258,10 @@ class NonNNICleanupHandler:
                 for endpoint, interface in link.endpoints()
                 if endpoint == name
             }
-            outcome = device.document.prune_non_nni(protected)
+            outcome = device.document.prune_non_nni(
+                protected,
+                strict_input_validation=context.strict_input_validation,
+            )
             device.removed_interfaces.update(outcome.removed_interfaces)
             device.deferred_interface_references.update(
                 outcome.deferred_interface_references
@@ -253,7 +339,7 @@ class FinalInterfaceValidationHandler:
                 and mapping.action
                 not in {MappingAction.SKIP, MappingAction.PRESERVE}
             }
-            outcome = device.document.validate_interfaces(
+            outcome = device.document.validate_final_integrity(
                 set(target_parents(device)),
                 removed,
                 device.deferred_interface_references,

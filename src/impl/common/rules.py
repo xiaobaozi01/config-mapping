@@ -37,6 +37,7 @@ class PruneContext:
     removed_interfaces: frozenset[str] = frozenset()
     removed_addresses: frozenset[str] = frozenset()
     remove_non_nni: bool = True
+    strict_input_validation: bool = True
 
 
 @dataclass(frozen=True, slots=True)
@@ -61,6 +62,7 @@ class ValidationContext:
     deferred_interface_references: frozenset[DeferredInterfaceReference] = (
         frozenset()
     )
+    strict_input_validation: bool = True
 
 
 @dataclass(frozen=True, slots=True)

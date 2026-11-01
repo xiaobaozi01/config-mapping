@@ -21,6 +21,17 @@ from .document import (
 MAX_VLAN_ID = 4094
 
 
+def _walk(document: JunosDocument, node: JunosNode):
+    """遍历成员接口下的有效节点。
+
+    只暴露生效节点，避免读取 inactive 绑定或业务配置。
+    """
+    for child in node.children or []:
+        if document._parser.is_effective(child):
+            yield child
+            yield from _walk(document, child)
+
+
 def interface_specs(document: JunosDocument) -> list[InterfaceSpec]:
     """提取 Junos 接口或 unit 的父子关系、类型及 VLAN 规划信息。
 
@@ -87,6 +98,52 @@ def bundle_members(document: JunosDocument) -> dict[str, str]:
         if match:
             result[parent] = match.group(1)
     return result
+
+
+def interface_has_business(document: JunosDocument, name: str) -> bool:
+    """判断物理聚合成员是否包含 unit、family 或其他独立业务。
+
+    识别结果用于禁止压缩删除成员业务；纯物理选项不触发保护。
+    """
+    parent = document.resolve_interface(name)
+    if any(
+        spec.parent == parent and spec.name != parent
+        for spec in document.interface_specs()
+    ):
+        return True
+    node = document._find_interface_node(parent)
+    if node is None:
+        return False
+    return any(
+        re.match(
+            r"^(?:unit|family|address|unnumbered-address|"
+            r"bridge-domains|vlan-id)\b",
+            document._parser.base_header(child.header),
+        )
+        for child in node.children or []
+        if document._parser.is_effective(child)
+    )
+
+
+def bundle_binding_is_ambiguous(document: JunosDocument, name: str) -> bool:
+    """判断物理成员是否声明了多个不同 ae 绑定。
+
+    多个绑定无法唯一映射，必须与普通成员业务告警区分。
+    """
+    node = document._find_interface_node(document.resolve_interface(name))
+    if node is None:
+        return False
+    bindings = {
+        match.group(1)
+        for child in _walk(document, node)
+        if (
+            match := re.match(
+                r"802\.3ad\s+(ae\d+)\b",
+                document._parser.base_header(child.header),
+            )
+        )
+    }
+    return len(bindings) > 1
 
 
 def resolve_interface(document: JunosDocument, value: str) -> str:

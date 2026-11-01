@@ -71,6 +71,20 @@ class VendorConfiguration(Protocol):
         """
         ...
 
+    def interface_has_business(self, name: str) -> bool:
+        """判断物理成员是否承载不能随聚合压缩丢弃的业务。
+
+        该判断与 Bundle 绑定解析分离，源配置业务不会被误判为未知模式。
+        """
+        ...
+
+    def bundle_binding_is_ambiguous(self, name: str) -> bool:
+        """判断成员是否声明了多个聚合绑定。
+
+        多个绑定无法唯一映射，调用方必须阻断而不是猜测目标关系。
+        """
+        ...
+
     def resolve_interface(self, value: str) -> str:
         """把外部接口写法转换为配置解析器使用的规范名称。
 
@@ -158,7 +172,10 @@ class VendorConfiguration(Protocol):
         ...
 
     def prune_non_nni(
-        self, protected_parents: set[str]
+        self,
+        protected_parents: set[str],
+        *,
+        strict_input_validation: bool = True,
     ) -> InterfacePruningOutcome:
         """删除 NNI 保留闭包之外的接口及其依赖业务。
 
@@ -167,7 +184,10 @@ class VendorConfiguration(Protocol):
         ...
 
     def prune_interface_dependencies(
-        self, removed_interfaces: set[str]
+        self,
+        removed_interfaces: set[str],
+        *,
+        strict_input_validation: bool = True,
     ) -> InterfacePruningOutcome:
         """清理已删除接口在协议、策略和路由中的可识别依赖。
 
@@ -184,8 +204,34 @@ class VendorConfiguration(Protocol):
         """
         ...
 
+    def validate_source_semantics(
+        self, target_interfaces: set[str]
+    ) -> InterfaceAdaptationOutcome:
+        """在映射前校验源配置自身的语义问题。
+
+        该入口不包含目标镜像兼容、删除引用或映射完整性校验。
+        """
+        ...
+
+    def validate_final_integrity(
+        self,
+        target_interfaces: set[str],
+        removed_interfaces: set[str],
+        deferred_interface_references=(),
+    ) -> InterfaceAdaptationOutcome:
+        """校验适配产物，不重复源配置语义规则。
+
+        该入口用于最终阶段检查目标兼容、聚合绑定和删除引用完整性。
+        """
+        ...
+
     def validate_interfaces(
-        self, target_interfaces: set[str], removed_interfaces: set[str]
+        self,
+        target_interfaces: set[str],
+        removed_interfaces: set[str],
+        deferred_interface_references=(),
+        *,
+        strict_input_validation: bool = True,
     ) -> InterfaceAdaptationOutcome:
         """校验目标接口、已删除引用和厂商类型约束。
 

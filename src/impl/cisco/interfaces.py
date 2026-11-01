@@ -20,6 +20,11 @@ from .document import (
 )
 from .rewrite_helpers import append_top_level, delete_matching
 
+_MEMBER_BUSINESS = re.compile(
+    r"^(?:ipv[46]\s+(?:address|unnumbered|enable)|vrf|l2transport|xconnect)\b",
+    re.IGNORECASE,
+)
+
 
 def interface_nodes(document: CiscoDocument) -> list[CiscoContext]:
     """返回文档中仍有效且已识别出接口名的 IOS XR 配置块。
@@ -230,6 +235,52 @@ def bundle_members(document: CiscoDocument) -> dict[str, str]:
                 result[name] = f"Bundle-Ether{match.group(1)}"
                 break
     return result
+
+
+def interface_has_business(document: CiscoDocument, name: str) -> bool:
+    """判断物理聚合成员是否承载地址、VRF、L2 业务或子接口。
+
+    识别结果用于阻止压缩删除独立业务；普通描述、启停和 MTU 不在此范围内。
+    """
+    parent = interface_parent(document.resolve_interface(name))
+    parser = document._parser
+    for block in interface_nodes(document):
+        block_name = parser.interface_name(block.header)
+        if block_name is None:
+            continue
+        if block_name == parent:
+            if block.l2transport or any(
+                _MEMBER_BUSINESS.match(node.header)
+                for node in block.walk()
+            ):
+                return True
+        elif interface_parent(block_name) == parent:
+            return True
+    return False
+
+
+def bundle_binding_is_ambiguous(document: CiscoDocument, name: str) -> bool:
+    """判断物理成员是否声明了多个不同 Bundle 编号。
+
+    多个绑定无法选择唯一目标关系，因此与可保留的成员业务分开处理。
+    """
+    parent = interface_parent(document.resolve_interface(name))
+    bindings = set()
+    for block in interface_nodes(document):
+        if document._parser.interface_name(block.header) != parent:
+            continue
+        bindings.update(
+            match.group(1)
+            for node in block.walk()
+            if (
+                match := re.match(
+                    r"^bundle\s+id\s+(\d+)\b",
+                    node.header,
+                    re.IGNORECASE,
+                )
+            )
+        )
+    return len(bindings) > 1
 
 
 def resolve_interface(document: CiscoDocument, value: str) -> str:

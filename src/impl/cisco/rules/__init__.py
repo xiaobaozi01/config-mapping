@@ -52,11 +52,23 @@ COMPATIBILITY_VALIDATION_RULES: tuple[CiscoValidationRule, ...] = (
     compatibility.END_RULE,
     compatibility.SCALAR_VALUES_RULE,
     compatibility.INTERFACE_TYPES_RULE,
+    compatibility.BUNDLE_BINDINGS_RULE,
     compatibility.COMPATIBLE_COMMANDS_RULE,
+    compatibility.L2VPN_RULE,
+)
+SOURCE_SEMANTIC_VALIDATION_RULES: tuple[CiscoValidationRule, ...] = (
+    compatibility.END_RULE,
+    compatibility.SCALAR_VALUES_RULE,
+    compatibility.INTERFACE_TYPES_RULE,
     compatibility.L2VPN_RULE,
 )
 VALIDATION_RULES: tuple[CiscoValidationRule, ...] = (
     *COMPATIBILITY_VALIDATION_RULES,
+    compatibility.REMOVED_REFERENCES_RULE,
+)
+FINAL_INTEGRITY_VALIDATION_RULES: tuple[CiscoValidationRule, ...] = (
+    compatibility.BUNDLE_BINDINGS_RULE,
+    compatibility.COMPATIBLE_COMMANDS_RULE,
     compatibility.REMOVED_REFERENCES_RULE,
 )
 SIMULATION_RULES: tuple[CiscoSimulationRule, ...] = (
@@ -116,14 +128,40 @@ def adapt_interfaces(
 
 
 def validate_compatibility(
-    document: CiscoDocument, target_interfaces: Iterable[str]
+    document: CiscoDocument,
+    target_interfaces: Iterable[str],
+    *,
+    strict_input_validation: bool = True,
 ) -> InterfaceAdaptationOutcome:
     """执行接口类型兼容校验规则。
 
     该入口不包含删除引用校验，用于单独验证目标接口的最终语法类型。
     """
-    context = ValidationContext(frozenset(target_interfaces))
+    context = ValidationContext(
+        frozenset(target_interfaces),
+        strict_input_validation=strict_input_validation,
+    )
     results = execute_rules(COMPATIBILITY_VALIDATION_RULES, document, context)
+    return merge_interface_results(results, InterfaceAdaptationOutcome())
+
+
+def validate_source_semantics(
+    document: CiscoDocument,
+    target_interfaces: Iterable[str],
+) -> InterfaceAdaptationOutcome:
+    """在映射前执行只属于源配置语义的校验。
+
+    目标镜像兼容、聚合绑定完整性和删除引用校验不进入该入口。
+    """
+    context = ValidationContext(
+        frozenset(target_interfaces),
+        strict_input_validation=True,
+    )
+    results = execute_rules(
+        SOURCE_SEMANTIC_VALIDATION_RULES,
+        document,
+        context,
+    )
     return merge_interface_results(results, InterfaceAdaptationOutcome())
 
 
@@ -132,6 +170,8 @@ def validate_interfaces(
     target_interfaces: Iterable[str],
     removed_interfaces: Iterable[str],
     deferred_interface_references: Iterable[DeferredInterfaceReference] = (),
+    *,
+    strict_input_validation: bool = True,
 ) -> InterfaceAdaptationOutcome:
     """执行完整接口和目标引用校验。
 
@@ -141,9 +181,31 @@ def validate_interfaces(
         frozenset(target_interfaces),
         frozenset(removed_interfaces),
         frozenset(deferred_interface_references),
+        strict_input_validation,
     )
     return merge_interface_results(
         execute_rules(VALIDATION_RULES, document, context),
+        InterfaceAdaptationOutcome(),
+    )
+
+
+def validate_final_integrity(
+    document: CiscoDocument,
+    target_interfaces: Iterable[str],
+    removed_interfaces: Iterable[str],
+    deferred_interface_references: Iterable[DeferredInterfaceReference] = (),
+) -> InterfaceAdaptationOutcome:
+    """校验适配产物的目标兼容性和映射完整性。
+
+    源配置语义已在前置阶段处理，这里不重复执行源语义规则。
+    """
+    context = ValidationContext(
+        frozenset(target_interfaces),
+        frozenset(removed_interfaces),
+        frozenset(deferred_interface_references),
+    )
+    return merge_interface_results(
+        execute_rules(FINAL_INTEGRITY_VALIDATION_RULES, document, context),
         InterfaceAdaptationOutcome(),
     )
 

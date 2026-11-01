@@ -1,14 +1,14 @@
-"""转换入口不会把未知接入依赖或已知接口冲突输出成成功配置。"""
+"""转换入口区分源配置语义告警、严格输入校验和映射完整性失败。"""
 
 import json
-from pathlib import Path
 import shutil
 import tempfile
 import unittest
+from pathlib import Path
 
-from adaptation.service import convert
 from openpyxl import load_workbook
 
+from adaptation.service import convert
 
 FIXTURES = Path(__file__).parent / "fixtures"
 
@@ -101,29 +101,48 @@ class CoreInterfacePipelineTest(unittest.TestCase):
             self.assertEqual((archive / "configs" / "R1.cfg").read_bytes(), old_config)
             self.assertTrue((archive / "topology-adapted.xlsx").is_file())
 
-    def run_failure(self, config: Path):
+    def test_source_semantic_conflicts_warn_by_default_and_fail_in_strict_mode(self):
         with tempfile.TemporaryDirectory() as directory:
             root = Path(directory)
             configs = root / "configs"
             shutil.copytree(FIXTURES / "iosxr_bundle" / "configs", configs)
+            config = FIXTURES / "interface_compatibility" / "iosxr_scalar_conflicts.cfg"
             shutil.copyfile(config, configs / "R1.cfg")
-            output = root / "output"
+            shutil.copyfile(config, configs / "R2.cfg")
             topology = FIXTURES / "iosxr_bundle" / "topology.xlsx"
-            if config.name == "iosxr_scalar_conflicts.cfg":
-                # 这个用例专测最终标量冲突，输入须是两端普通物理口的单链路。
-                shutil.copyfile(config, configs / "R2.cfg")
-                workbook = load_workbook(topology)
-                workbook["链接表"].delete_rows(3)
-                topology = root / "single-link.xlsx"
-                workbook.save(topology)
-            context = convert(topology, configs, output)
+            workbook = load_workbook(topology)
+            workbook["链接表"].delete_rows(3)
+            topology = root / "single-link.xlsx"
+            workbook.save(topology)
+
+            default_output = root / "output"
+            context = convert(topology, configs, default_output)
+
+            self.assertFalse(context.has_errors)
+            warnings = context.warnings + context.devices["R1"].warnings
+            self.assertTrue(any("mtu 存在冲突" in warning for warning in warnings))
+            report = json.loads((default_output / "report.json").read_text())
+            self.assertEqual(report["status"], "success")
+            self.assertTrue(any(
+                event["kind"] == "interface-validation-warning"
+                and "mtu 存在冲突" in event["message"]
+                for event in report["events"]
+            ))
+            self.assertTrue((default_output / "configs" / "R1.cfg").exists())
+
+            strict_output = root / "strict-output"
+            context = convert(
+                topology,
+                configs,
+                strict_output,
+                strict_input_validation=True,
+            )
+
             self.assertTrue(context.has_errors)
-            self.assertFalse((output / "configs").exists())
-            self.assertFalse((output / "topology-adapted.xlsx").exists())
-            report = json.loads((output / "report.json").read_text())
-            self.assertEqual(report["status"], "failed")
-            self.assertTrue(any("设备 R1" in error for error in report["errors"]))
-            return report
+            errors = context.errors + context.devices["R1"].errors
+            self.assertTrue(any("mtu 存在冲突" in error for error in errors))
+            self.assertFalse((strict_output / "configs").exists())
+            self.assertFalse((strict_output / "topology-adapted.xlsx").exists())
 
     def test_unknown_removed_interface_dependency_is_warned_and_output(self):
         with tempfile.TemporaryDirectory() as directory:
@@ -161,12 +180,6 @@ class CoreInterfacePipelineTest(unittest.TestCase):
                 "custom-service FOO",
                 (output / "configs" / "R1.cfg").read_text(),
             )
-
-    def test_conflicting_target_interface_properties_fail_final_validation(self):
-        report = self.run_failure(FIXTURES / "interface_compatibility" / "iosxr_scalar_conflicts.cfg")
-        self.assertTrue(any("mtu 存在冲突" in error for error in report["errors"]))
-        self.assertTrue(any(event["kind"] == "interface-validation-error" for event in report["events"]))
-
 
 if __name__ == "__main__":
     unittest.main()

@@ -69,6 +69,8 @@ if context.has_errors:
 
 `profiles_path` 可配置镜像名称/版本、数据接口列表和模拟参数适配策略；列表最后三个接口全部空置预留，其余接口可分配给 NNI（默认八口中的前五口）。清洗规则位于项目配置目录，按厂商分别位于 `config/rules/cisco/xrv9000/cleaning.yaml` 和 `config/rules/juniper/vmx/cleaning.yaml`，转换时不接受外部规则文件。
 
+`convert()` 和 `prepare_context()` 支持 keyword-only 参数 `strict_input_validation=False`。流程在接口裁剪和映射前检查一次源配置语义：默认写 warning 并继续，传入 `True` 时写 error 并阻止转换。最终阶段只检查目标镜像兼容、聚合绑定和引用完整性，不再重复执行源语义规则。该开关不影响解析安全、映射唯一性和转换完整性校验。
+
 原始采集文本的输入整理规则分别位于两家厂商镜像目录的 `input_normalization.yaml`。每条规则的 `match` 都是逐行正则列表；单项匹配一行，多项匹配连续多行。`region` 只能是 `leading` 或 `trailing`，匹配后的动作固定为删除。规则 `id` 可只写局部名称，加载时自动补上 `cisco.` 或 `juniper.` 前缀；已带本厂商前缀的 ID 原样使用。规则只从文件两端向内删除完整匹配的行序列；正文中的匹配内容原样保留，清理后只剩空白也直接返回。Juniper 默认规则识别 `show configuration` 回显、`Last commit`、常见尾部提示符、采集分隔符和三行 `{ / master / }` 尾块；Cisco 规则文件默认留空，待确认具体采集格式后添加。输入整理命中情况写入 `report.json` 的 `input-normalization` 事件，不记录被删除的原文。
 
 每个镜像 Profile 的 `simulation_adaptation.mode` 支持 `off`、`compatible` 和 `stable`。默认 `stable` 仅保证已映射数据口启用，并将配置中已经存在且低于安全下限的 BFD interval/multiplier 调高；不会自动开启 BFD，也不会修改 OSPF、IS-IS 或 BGP 的业务定时器。全部修改写入 `report.json` 的 `simulation-adaptation` 事件。仅支持 `simulation_adaptation` 节点。
@@ -79,13 +81,13 @@ group 统一采用全量处理：静态展开并校验所有活动的 group 引�
 
 group 叶子语句使用 XRv9000/vMX 路径感知规则判定语义冲突。未匹配规则且同路径同命令族出现不同值时，固定按 `warn` 处理：保留语句并报告潜在歧义。报告中的 `group-identity-coverage` 事件和 summary 字段给出规则命中数、降级数及实际覆盖率。
 
-Cisco 与 Juniper 的跨厂商 NNI 会按链路两端各自的厂商语法和镜像 Profile 独立分配接口，不要求两端目标接口同名。转换器不审计链路两端的 IP、VLAN、MTU 或封装是否一致，这些业务一致性由输入配置保证。
+Cisco 与 Juniper 的跨厂商 NNI 会按链路两端各自的厂商语法和镜像 Profile 独立分配接口，不要求两端目标接口同名。转换器不审计链路两端的 IP、VLAN、MTU、封装或 Bundle/LACP 协商方式能否实际建立，这些业务一致性由输入配置保证。
 
 华为设备只作为拓扑对端：转换器不读取、不解析、不生成华为配置，也不要求提供华为配置文件。与华为相连的 Cisco/Juniper 端点仍按本端镜像 Profile 分配 NNI 目标口并改写本端配置和拓扑接口，华为侧设备行和接口名保持原样。华为与华为之间的链路同样保留在适配拓扑中，但不产生接口映射；未知厂商仍按不支持处理。
 
 实验只适配 Excel 中的 NNI 及其聚合、子接口闭包。其他物理、聚合接口及子接口连同协议、VRF、桥域中的引用一并删除，不再汇聚到 UNI 或生成 QinQ。BVI/IRB 仅在剩余 NNI 桥域仍依赖它时保留原有网关类型。Loopback、管理口以及未识别接口仍遵循保守保留策略。
 
-目标接口兼容处理独立于模拟参数策略运行，不能通过 `simulation_adaptation.mode: off` 关闭。已知不适用于物理口或子接口的命令按规则清理或调整，无法安全转换的已知冲突使转换失败；报告记录处理原因。静态校验只覆盖已建模规则，自动测试通过不等于已在真实 XRv9000 上验证。当前未连接实机，交付后还须在实际镜像版本上完成 load/commit、接口与路由邻接验收。
+目标接口兼容处理独立于模拟参数策略运行，不能通过 `simulation_adaptation.mode: off` 或 `strict_input_validation` 关闭。已知不适用于物理口或子接口的命令按规则清理或调整，目标镜像无法接受的已知冲突仍使转换失败；报告记录处理原因。静态校验只覆盖已建模规则，自动测试通过不等于已在真实 XRv9000 上验证。当前未连接实机，交付后还须在实际镜像版本上完成 load/commit、接口与路由邻接验收。
 
 被删除接口的 BGP 本地源、显式出接口静态路由和业务绑定会同步裁剪；无法确定语义的依赖保留原配置并记录 warning，不阻断输出。最终校验只豁免 prune 精确标记的“路径 + 接口”项，其他悬空引用仍报错。跳过链路的端点受保护，其占用端口也不会重新分配给其他 NNI。接口名先按厂商规范化，Profile 中使用全名和缩写重复指定同一端口会报错。接口硬件属性作为目标镜像兼容要求无条件清理，不受模拟模式或 `remove_physical_interface_knobs` 控制。
 
@@ -111,6 +113,6 @@ XRv9000 7.11.1 的默认适配会识别 IOS XR `interface preconfigure`，并在
 
 同目录重跑时，先前发布的配置、拓扑和说明会隔离到 `.previous-outputs/`，其位置记入报告；本次加载或校验失败时不会继续留下可被当成本次成果的旧导出。内部 `.generated-artifacts.json` 记录本程序负责的文件，额外的用户文件保持原位。
 
-聚合识别从拓扑物理口的成员绑定出发，聚合及子接口不需要出现在 Excel 中。逻辑接口 `action=preserve` 自映射；成员 `action=map-member` 映射物理口。没有拓扑物理成员的聚合作为非 NNI 删除；拓扑成员与配置绑定无法对应时才报错。Junos 硬件清洗按叶子匹配，保留 `802.3ad` 和 ae 的必要 options；Cisco 保留成员 `bundle id`。静态/LACP 模式不单边更改。
+聚合识别从拓扑物理口的成员绑定出发，聚合及子接口不需要出现在 Excel 中。逻辑接口 `action=preserve` 自映射；成员 `action=map-member` 映射物理口。带地址、VRF、L2 transport、bridge/unit/family 或子接口的成员保留为单链路并告警，不参与冗余成员压缩；冲突聚合绑定仍报错。没有拓扑物理成员的聚合作为非 NNI 删除；拓扑成员与配置绑定无法对应时才报错。Junos 硬件清洗按叶子匹配，保留 `802.3ad` 和 ae 的必要 options；Cisco 保留成员 `bundle id`。静态/LACP 模式不单边更改。
 
 XRv9000 保留 Bundle 时还需在实际镜像核验 Bundle MAC 与虚拟网卡的聚合支持。Cisco 输入未显式设置 Bundle MAC 时会给出核验告警，不自动编造 MAC 或更改全局 LACP 标识；自动测试不替代聚合 up、commit 和邻居建立验证。

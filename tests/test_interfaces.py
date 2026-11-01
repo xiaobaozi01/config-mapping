@@ -10,7 +10,6 @@ from impl.cisco.document import CiscoDocument
 from impl.common.interface import referenced_interface_names
 from impl.juniper.document import JunosDocument
 
-
 FIXTURES = Path(__file__).parent / "fixtures" / "interfaces"
 
 
@@ -92,6 +91,29 @@ class CiscoInterfaceBusinessTest(unittest.TestCase):
         self.assertIn("BVI300", business)
         self.assertNotIn("BVI400", business)
 
+    def test_physical_member_business_excludes_plain_interface_knobs(self):
+        plain = CiscoDocument(
+            "interface GigabitEthernet0/0/0/0\n"
+            " description MEMBER\n"
+            " shutdown\n"
+            " mtu 9216\n"
+            " bundle id 10 mode on\n"
+            "!\n"
+        )
+        addressed = CiscoDocument(
+            "interface GigabitEthernet0/0/0/0\n"
+            " ipv4 address 192.0.2.1/31\n"
+            " bundle id 10 mode on\n"
+            "!\n"
+        )
+
+        self.assertFalse(
+            plain.interface_has_business("GigabitEthernet0/0/0/0")
+        )
+        self.assertTrue(
+            addressed.interface_has_business("GigabitEthernet0/0/0/0")
+        )
+
 
 class JunosInterfaceClassificationTest(unittest.TestCase):
     def test_nni_rename_keeps_media_mtu_on_parent(self):
@@ -135,6 +157,22 @@ class JunosInterfaceClassificationTest(unittest.TestCase):
         self.assertIn("inactive: unit 200 {", rendered)
         self.assertIn("inactive: vlan-id 300;", rendered)
         self.assertNotIn("protect:", rendered)
+
+    def test_junos_member_business_requires_unit_or_family_payload(self):
+        plain = JunosDocument(
+            "interfaces { ge-0/0/0 { "
+            "gigether-options { 802.3ad ae10; } description MEMBER; mtu 9000; "
+            "} }"
+        )
+        business = JunosDocument(
+            "interfaces { ge-0/0/0 { "
+            "gigether-options { 802.3ad ae10; } "
+            "unit 0 { family inet { address 192.0.2.1/31; } } "
+            "} }"
+        )
+
+        self.assertFalse(plain.interface_has_business("ge-0/0/0"))
+        self.assertTrue(business.interface_has_business("ge-0/0/0"))
 
 
 if __name__ == "__main__":

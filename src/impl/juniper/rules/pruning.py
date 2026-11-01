@@ -49,12 +49,19 @@ class _JunosPruner:
     状态不跨设备共享，使保护集合、删除集合和查找缓存始终对应同一份配置修订。
     """
 
-    def __init__(self, document: JunosDocument, protected_parents: set[str]):
+    def __init__(
+        self,
+        document: JunosDocument,
+        protected_parents: set[str],
+        *,
+        strict_input_validation: bool = True,
+    ):
         """建立接口保护闭包和业务绑定索引。
 
         聚合成员与父口双向纳入保护，避免仅因拓扑引用其中一个名称而删除整个聚合。
         """
         self.document = document
+        self.strict_input_validation = strict_input_validation
         self.result = InterfacePruningOutcome()
         self.protected = {
             interface_parent(self.document.resolve_interface(name))
@@ -74,7 +81,16 @@ class _JunosPruner:
         )
         self.nodes = list(self.document._interface_nodes())
         self.specs = self.document.interface_specs()
-        self.bindings: dict[str, set[tuple[str, ...]]] = {}
+        self.bindings = self._collect_bindings()
+        self.removed = self.result.removed_interfaces
+        self.vlan_cache = {}
+
+    def _collect_bindings(self) -> dict[str, set[tuple[str, ...]]]:
+        """建立接口到默认或实例路由作用域的绑定索引。
+
+        索引供后续依赖裁剪定位接口所属作用域，不修改配置。
+        """
+        bindings: dict[str, set[tuple[str, ...]]] = {}
         for container, path in _walk(self.document, self.document.root):
             if path[-1] != "routing-instances":
                 continue
@@ -96,10 +112,8 @@ class _JunosPruner:
                     match = re.fullmatch(r"interface\s+(.+)", header)
                     if match:
                         for name in re.findall(r"[^\s\[\]]+", match.group(1)):
-                            self.bindings.setdefault(name, set()).add(scope)
-
-        self.removed = self.result.removed_interfaces
-        self.vlan_cache = {}
+                            bindings.setdefault(name, set()).add(scope)
+        return bindings
 
     def owners(self, name: str) -> set[tuple[str, ...]]:
         """返回接口所属的默认或实例路由作用域。
@@ -597,6 +611,7 @@ class _JunosPruner:
             self.removed,
             self.result.deferred_interface_references,
             defer_unknown=True,
+            strict_input_validation=self.strict_input_validation,
         )
         self.result.errors.extend(validation.errors)
         self.result.warnings.extend(validation.warnings)
@@ -607,7 +622,10 @@ class _JunosPruner:
 
 
 def prune_non_nni(
-    document: JunosDocument, protected_parents: set[str]
+    document: JunosDocument,
+    protected_parents: set[str],
+    *,
+    strict_input_validation: bool = True,
 ) -> InterfacePruningOutcome:
     """执行 Junos 非 NNI 接口裁剪规则。
 
@@ -615,15 +633,28 @@ def prune_non_nni(
     """
     from . import prune_non_nni as execute
 
-    return execute(document, protected_parents)
+    return execute(
+        document,
+        protected_parents,
+        strict_input_validation=strict_input_validation,
+    )
 
 
-def prune_interface_dependencies(document, removed_interfaces):
+def prune_interface_dependencies(
+    document,
+    removed_interfaces,
+    *,
+    strict_input_validation: bool = True,
+):
     """清理聚合缩减后已删除成员口遗留的业务依赖。
 
     复用完整裁剪器但关闭非 NNI 接口删除，只修改给定成员对应的引用和业务容器。
     """
-    worker = _JunosPruner(document, set())
+    worker = _JunosPruner(
+        document,
+        set(),
+        strict_input_validation=strict_input_validation,
+    )
     worker.result.removed_interfaces.update(
         document.resolve_interface(name) for name in removed_interfaces
     )
@@ -633,6 +664,7 @@ def prune_interface_dependencies(document, removed_interfaces):
         worker.removed,
         worker.result.deferred_interface_references,
         defer_unknown=True,
+        strict_input_validation=strict_input_validation,
     )
     worker.result.errors.extend(validation.errors)
     worker.result.warnings.extend(validation.warnings)

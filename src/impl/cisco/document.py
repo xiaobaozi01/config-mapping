@@ -340,6 +340,20 @@ class CiscoDocument(VendorConfiguration):
             dict,
         )
 
+    def interface_has_business(self, name: str) -> bool:
+        """判断物理聚合成员是否含地址、VRF、L2 业务或子接口。
+
+        该结果用于让成员退出压缩，而不是判断源配置是否正确。
+        """
+        return self._interfaces().interface_has_business(self, name)
+
+    def bundle_binding_is_ambiguous(self, name: str) -> bool:
+        """判断物理成员是否声明了多个不同 Bundle 编号。
+
+        多个绑定无法唯一映射，仍作为转换错误处理。
+        """
+        return self._interfaces().bundle_binding_is_ambiguous(self, name)
+
     def resolve_interface(self, value: str) -> str:
         """把拓扑中的 IOS XR 接口写法转换成配置解析器的规范形式。
 
@@ -465,7 +479,10 @@ class CiscoDocument(VendorConfiguration):
         self._interfaces().ensure_parent_interface(self, name)
 
     def prune_non_nni(
-        self, protected_parents: set[str]
+        self,
+        protected_parents: set[str],
+        *,
+        strict_input_validation: bool = True,
     ) -> InterfacePruningOutcome:
         """裁剪不属于 NNI 保留闭包的接口和业务。
 
@@ -473,10 +490,14 @@ class CiscoDocument(VendorConfiguration):
         """
         from .rules.pruning import prune_non_nni
 
+        del strict_input_validation
         return prune_non_nni(self, protected_parents)
 
     def prune_interface_dependencies(
-        self, removed_interfaces: set[str]
+        self,
+        removed_interfaces: set[str],
+        *,
+        strict_input_validation: bool = True,
     ) -> InterfacePruningOutcome:
         """清理聚合缩减后成员接口留下的可识别依赖。
 
@@ -484,6 +505,7 @@ class CiscoDocument(VendorConfiguration):
         """
         from .rules.pruning import prune_interface_dependencies
 
+        del strict_input_validation
         return prune_interface_dependencies(self, removed_interfaces)
 
     def adapt_interfaces(
@@ -497,6 +519,38 @@ class CiscoDocument(VendorConfiguration):
 
         return adapt_interfaces(self, target_interfaces)
 
+    def validate_source_semantics(
+        self, target_interfaces: set[str]
+    ) -> InterfaceAdaptationOutcome:
+        """在映射前执行源配置语义校验。
+
+        目标兼容和映射完整性由最终校验单独负责。
+        """
+        from .rules import validate_source_semantics
+
+        return validate_source_semantics(self, target_interfaces)
+
+    def validate_final_integrity(
+        self,
+        target_interfaces: set[str],
+        removed_interfaces: set[str],
+        deferred_interface_references: Iterable[
+            DeferredInterfaceReference
+        ] = (),
+    ) -> InterfaceAdaptationOutcome:
+        """校验适配产物的目标兼容性和映射完整性。
+
+        源配置语义已在前置阶段处理，本入口不重复执行。
+        """
+        from .rules import validate_final_integrity
+
+        return validate_final_integrity(
+            self,
+            target_interfaces,
+            removed_interfaces,
+            deferred_interface_references,
+        )
+
     def validate_interfaces(
         self,
         target_interfaces: set[str],
@@ -504,6 +558,8 @@ class CiscoDocument(VendorConfiguration):
         deferred_interface_references: Iterable[
             DeferredInterfaceReference
         ] = (),
+        *,
+        strict_input_validation: bool = True,
     ) -> InterfaceAdaptationOutcome:
         """执行最终接口约束和删除引用校验。
 
@@ -516,6 +572,7 @@ class CiscoDocument(VendorConfiguration):
             target_interfaces,
             removed_interfaces,
             deferred_interface_references,
+            strict_input_validation=strict_input_validation,
         )
 
     def adapt_to_simulation(
