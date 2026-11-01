@@ -4,10 +4,16 @@ from __future__ import annotations
 
 import unittest
 from pathlib import Path
+from typing import ClassVar
+from unittest.mock import patch
 
 from impl.common.rules import AdaptContext
 from impl.juniper.antlr.parsing import JunosConfigurationParseError
-from impl.juniper.antlr.rewriting import RewriteConflictError
+from impl.juniper.antlr.rewriting import (
+    JunosRewriteTransaction,
+    RewriteConflictError,
+    _DisjointTokenStreamRewriter,
+)
 from impl.juniper.document import JunosDocument
 from impl.juniper.rules import (
     ADAPT_RULES,
@@ -122,6 +128,163 @@ class JunosAntlrParsingTest(unittest.TestCase):
 
 class JunosAntlrRewriteTest(unittest.TestCase):
     """覆盖 Junos 事务发布和旧 Context 失效。"""
+
+    def test_candidate_uses_fresh_token_stream_rewriter(self):
+        """候选文本由当前快照的 TokenStreamRewriter 生成。
+
+        字符编辑需先投影为 token 文本，每次预览重新创建 rewriter 可隔离 program。
+        """
+
+        class RecordingRewriter(_DisjointTokenStreamRewriter):
+            """记录候选生成器创建的 token 流。"""
+
+            instances: ClassVar[list] = []
+
+            def __init__(self, tokens):
+                super().__init__(tokens)
+                type(self).instances.append(tokens)
+
+        source = "system {\n\thost-name old;\n}\n"
+        document = JunosDocument(source)
+        transaction = document.rewrite()
+        transaction.replace_header(
+            document.root.nodes[0].nodes[0],
+            "host-name new;",
+            "rename",
+        )
+        expected = source.replace("old", "new")
+        with patch(
+            "impl.juniper.antlr.rewriting._DisjointTokenStreamRewriter",
+            RecordingRewriter,
+        ):
+            self.assertEqual(transaction.preview(), expected)
+            self.assertEqual(transaction.preview(), expected)
+
+        self.assertEqual(len(RecordingRewriter.instances), 2)
+        self.assertIs(
+            RecordingRewriter.instances[-1],
+            document.snapshot.tokens,
+        )
+
+    def test_commit_uses_fresh_token_stream_rewriter(self):
+        """提交路径同样为候选文本创建新 rewriter。
+
+        预览和提交共享候选生成逻辑，但每次调用都必须隔离 rewrite program。
+        """
+
+        class RecordingRewriter(_DisjointTokenStreamRewriter):
+            """记录提交候选使用的 token 流。"""
+
+            instances: ClassVar[list] = []
+
+            def __init__(self, tokens):
+                super().__init__(tokens)
+                type(self).instances.append(tokens)
+
+        document = JunosDocument("system { host-name old; }\n")
+        transaction = document.rewrite()
+        transaction.replace_header(
+            document.root.nodes[0].nodes[0],
+            "host-name new;",
+            "rename",
+        )
+        with patch(
+            "impl.juniper.antlr.rewriting._DisjointTokenStreamRewriter",
+            RecordingRewriter,
+        ):
+            transaction.commit()
+
+        self.assertEqual(len(RecordingRewriter.instances), 1)
+        self.assertEqual(document.source, "system { host-name new; }\n")
+
+    def test_candidate_projects_hidden_whitespace_and_insertion_order(self):
+        """隐藏空白和同位置插入由 token 投影保持原有语义。
+
+        删除叶子必须带走整行缩进和换行，子节点追加仍需排在同级普通插入之后。
+        """
+        source = "system {\n\thost-name old;\n\tservice ssh;\n}\n"
+        document = JunosDocument(source)
+        hostname = document.root.nodes[0].nodes[0]
+        transaction = document.rewrite()
+        transaction.delete(hostname, "delete line")
+        self.assertEqual(
+            transaction.preview(),
+            "system {\n\tservice ssh;\n}\n",
+        )
+
+        inline = JunosDocument("parent { child; }\n")
+        parent = inline.root.nodes[0]
+        child = parent.nodes[0]
+        transaction = inline.rewrite()
+        transaction.insert_before(child, "before;", "plain insert")
+        transaction.append_child(parent, "added;", "child insert")
+        self.assertEqual(
+            transaction.preview(),
+            "parent {     before;\nchild; \n    added;\n}\n",
+        )
+
+    def test_same_position_insertions_preserve_declaration_order(self):
+        """同一位置的普通插入和子节点插入保持既有优先级与声明顺序。
+
+        普通插入按声明顺序排列，子节点插入先于普通插入，避免 token 合并改变语义。
+        """
+        document = JunosDocument("parent {\n\tchild;\n}\n")
+        transaction = document.rewrite()
+        child = document.root.nodes[0].nodes[0]
+        transaction.insert_before(child, "plain-one;", "first plain")
+        transaction.insert_before(child, "plain-two;", "second plain")
+        self.assertEqual(
+            transaction.preview(),
+            "parent {\n        plain-one;\n        plain-two;\n\tchild;\n}\n",
+        )
+
+        document = JunosDocument("parent { child; }\n")
+        transaction = document.rewrite()
+        parent = document.root.nodes[0]
+        transaction.append_child(parent, "child-one;", "first child")
+        transaction.append_child(parent, "child-two;", "second child")
+        self.assertEqual(
+            transaction.preview(),
+            "parent { child; \n    child-one;\n\n    child-two;\n}\n",
+        )
+
+    def test_child_insertion_precedes_plain_insertion_at_eof(self):
+        """EOF 同位置的子节点插入先于普通同级插入。
+
+        稳定优先级确保扩展规则多次追加时不会依赖字典或 token 的偶然顺序。
+        """
+        document = JunosDocument("parent {\n\tchild;\n}\n")
+        parent = document.root.nodes[0]
+        transaction = document.rewrite()
+        transaction.insert_after(parent, "plain;", "plain")
+        transaction.append_child(document.root, "child-root;", "child")
+
+        self.assertEqual(
+            transaction.preview(),
+            "parent {\n\tchild;\n}\nchild-root;\nplain;\n",
+        )
+
+    def test_token_projection_only_visits_local_intersections(self):
+        """字符区间只投影到与其相交的 token。
+
+        二分定位后继续向后扫描到区间终点，不依赖机器速度或全 token 流长度。
+        """
+        spans = [
+            (token_index, token_index * 2, token_index * 2 + 2)
+            for token_index in range(10000)
+        ]
+        starts = [start for _, start, _ in spans]
+
+        intersected = list(
+            JunosRewriteTransaction._intersections(
+                10000,
+                10002,
+                spans,
+                starts,
+            )
+        )
+
+        self.assertEqual(intersected, [(5000, 10000, 10002)])
 
     def test_header_replacement_preserves_untouched_source_and_publishes(self):
         source = (

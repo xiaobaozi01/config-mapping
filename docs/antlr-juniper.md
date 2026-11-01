@@ -13,6 +13,10 @@ Junos 与 Cisco 使用同一套源码快照和文本事务原则，但 grammar �
                                       ↓
                            JunosRewriteTransaction
                                       ↓
+                         字符事件 → token 投影
+                                      ↓
+                           TokenStreamRewriter
+                                      ↓
                          候选源码 → 重新解析 → 原子发布
 ```
 
@@ -47,6 +51,10 @@ Context 不提供 setter。节点删除会从下一个快照中真正移除；�
 
 `commit()` 必须一次重新解析候选文本。外来 Context、过期 Context、祖先/后代重叠
 编辑和区间内部插入都会抛出 `RewriteConflictError`。解析失败不发布快照。
+
+事务仍以字符区间记录业务编辑，以便检查冲突、生成审计记录和传播块元数据。
+生成候选文本时，字符事件会投影为相关 token 的最终文本，包括隐藏空白 token，
+然后交给当前快照自己的 `TokenStreamRewriter`；每次预览或提交都创建独立实例。
 
 Transaction 会传播“源码块/生成块”元数据。转换过程中新建的空容器不会因为
 `empty_blocks.yaml` 而被意外输出；源码原有空块仍按路径策略转为分号、保留大括号

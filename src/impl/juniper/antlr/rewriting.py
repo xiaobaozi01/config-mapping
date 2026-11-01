@@ -5,10 +5,34 @@ from __future__ import annotations
 from bisect import bisect_right
 from dataclasses import dataclass
 
+from antlr4 import Token
+from antlr4.TokenStreamRewriter import TokenStreamRewriter
+
 from impl.common.outcomes import SimulationChangeAction
 
 from .metadata import retain_metadata
 from .parsing import JunosSnapshot
+
+
+class _DisjointTokenStreamRewriter(TokenStreamRewriter):
+    """利用事务已完成冲突检查的线性 token 重写器。
+
+    Juniper 投影后每个 token 最多一个替换，标准 rewriter 的二次重叠归并不再需要。
+    """
+
+    def _reduceToSingleOperationPerIndex(self, rewrites):  # noqa: N802
+        """按 token index 直接归并互斥替换操作。
+
+        事务已拒绝重叠区间，保留一次线性扫描可避免大量独立修改退化为平方复杂度。
+        """
+        reduced = {}
+        for operation in rewrites:
+            if operation is None:
+                continue
+            if operation.index in reduced:
+                raise ValueError("Juniper token rewrite operation overlaps")
+            reduced[operation.index] = operation
+        return reduced
 
 
 class RewriteConflictError(ValueError):
@@ -317,6 +341,29 @@ class JunosRewriteTransaction:
 
         插入和替换按源码坐标一次性拼接，便于提交前统一执行语法校验。
         """
+        events = self._candidate_events()
+        rewrites, eof_inserts = self._project_token_events(events)
+        rewriter = _DisjointTokenStreamRewriter(self.snapshot.tokens)
+        for token_index, text in rewrites.items():
+            rewriter.replaceRange(token_index, token_index, text)
+        if eof_inserts:
+            eof_index = len(self.snapshot.tokens.tokens) - 1
+            rewriter.insertBefore(
+                TokenStreamRewriter.DEFAULT_PROGRAM_NAME,
+                eof_index,
+                "".join(eof_inserts),
+            )
+        return rewriter.getText(
+            TokenStreamRewriter.DEFAULT_PROGRAM_NAME,
+            0,
+            len(self.snapshot.tokens.tokens) - 1,
+        )
+
+    def _candidate_events(self):
+        """把事务操作转换成有序的插入和替换事件。
+
+        同一位置的插入先按子节点优先级和声明顺序合并，保持历史输出顺序。
+        """
         inserts = {}
         replacements = []
         for order, (start, stop, text, _, _, _) in enumerate(self._operations):
@@ -339,13 +386,112 @@ class JunosRewriteTransaction:
             (start, 1, order, stop, text)
             for start, stop, order, text in replacements
         )
+        return sorted(events)
+
+    def _project_token_events(self, events):
+        """把字符事件投影成每个 token 的最终文本。
+
+        TokenStreamRewriter 只接受 token 范围，投影可统一处理隐藏空白和跨 token 替换。
+        """
+        assignments = {}
+        eof_inserts = []
+        spans, starts, eof_index = self._token_spans()
+        for start, kind, order, stop, text in events:
+            if kind == 0:
+                token_index, offset, at_eof = self._insertion_target(
+                    start, spans, starts, eof_index
+                )
+                if at_eof:
+                    eof_inserts.append(text)
+                else:
+                    assignments.setdefault(token_index, []).append(
+                        (offset, 0, order, offset, text)
+                    )
+                continue
+            for token_index, token_start, token_stop in self._intersections(
+                start, stop, spans, starts
+            ):
+                local_start = max(start, token_start) - token_start
+                local_stop = min(stop, token_stop) - token_start
+                replacement = text if start >= token_start else ""
+                assignments.setdefault(token_index, []).append(
+                    (local_start, 1, order, local_stop, replacement)
+                )
+        rewrites = {}
+        for token_index, token_events in assignments.items():
+            token = self.snapshot.tokens.tokens[token_index]
+            original = self.snapshot.text[token.start : token.stop + 1]
+            rewritten = self._apply_token_events(original, token_events)
+            if rewritten != original:
+                rewrites[token_index] = rewritten
+        return rewrites, eof_inserts
+
+    def _token_spans(self):
+        """返回非 EOF token 的字符区间、起点索引和 EOF index。
+
+        非 EOF token 完整覆盖输入流，预排序后可用二分定位而不必重复线性扫描。
+        """
+        spans = []
+        starts = []
+        for token_index, token in enumerate(self.snapshot.tokens.tokens):
+            if token.type == Token.EOF:
+                return spans, starts, token_index
+            spans.append((token_index, token.start, token.stop + 1))
+            starts.append(token.start)
+        return spans, starts, len(self.snapshot.tokens.tokens) - 1
+
+    @staticmethod
+    def _intersections(start, stop, spans, starts):
+        """生成与字符替换区间相交的非 EOF token。
+
+        只需从二分定位的首个候选 token 向后遍历，避免每个操作扫描整个 token 流。
+        """
+        index = max(0, bisect_right(starts, start) - 1)
+        while index < len(spans):
+            token_index, token_start, token_stop = spans[index]
+            if token_start >= stop:
+                return
+            if token_stop > start:
+                yield token_index, token_start, token_stop
+            index += 1
+
+    @staticmethod
+    def _insertion_target(position, spans, starts, eof_index):
+        """定位字符插入点所属的 token 和局部偏移。
+
+        源码末尾归入 EOF，token 结束边界优先归入下一 token，以保持插入归属稳定。
+        """
+        if not spans or position >= spans[-1][2]:
+            return eof_index, 0, True
+        index = max(0, bisect_right(starts, position) - 1)
+        token_index, token_start, token_stop = spans[index]
+        if position < token_start:
+            previous = spans[index - 1] if index else None
+            if previous is not None and position == previous[2]:
+                return previous[0], previous[2] - previous[1], False
+            return token_index, 0, False
+        if position < token_stop:
+            return token_index, position - token_start, False
+        following = spans[index + 1] if index + 1 < len(spans) else None
+        if following is not None and following[1] == position:
+            return following[0], 0, False
+        if position == token_stop:
+            return token_index, token_stop - token_start, False
+        return eof_index, 0, True
+
+    @staticmethod
+    def _apply_token_events(original, events):
+        """在单个 token 内按事件顺序生成替换后的局部文本。
+
+        先按局部位置排序可让同位置插入位于替换文本之前，并保持声明顺序。
+        """
         parts = []
         cursor = 0
-        for start, kind, _, stop, text in sorted(events):
-            parts.append(self.snapshot.text[cursor:start])
+        for start, kind, _order, stop, text in sorted(events):
+            parts.append(original[cursor:start])
             parts.append(text)
             cursor = stop if kind else start
-        parts.append(self.snapshot.text[cursor:])
+        parts.append(original[cursor:])
         return "".join(parts)
 
     def preview(self):

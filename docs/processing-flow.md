@@ -249,7 +249,7 @@ CiscoDocument.root
 └── NodeContext: !
 ```
 
-顶层和嵌套配置使用 ANTLR4 生成的 Context，业务查询通过只读的 `nodes`、`header`、`path` 和源码范围进行。修改交给 TokenStreamRewriter，候选文本重新解析成功后原子发布；后续阶段读取新快照。具体机制见 [ANTLR4 说明](antlr-cisco.md)。
+顶层和嵌套配置使用 ANTLR4 生成的 Context，业务查询通过只读的 `nodes`、`header`、`path` 和源码范围进行。`RewriteTransaction` 负责快照、冲突、审计和发布，并使用 `TokenStreamRewriter` 按 token index 生成候选文本；候选重新解析成功后才原子发布。具体机制见 [ANTLR4 说明](antlr-cisco.md)。
 
 ### 7.2 接口名规范化
 
@@ -507,7 +507,8 @@ Context 包含：
 
 配置大括号不平衡时直接报错。
 
-所有修改通过 `JunosRewriteTransaction` 收集并在提交时重新解析；未修改区域保持
+所有修改通过 `JunosRewriteTransaction` 收集。事务把字符编辑投影到 token 文本，
+再由当前快照的 `TokenStreamRewriter` 生成候选源码并重新解析；未修改区域保持
 原字节，旧 Context 在发布后失效。`render()` 只创建临时输出视图，处理空块策略和
 `protect:`，不修改源码快照。Group、裁剪和模拟算法可使用一次遍历内的临时工作树，
 但最终仍只通过一个候选文本事务发布。具体机制见 [Junos ANTLR4 说明](antlr-juniper.md)。

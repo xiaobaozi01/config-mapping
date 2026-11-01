@@ -4,11 +4,45 @@ import re
 from bisect import bisect_left, bisect_right
 from dataclasses import dataclass
 
+from antlr4.TokenStreamRewriter import TokenStreamRewriter
+
 from impl.common.outcomes import SimulationChangeAction
 
 from .generated.CiscoLexer import CiscoLexer
 from .metadata import retain_block_modes
 from .parsing import CiscoSnapshot
+
+
+class _LinearTokenStreamRewriter(TokenStreamRewriter):
+    """利用事务已排除重叠区间的线性 token 重写器。
+
+    标准 runtime 会为每个替换回扫历史指令；线性归并保留插入优先语义且避免退化。
+    """
+
+    def _reduceToSingleOperationPerIndex(self, rewrites):  # noqa: N802
+        """按 token index 合并互斥操作并保留同位置插入顺序。
+
+        插入必须位于替换文本之前，多个替换仍视为事务约定违规并立即报错。
+        """
+        reduced = {}
+        for operation in rewrites:
+            if operation is None:
+                continue
+            existing = reduced.get(operation.index)
+            if existing is None:
+                reduced[operation.index] = operation
+                continue
+            if isinstance(existing, TokenStreamRewriter.ReplaceOp):
+                if isinstance(operation, TokenStreamRewriter.ReplaceOp):
+                    raise ValueError("Cisco token rewrite operation overlaps")
+                existing.text = operation.text + existing.text
+                continue
+            if isinstance(operation, TokenStreamRewriter.ReplaceOp):
+                operation.text = existing.text + operation.text
+                reduced[operation.index] = operation
+                continue
+            existing.text += operation.text
+        return reduced
 
 
 class RewriteConflictError(ValueError):
@@ -56,19 +90,6 @@ def format_fragment(text: str, indent: int, newline: str = "\n") -> str:
     return newline.join(rendered) + newline
 
 
-def _render_candidate(
-    source: str, events: list[tuple[int, int, int, int, str]]
-) -> str:
-    """按原始字符坐标一次性拼接互不重叠的插入与替换。"""
-    parts = []
-    cursor = 0
-    for position, kind, _, stop, text in sorted(events):
-        parts.extend((source[cursor:position], text))
-        cursor = stop if kind else position
-    parts.append(source[cursor:])
-    return "".join(parts)
-
-
 class _RewriteEditIndex:
     """用有序区间索引即时检测事务内的重叠编辑。
 
@@ -77,14 +98,20 @@ class _RewriteEditIndex:
     """
 
     def __init__(self) -> None:
-        """建立空的替换区间与插入点索引。"""
+        """建立空的替换区间与插入点索引。
+
+        分离两个有序索引后，新增编辑只需检查相邻区间即可拒绝交叠。
+        """
         self._range_starts: list[int] = []
         self._ranges: list[tuple[int, int, object]] = []
         self._insertion_starts: list[int] = []
         self._insertions: list[tuple[int, object]] = []
 
     def check_and_add(self, start: int, stop: int, context: object) -> None:
-        """校验一个编辑区间后把它加入索引。"""
+        """校验一个编辑区间后把它加入索引。
+
+        插入和替换使用不同的冲突规则，但都必须在入队前完成检查。
+        """
         if start > stop:
             self._check_insertion(start, context)
             position = bisect_right(self._insertion_starts, start)
@@ -99,7 +126,10 @@ class _RewriteEditIndex:
     def _check_replacement(
         self, start: int, stop: int, context: object
     ) -> None:
-        """拒绝与替换区间相交或落在替换区间内部的编辑。"""
+        """拒绝与替换区间相交或落在替换区间内部的编辑。
+
+        祖先和后代共享 token 时不能产生两个独立操作，否则候选文本结果不确定。
+        """
         position = bisect_right(self._range_starts, stop)
         if position:
             _, old_stop, _ = self._ranges[position - 1]
@@ -111,23 +141,22 @@ class _RewriteEditIndex:
         last = bisect_right(self._insertion_starts, start)
         for index in range(first, last):
             if self._insertions[index][1] is context:
-                raise RewriteConflictError(
-                    "修改区间包含已声明的插入位置"
-                )
+                raise RewriteConflictError("修改区间包含已声明的插入位置")
         if bisect_right(self._insertion_starts, stop) > last:
             raise RewriteConflictError("修改区间包含已声明的插入位置")
 
     def _check_insertion(self, start: int, context: object) -> None:
-        """拒绝插入到替换区间内部。"""
+        """拒绝插入到替换区间内部。
+
+        替换会丢弃该区间内容，区间内部插入没有稳定归属，必须在执行前暴露。
+        """
         position = bisect_right(self._range_starts, start)
         if position:
             old_start, old_stop, _ = self._ranges[position - 1]
             if old_start < start <= old_stop or (
                 old_start == start and self._ranges[position - 1][2] is context
             ):
-                raise RewriteConflictError(
-                    "插入位置位于被删除或替换的区间内"
-                )
+                raise RewriteConflictError("插入位置位于被删除或替换的区间内")
 
 
 class RewriteTransaction:
@@ -371,31 +400,21 @@ class RewriteTransaction:
             if start > stop:
                 priority = 0 if order in self._child_insertions else 1
                 inserts.setdefault(start, []).append((priority, order, text))
-        events = [
-            (
-                self.snapshot.tokens.tokens[start].start,
-                0,
-                order,
-                self.snapshot.tokens.tokens[start].start,
+        rewriter = _LinearTokenStreamRewriter(self.snapshot.tokens)
+        for start, fragments in inserts.items():
+            rewriter.insertBefore(
+                TokenStreamRewriter.DEFAULT_PROGRAM_NAME,
+                start,
                 "".join(text for _, _, text in sorted(fragments)),
             )
-            for start, fragments in inserts.items()
-            for order in (fragments[0][1],)
-        ]
-        events.extend(
-            (
-                self.snapshot.tokens.tokens[start].start,
-                1,
-                order,
-                self.snapshot.tokens.tokens[stop].stop + 1,
-                text,
-            )
-            for order, (start, stop, text, _, _, _) in enumerate(
-                self._operations
-            )
-            if start <= stop
+        for start, stop, text, _, _, _ in self._operations:
+            if start <= stop:
+                rewriter.replaceRange(start, stop, text)
+        return rewriter.getText(
+            TokenStreamRewriter.DEFAULT_PROGRAM_NAME,
+            0,
+            len(self.snapshot.tokens.tokens) - 1,
         )
-        return _render_candidate(self.snapshot.text, events)
 
     def preview(self):
         """返回候选配置文本，但不修改文档快照。

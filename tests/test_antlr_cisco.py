@@ -3,12 +3,14 @@
 import copy
 import unittest
 from pathlib import Path
+from typing import ClassVar
 from unittest.mock import patch
 
 from antlr4 import ParseTreeWalker
 
 from impl.cisco.antlr.generated.CiscoParser import CiscoParser
 from impl.cisco.antlr.parsing import ConfigurationParseError
+from impl.cisco.antlr.rewriting import _LinearTokenStreamRewriter
 from impl.cisco.document import CiscoDocument
 from impl.cisco.rules.support import (
     CiscoParserListener,
@@ -170,6 +172,118 @@ class AntlrParsingTest(unittest.TestCase):
 
 
 class AntlrRewriteTest(unittest.TestCase):
+
+    def test_candidate_uses_fresh_token_stream_rewriter(self):
+        """候选文本由当前快照的 TokenStreamRewriter 生成。
+
+        每次预览重新创建 rewriter，避免重复调用累积上一次的编辑 program。
+        """
+
+        class RecordingRewriter(_LinearTokenStreamRewriter):
+            """记录候选生成器创建的 token 流。"""
+
+            instances: ClassVar[list] = []
+
+            def __init__(self, tokens):
+                super().__init__(tokens)
+                type(self).instances.append(tokens)
+
+        config = document()
+        transaction = config.rewrite()
+        with patch(
+            "impl.cisco.antlr.rewriting._LinearTokenStreamRewriter",
+            RecordingRewriter,
+        ):
+            self.assertEqual(transaction.preview(), config.source)
+            self.assertEqual(transaction.preview(), config.source)
+
+        self.assertEqual(len(RecordingRewriter.instances), 2)
+        self.assertIs(
+            RecordingRewriter.instances[-1],
+            config.snapshot.tokens,
+        )
+
+    def test_commit_uses_fresh_linear_rewriter(self):
+        """提交路径为候选文本创建新的线性 rewriter。
+
+        预览和提交共享候选生成逻辑，但每次提交仍必须隔离上一次 rewrite program。
+        """
+
+        class RecordingRewriter(_LinearTokenStreamRewriter):
+            """记录提交候选使用的 token 流。"""
+
+            instances: ClassVar[list] = []
+
+            def __init__(self, tokens):
+                super().__init__(tokens)
+                type(self).instances.append(tokens)
+
+        config = CiscoDocument("hostname BEFORE\nend\n")
+        transaction = config.rewrite()
+        transaction.replace_header(
+            config.root.nodes[0], "hostname AFTER", "rename"
+        )
+        with patch(
+            "impl.cisco.antlr.rewriting._LinearTokenStreamRewriter",
+            RecordingRewriter,
+        ):
+            transaction.commit()
+
+        self.assertEqual(len(RecordingRewriter.instances), 1)
+        self.assertEqual(config.source, "hostname AFTER\nend\n")
+
+    def test_bulk_replacements_use_linear_rewriter(self):
+        """批量替换通过 Cisco 自有线性 rewriter 生成候选文本。
+
+        事务已经拒绝重叠区间，线性归并可避免标准 runtime 对每个新替换回扫历史指令。
+        """
+        count = 1000
+        source = "".join(
+            f"hostname node-{index}-old\n" for index in range(count)
+        )
+        config = CiscoDocument(source + "end\n")
+        transaction = config.rewrite()
+        for node in config.root.nodes[:-1]:
+            transaction.replace_header(
+                node,
+                node.header.replace("old", "new"),
+                "bulk",
+            )
+
+        class RecordingRewriter(_LinearTokenStreamRewriter):
+            """记录批量候选使用的 rewriter。"""
+
+            instances: ClassVar[list] = []
+
+            def __init__(self, tokens):
+                super().__init__(tokens)
+                type(self).instances.append(tokens)
+
+        with patch(
+            "impl.cisco.antlr.rewriting._LinearTokenStreamRewriter",
+            RecordingRewriter,
+        ):
+            candidate = transaction.preview()
+
+        self.assertEqual(len(RecordingRewriter.instances), 1)
+        self.assertIn("hostname node-0-new", candidate)
+        self.assertIn(f"hostname node-{count - 1}-new", candidate)
+
+    def test_insert_before_same_token_precedes_header_replacement(self):
+        """同一 token index 的插入文本位于替换文本之前。
+
+        header 替换和同级插入可能共享起始 token，线性归并不能改变原有源码顺序。
+        """
+        config = CiscoDocument("before\nparent\n child\n")
+        before, parent = config.root.nodes
+        transaction = config.rewrite()
+        transaction.insert_after(before, "inserted", "insert")
+        transaction.replace_header(parent, "renamed", "rename")
+
+        self.assertEqual(
+            transaction.preview(),
+            "before\ninserted\nrenamed\n child\n",
+        )
 
     def test_header_replacement_preserves_children_and_untouched_bytes(self):
         config = document("format.cfg")

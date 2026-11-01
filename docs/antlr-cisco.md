@@ -9,6 +9,8 @@ Cisco 的唯一配置状态是当前源码和对应的 ANTLR 解析快照。`Cis
                                                         ↓
                                                  Python 业务规则
                                                         ↓
+                                              RewriteTransaction
+                                                        ↓
                                              TokenStreamRewriter
                                                         ↓
                                            候选源码 → 重新解析
@@ -27,6 +29,10 @@ Context 由 ANTLR 生成，提供只读查询属性：`header`、`nodes`、`pare
 Cisco 五类代码规则统一使用 `CiscoVisitorRule`，通过 `session.edits` 收集修改，由执行器创建并提交事务；完整示例见[规则指南](configuration-rule-authoring.md)。跨对象裁剪的分析器也只声明动作，下面的低层接口供 Document 与解析、清洗等基础设施使用。
 
 `transaction = document.rewrite()` 绑定当前快照。执行器为每条修改规则创建并提交一次事务；基础设施可按业务操作使用下面的低层方法：
+
+事务负责快照、冲突、审计、重新解析和原子发布；候选文本由事务内部的
+`TokenStreamRewriter` 按 token index 生成。每次 `preview()` 和 `commit()` 都使用
+独立的 rewriter program。
 
 | 方法 | 行为 |
 | --- | --- |
