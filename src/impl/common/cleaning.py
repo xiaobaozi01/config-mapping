@@ -130,13 +130,66 @@ class _CleaningPhase:
         return self._candidates[ancestors]
 
 
+def _compile_cleaning_operation(
+    index: int,
+    operation: CleaningOperation,
+) -> tuple[CleaningAction, re.Pattern[str]]:
+    """校验并编译单条清洗操作的正则与替换模板。
+
+    动作、值和替换模板都在任何文档修改前验证；替换模板通过空字符串执行一次替换，
+    提前发现无效捕获组或转义。
+    """
+    try:
+        action = CleaningAction(operation.action)
+    except ValueError as exc:
+        raise ValueError(f"不支持的清洗动作: {operation.action}") from exc
+    if action not in {CleaningAction.DELETE, CleaningAction.REPLACE}:
+        raise ValueError(f"不支持的清洗动作: {action}")
+    if action == CleaningAction.REPLACE and operation.value is None:
+        raise ValueError("replace 清洗操作必须提供 value")
+    if operation.value is not None and not isinstance(operation.value, str):
+        raise ValueError(f"第 {index + 1} 条清洗操作的 value 必须是字符串")
+    pattern = re.compile(operation.match, re.IGNORECASE)
+    if action == CleaningAction.REPLACE:
+        try:
+            pattern.sub(operation.value, "")
+        except (re.error, IndexError) as exc:
+            raise ValueError(
+                f"第 {index + 1} 条清洗操作包含无效替换模板: {exc}"
+            ) from exc
+    return action, pattern
+
+
+def _compile_cleaning_path(
+    path: tuple[str, ...],
+    cache: dict[tuple[str, ...], _CompiledPath],
+) -> _CompiledPath:
+    """返回路径的编译结果并复用相同规则的缓存。
+
+    多条清洗操作可能共享父级路径，按原始路径元组缓存可避免重复编译正则，同时保持
+    单次清洗调用内的缓存生命周期。
+    """
+    if path not in cache:
+        cache[path] = _CompiledPath(
+            tuple(
+                component
+                if component in {"*", "**"}
+                else re.compile(component, re.IGNORECASE)
+                for component in path
+            ),
+            sum(component != "**" for component in path),
+            None if "**" in path else len(path),
+        )
+    return cache[path]
+
+
 def compile_cleaning_rules(
     operations: Sequence[CleaningOperation],
 ) -> tuple[_CleaningPhase, ...]:
     """把清洗操作编译为删除和替换两个有序执行轮次。
 
-    所有错误都在任何文档修改前暴露，避免删除完成后才发现替换模板无效而留下部分
-    修改；轮次内保留原输入顺序和下标，便于稳定审计。
+    每条操作先独立校验并编译，再保持原始下标加入对应动作轮次；所有错误都在文档
+    修改前暴露，避免部分清洗已经生效后才发现后续模板无效。
     """
     paths: dict[tuple[str, ...], _CompiledPath] = {}
     phases: dict[CleaningAction, list[_CompiledOperation]] = {
@@ -144,41 +197,11 @@ def compile_cleaning_rules(
         CleaningAction.REPLACE: [],
     }
     for index, operation in enumerate(operations):
-        try:
-            action = CleaningAction(operation.action)
-        except ValueError as exc:
-            raise ValueError(f"不支持的清洗动作: {operation.action}") from exc
-        if action not in phases:
-            raise ValueError(f"不支持的清洗动作: {action}")
-        if action == CleaningAction.REPLACE and operation.value is None:
-            raise ValueError("replace 清洗操作必须提供 value")
-        if operation.value is not None and not isinstance(operation.value, str):
-            raise ValueError(f"第 {index + 1} 条清洗操作的 value 必须是字符串")
-        pattern = re.compile(operation.match, re.IGNORECASE)
-        if action == CleaningAction.REPLACE:
-            # sub 即使没有命中也会编译替换模板；提前拒绝无效捕获组或转义，
-            # 防止删除轮完成后才报错，留下未审计的部分修改。
-            try:
-                pattern.sub(operation.value, "")
-            except (re.error, IndexError) as exc:
-                raise ValueError(
-                    f"第 {index + 1} 条清洗操作包含无效替换模板: {exc}"
-                ) from exc
-        if operation.path not in paths:
-            paths[operation.path] = _CompiledPath(
-                tuple(
-                    component
-                    if component in {"*", "**"}
-                    else re.compile(component, re.IGNORECASE)
-                    for component in operation.path
-                ),
-                sum(component != "**" for component in operation.path),
-                None if "**" in operation.path else len(operation.path),
-            )
+        action, pattern = _compile_cleaning_operation(index, operation)
         phases[action].append(
             _CompiledOperation(
                 index,
-                paths[operation.path],
+                _compile_cleaning_path(operation.path, paths),
                 pattern,
                 operation.value,
                 operation.interface_names,

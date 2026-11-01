@@ -56,6 +56,39 @@ def _defer_interface_references(outcome, path, references, reason):
     )
 
 
+def _is_known_removed_reference(node, path):
+    """判断节点是否是能够整节点删除的已知接口依赖。
+
+    路由协议、MPLS、RSVP、L2VPN、EVPN、DHCP 和带内管理接口的绑定可与其父级结构
+    一并确认；静态路由则要求节点本身是以明确前缀开头的下一跳语句。
+    """
+    top = path[0].lower()
+    interface_binding = bool(
+        re.match(
+            r"^(?:interface|routed\s+interface)\s",
+            node.header,
+            re.I,
+        )
+    )
+    known_binding = interface_binding and (
+        re.match(
+            r"^(?:router\s+(?:ospf\S*|isis|rip|vrrp)|mpls|"
+            r"rsvp|l2vpn|vrf|evpn|dhcp\s+ipv[46])\b",
+            top,
+        )
+        is not None
+        or (
+            top == "control-plane"
+            and "management-plane" in path
+            and "inband" in path
+        )
+    )
+    static_route = top.startswith("router static") and bool(
+        re.match(r"^[0-9a-fA-F:.]+/\d+\s", node.header)
+    )
+    return known_binding or static_route
+
+
 def _addresses(block: CiscoContext) -> set[str]:
     """收集接口块子树中的已配置 IP 地址。
 
@@ -610,12 +643,45 @@ class _CiscoPruner:
         self.outcome.removed_interfaces = self.removed
         self.outcome.removed_addresses = self.removed_addresses
 
+    def _handle_removed_reference(
+        self,
+        node: CiscoContext,
+        current: tuple[str, ...],
+        references: set[str],
+    ) -> bool:
+        """处理单个节点对已删除接口的引用。
+
+        已知绑定和静态路由整节点删除；其他语法保留并登记精确豁免，返回当前节点是否
+        已按整节点处理。把命中分类集中在一处，使递归遍历只负责结构推进。
+        """
+        if _is_known_removed_reference(node, current):
+            self.record(
+                node,
+                current,
+                "删除依赖非 NNI 接口的绑定或静态路由",
+                references,
+            )
+            return True
+        self.outcome.warnings.append(
+            f"接口引用无法确定，已保留原配置等待人工确认: "
+            f"{' / '.join(current)}; "
+            f"接口 {', '.join(sorted(references))}"
+        )
+        _defer_interface_references(
+            self.outcome,
+            current,
+            references,
+            "接口引用语法无法确定，保留原配置",
+        )
+        return False
+
     def clean(
         self, nodes: list[CiscoContext], path: tuple[str, ...] = ()
     ) -> None:
-        """递归删除指向已裁剪接口的绑定和静态路由。
+        """递归删除或保留指向已裁剪接口的活动依赖。
 
-        只有语法可确认整条绑定归属时自动删除，其他引用转为错误要求人工处理。
+        已知绑定自动删除，未知引用保留并记录 warning；递归依赖当前节点是否已被整节点
+        处理，避免删除后的子树继续产生重复诊断。
         """
         for node in nodes:
             if not node.active or node.is_formatting:
@@ -623,51 +689,13 @@ class _CiscoPruner:
             current = (*path, node.header)
             if re.match(r"^(?:description|remark)\b", node.header, re.I):
                 continue
-            refs = interface_references(node.header, self.removed)
-            if refs:
-                # 这些语法中整个节点就是接口绑定或以接口为下一跳的路由。
-                top = current[0].lower()
-                interface_binding = bool(
-                    re.match(
-                        r"^(?:interface|routed\s+interface)\s",
-                        node.header,
-                        re.I,
-                    )
-                )
-                known_binding = interface_binding and (
-                    re.match(
-                        r"^(?:router\s+(?:ospf\S*|isis|rip|vrrp)|mpls|"
-                        r"rsvp|l2vpn|vrf|evpn|dhcp\s+ipv[46])\b",
-                        top,
-                    )
-                    is not None
-                    or (
-                        top == "control-plane"
-                        and "management-plane" in current
-                        and "inband" in current
-                    )
-                )
-                static_route = top.startswith("router static") and bool(
-                    re.match(r"^[0-9a-fA-F:.]+/\d+\s", node.header)
-                )
-                if known_binding or static_route:
-                    self.record(
-                        node,
-                        current,
-                        "删除依赖非 NNI 接口的绑定或静态路由",
-                        refs,
-                    )
-                    continue
-                self.outcome.warnings.append(
-                    f"接口引用无法确定，已保留原配置等待人工确认: "
-                    f"{' / '.join(current)}; 接口 {', '.join(sorted(refs))}"
-                )
-                _defer_interface_references(
-                    self.outcome,
-                    current,
-                    refs,
-                    "接口引用语法无法确定，保留原配置",
-                )
+            references = interface_references(node.header, self.removed)
+            if references and self._handle_removed_reference(
+                node,
+                current,
+                references,
+            ):
+                continue
             self.clean(node.nodes, current)
 
     def prune_monitor_sessions(self):
@@ -743,9 +771,7 @@ class InterfaceDependencyCascade:
             self.outcome,
             self.record,
         ).run()
-        monitor = _CiscoPruner(
-            self.document, set(), self.outcome, self.record
-        )
+        monitor = _CiscoPruner(self.document, set(), self.outcome, self.record)
         monitor.removed = set(self.removed_interfaces)
         monitor.prune_monitor_sessions()
 
@@ -913,6 +939,24 @@ def _tracked_interface(document, node):
     )
 
 
+def _lost_track_targets(document, nodes, removed_interfaces):
+    """返回 track 定义中已经被裁剪的监控接口集合。
+
+    先只解析可唯一确认的 line-protocol 目标，再检查父接口是否失效；该纯查询结果
+    供后续删除或保留决策使用，避免把依赖识别与事务登记混在一起。
+    """
+    targets = [_tracked_interface(document, node) for node in nodes]
+    return {
+        target
+        for target in targets
+        if target
+        and (
+            target in removed_interfaces
+            or interface_parent(target) in removed_interfaces
+        )
+    }
+
+
 def _is_vrrp_use(header, path, name):
     """判断命令是否是 VRRP 对指定 track 对象的合法引用。
 
@@ -970,12 +1014,62 @@ class TrackDependenciesVisitor(PruningVisitor):
     保留 VRRP 组本身，只解除已删除对象的跟踪关系，避免扩大业务删除范围。
     """
 
+    def _handle_lost_track(
+        self,
+        name,
+        nodes,
+        removed_interfaces,
+        commands,
+    ):
+        """删除单个失效 track，或在依赖不明确时完整保留。
+
+        该对象是级联删除的安全边界：只有唯一 line-protocol track 且消费者仅为 VRRP
+        时才登记删除，其余情况保留整条依赖链并豁免对应接口引用。
+        """
+        document, outcome = self.session.document, self.session.result
+        lost = _lost_track_targets(document, nodes, removed_interfaces)
+        if not lost:
+            return
+        if len(nodes) != 1:
+            outcome.warnings.append(
+                f"track {name} 存在重复定义，已保留原配置等待人工确认"
+            )
+            _defer_track_references(
+                outcome,
+                nodes,
+                removed_interfaces,
+                f"track {name} 存在重复定义",
+            )
+            return
+        uses, warnings = _track_uses(name, nodes, commands)
+        if warnings:
+            outcome.warnings.extend(warnings)
+            _defer_track_references(
+                outcome,
+                nodes,
+                removed_interfaces,
+                f"track {name} 存在无法确定的消费者",
+            )
+            return
+        self.record(
+            nodes[0],
+            (nodes[0].header,),
+            "track 监控的接口已删除，移除跟踪对象",
+            lost,
+        )
+        for node, path in uses:
+            self.record(
+                node,
+                path,
+                f"track {name} 已删除，解除 VRRP 对象跟踪",
+                lost,
+            )
+
     def visitConfiguration(self, root):
         """分析全部 track 定义和消费者并登记删除。
 
         重复定义或未知消费者会阻止该 track 自动裁剪，保证依赖链可解释。
         """
-        document, outcome = self.session.document, self.session.result
         removed_interfaces = self.session.context.removed_interfaces
         commands = list(_walk(root.nodes))
         definitions = {}
@@ -986,49 +1080,12 @@ class TrackDependenciesVisitor(PruningVisitor):
                 definitions.setdefault(match.group(1), []).append(node)
 
         for name, nodes in definitions.items():
-            targets = [_tracked_interface(document, node) for node in nodes]
-            lost = {
-                target
-                for target in targets
-                if target
-                and (
-                    target in removed_interfaces
-                    or interface_parent(target) in removed_interfaces
-                )
-            }
-            if not lost:
-                continue
-            if len(nodes) != 1:
-                outcome.warnings.append(
-                    f"track {name} 存在重复定义，已保留原配置等待人工确认"
-                )
-                _defer_track_references(
-                    outcome,
-                    nodes,
-                    removed_interfaces,
-                    f"track {name} 存在重复定义",
-                )
-                continue
-            uses, warnings = _track_uses(name, nodes, commands)
-            if warnings:
-                outcome.warnings.extend(warnings)
-                _defer_track_references(
-                    outcome,
-                    nodes,
-                    removed_interfaces,
-                    f"track {name} 存在无法确定的消费者",
-                )
-                continue
-            self.record(
-                nodes[0],
-                (nodes[0].header,),
-                "track 监控的接口已删除，移除跟踪对象",
-                lost,
+            self._handle_lost_track(
+                name,
+                nodes,
+                removed_interfaces,
+                commands,
             )
-            for node, path in uses:
-                self.record(
-                    node, path, f"track {name} 已删除，解除 VRRP 对象跟踪", lost
-                )
 
 
 def full_prune_condition(context):
