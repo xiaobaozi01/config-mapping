@@ -14,8 +14,9 @@ group 展开是事务式的，并遵循显式配置、嵌套层级和 group 列�
 - `impl/juniper/syntax/`、`impl/juniper/operations/`、`impl/juniper/support/`：Junos 语法、业务操作和镜像约束；vMX 规则仍位于 `impl/juniper/rules/`。
 - `impl/common/config_ast/`：两家厂商共享的 AST、遍历、Editor 和 Writer 协议。
 - `impl/common/domain/`、`impl/common/rules/`、`impl/common/support/`：公共领域数据、规则引擎、路径清洗及基础设施能力。
+- `impl/common/domain/capabilities/`：Document 核心协议，以及接口、聚合、Group、清洗、裁剪、兼容、校验、引用和模拟等窄能力协议。
 - `impl/common/semantic_identity/`：路径感知的语义 identity 规则引擎。
-- `impl/common/domain/contracts.py`：Cisco 与 Juniper 显式实现的稳定厂商能力协议，厂商 AST 不向流程层泄漏。
+- `impl/common/domain/contracts.py`：保留 `VendorConfiguration` 兼容别名；最终类型为组合窄能力的 `VendorDocument`。
 - `adaptation/topology.py`：Excel 拓扑读取、预检和输出。
 - `adaptation/groups.py`：Group 展开的跨设备调度和诊断汇总。
 - `adaptation/interfaces.py`：接口预清理、分类、非 NNI 裁剪、引用改写、目标兼容与最终校验。
@@ -25,6 +26,13 @@ group 展开是事务式的，并遵循显式配置、嵌套层级和 group 列�
 - `adaptation/simulation.py`：模拟参数适配调度。
 - `adaptation/pipeline.py`：显式组合转换阶段，并在首次错误后停止。
 - `adaptation/service.py`：组织输入加载、完整转换和最终输出。
+
+`CiscoDocument` 和 `JunosDocument` 是配置树聚合根，只负责语法、树状态、修订、
+编辑事务、分析缓存和最终渲染。业务动作通过按需创建的轻量能力入口执行，例如
+`document.interfaces.analysis`、`document.interfaces.transform`、
+`document.validation`、`document.cleaning` 和 `document.simulation`。能力对象
+不长期保存在 Document 上，也不缓存配置树状态。所有能力门面统一位于
+`operations/`；`rules/` 只保存规则定义、Visitor 和执行机制。
 
 ## 测试数据
 

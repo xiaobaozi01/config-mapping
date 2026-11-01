@@ -22,7 +22,7 @@ class CleaningScopeTest(unittest.TestCase):
                 with self.subTest(vendor=factory.vendor, names=names):
                     document = factory(source)
                     operation = CleaningOperation(path, "^speed", "delete", interface_names=names)
-                    self.assertEqual(document.apply_cleaning_rules([operation]), [expected])
+                    self.assertEqual(document.cleaning.apply_rules([operation]), [expected])
                     self.assertEqual(document.render().count("speed"), 2 - expected)
 
     def test_configured_rule_rejects_scope_field(self):
@@ -69,10 +69,10 @@ class CleaningScopeTest(unittest.TestCase):
 
     def test_hardware_is_not_deleted_by_adapt_or_simulation_fallback(self):
         document = CiscoDocument("interface Gi0/0/0/0\n speed 1000\n!\n")
-        document.adapt_interfaces({"Gi0/0/0/0"})
-        document.adapt_to_simulation(SimulationAdaptationPolicy(), {"Gi0/0/0/0"})
+        document.compatibility.adapt_interfaces({"Gi0/0/0/0"})
+        document.simulation.adapt(SimulationAdaptationPolicy(), {"Gi0/0/0/0"})
         self.assertIn("speed 1000", document.render())
-        validation = document.validate_interfaces({"Gi0/0/0/0"}, set())
+        validation = document.validation.validate_interfaces({"Gi0/0/0/0"}, set())
         self.assertTrue(any("残留不兼容属性" in error for error in validation.errors))
 
     def test_junos_cleanup_preserves_aggregation_and_non_option_unit_attributes(self):
@@ -82,7 +82,7 @@ class CleaningScopeTest(unittest.TestCase):
             "ge-0/0/1 { speed 1g; } ae10 { aggregated-ether-options { lacp { active; } } } }"
         )
         clean_hardware(document, {"ge-0/0/0"})
-        document.adapt_to_simulation(SimulationAdaptationPolicy(), {"ge-0/0/0"})
+        document.simulation.adapt(SimulationAdaptationPolicy(), {"ge-0/0/0"})
         output = document.render()
         for retained in ["802.3ad ae10", "speed keep", "active;"]:
             self.assertIn(retained, output)
@@ -97,7 +97,7 @@ class CleaningScopeTest(unittest.TestCase):
         self.assertEqual(sum(event["hits"] for event in events), 1)
         self.assertNotIn("speed 1g", document.render())
         self.assertIn("ether-options;", document.render())
-        document.adapt_to_simulation(policy, {"ge-0/0/0"})
+        document.simulation.adapt(policy, {"ge-0/0/0"})
         self.assertIn("ether-options;", document.render())
 
 

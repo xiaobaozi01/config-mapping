@@ -13,6 +13,7 @@ from impl.common.domain.interface import (
     referenced_interface_names,
 )
 from impl.common.support.errors import require_invariant
+from impl.common.support.interface_cache import copy_interface_specs
 
 from ..document import (
     CiscoDocument,
@@ -75,7 +76,7 @@ def interface_specs(document: CiscoDocument) -> list[InterfaceSpec]:
                 parent=interface_parent(name),
                 unit=interface_unit(name),
                 vlan=vlan,
-                kind=document.interface_kind(name),
+                kind=document._parser.interface_kind(name),
                 inner_vlan=inner_vlan,
             )
         )
@@ -147,7 +148,9 @@ def _bridge_domain_bindings(
                     )
                     if gateway_match:
                         gateways.add(
-                            document.resolve_interface(gateway_match.group(1))
+                            document._parser.canonical_interface(
+                                gateway_match.group(1)
+                            )
                         )
                         continue
                     interface_match = re.match(
@@ -157,7 +160,9 @@ def _bridge_domain_bindings(
                     )
                     if interface_match:
                         attachments.add(
-                            document.resolve_interface(interface_match.group(1))
+                            document._parser.canonical_interface(
+                                interface_match.group(1)
+                            )
                         )
                 result.append((attachments, gateways))
     return result
@@ -206,7 +211,7 @@ def interface_kind(document: CiscoDocument, name: str) -> InterfaceKind:
     分类本身只依赖接口名，复用当前文档的私有解析缓存，供拓扑校验及
     物理口、聚合口、网关口分流使用。
     """
-    return document.interface_kind(name)
+    return document._parser.interface_kind(name)
 
 
 def bundle_members(document: CiscoDocument) -> dict[str, str]:
@@ -224,7 +229,7 @@ def bundle_members(document: CiscoDocument) -> dict[str, str]:
             "Cisco 接口节点集合中的节点必须包含接口名",
         )
         if (
-            document.interface_kind(name) != InterfaceKind.PHYSICAL
+            document._parser.interface_kind(name) != InterfaceKind.PHYSICAL
             or interface_unit(name) is not None
         ):
             continue
@@ -243,7 +248,7 @@ def interface_has_business(document: CiscoDocument, name: str) -> bool:
 
     识别结果用于阻止压缩删除独立业务；普通描述、启停和 MTU 不在此范围内。
     """
-    parent = interface_parent(document.resolve_interface(name))
+    parent = interface_parent(document._parser.canonical_interface(name))
     parser = document._parser
     for block in interface_nodes(document):
         block_name = parser.interface_name(block.header)
@@ -264,7 +269,7 @@ def bundle_binding_is_ambiguous(document: CiscoDocument, name: str) -> bool:
 
     多个绑定无法选择唯一目标关系，因此与可保留的成员业务分开处理。
     """
-    parent = interface_parent(document.resolve_interface(name))
+    parent = interface_parent(document._parser.canonical_interface(name))
     bindings = set()
     for block in interface_nodes(document):
         if document._parser.interface_name(block.header) != parent:
@@ -289,7 +294,7 @@ def resolve_interface(document: CiscoDocument, value: str) -> str:
     复用当前文档的私有解析缓存；名称统一后，拓扑数据才能与配置中的接口块
     可靠匹配。
     """
-    return document.resolve_interface(value)
+    return document._parser.canonical_interface(value)
 
 
 def logical_names_under(document: CiscoDocument, parent: str) -> list[str]:
@@ -298,11 +303,11 @@ def logical_names_under(document: CiscoDocument, parent: str) -> list[str]:
     返回完整接口树名称是为了在 NNI 克隆、重命名及审计映射时保留每个子接口
     的后缀，而集合去重可避免重复配置块产生重复记录。
     """
-    parent = document.resolve_interface(parent)
+    parent = document._parser.canonical_interface(parent)
     return sorted(
         {
             spec.name
-            for spec in document.interface_specs()
+            for spec in document.interfaces.analysis.interface_specs()
             if spec.parent == parent
         },
         key=lambda value: (interface_unit(value) is not None, value),
@@ -331,7 +336,7 @@ def business_interface_names(document: CiscoDocument) -> set[str]:
     编号而激活与当前业务无关的网关。
     """
     parser = document._parser
-    specs = document.interface_specs()
+    specs = document.interfaces.analysis.interface_specs()
     known = {spec.name for spec in specs}
     kinds = {spec.name: spec.kind for spec in specs}
     mappable_kinds = {InterfaceKind.PHYSICAL, InterfaceKind.BUNDLE}
@@ -380,7 +385,7 @@ def find_interface_node(document: CiscoDocument, name: str) -> CiscoNode | None:
     已被逻辑删除的旧配置上。
     """
     parser = document._parser
-    canonical = document.resolve_interface(name)
+    canonical = document._parser.canonical_interface(name)
     return next(
         (
             block
@@ -399,7 +404,7 @@ def remove_interface(
     通过事务统一删除可保持格式分隔符和原始顺序稳定；子接口开关用于区分普通端点
     清理与完整接口树迁移。
     """
-    canonical = document.resolve_interface(name)
+    canonical = document._parser.canonical_interface(name)
     transaction = document.edit()
     for block in interface_nodes(document):
         current = block.interface_name
@@ -416,9 +421,9 @@ def rename_interface_tree(document, source, target, strip_bundle=False):
     在同一事务中同步修改父口和子口后缀，避免目标名中途出现半套定义；移出聚合时
     同时删除失效的 bundle 和 LACP 属性。
     """
-    source, target = document.resolve_interface(
+    source, target = document._parser.canonical_interface(
         source
-    ), document.resolve_interface(target)
+    ), document._parser.canonical_interface(target)
     transaction = document.edit()
     renamed = []
     for block in interface_nodes(document):
@@ -477,9 +482,9 @@ def clone_interface_tree(document, source, target, strip_bundle=False):
     复制后追加而不是逐项改写，使源接口可继续服务其他目标；随后合并同名目标以维持
     每个接口只有一个活动定义。
     """
-    source, target = document.resolve_interface(
+    source, target = document._parser.canonical_interface(
         source
-    ), document.resolve_interface(target)
+    ), document._parser.canonical_interface(target)
     originals = [
         block
         for block in interface_nodes(document)
@@ -556,8 +561,176 @@ def ensure_parent_interface(document: CiscoDocument, name: str) -> None:
 
     新迁移目标可能尚未出现；创建最小父口并启用它，可让后续子接口和引用写入有效路径。
     """
-    canonical = document.resolve_interface(name)
+    canonical = document._parser.canonical_interface(name)
     if find_interface_node(document, canonical) is None:
         _insert_top_level_before_end(
             document, f"interface {canonical}\n no shutdown\n!\n"
         )
+
+
+class CiscoInterfaceAnalysis:
+    """提供 IOS XR 只读接口查询能力。
+
+    分析结果通过 Document 缓存读取，能力对象本身不保存树状态。
+    """
+
+    __slots__ = ("_document",)
+
+    def __init__(self, document: CiscoDocument):
+        """绑定一次调用使用的文档。
+
+        构造函数只保存引用，不读取配置或创建缓存。
+        """
+        self._document = document
+
+    def interface_specs(self) -> list[InterfaceSpec]:
+        """返回当前文档的接口规格。
+
+        结果由 Document 缓存统一失效并复制后返回。
+        """
+        return self._document._read_interface_analysis(
+            "interface_specs",
+            lambda: interface_specs(self._document),
+            copy_interface_specs,
+        )
+
+    def interface_kind(self, name: str) -> InterfaceKind:
+        """返回接口的业务类别。
+
+        分类直接使用厂商解析缓存，不依赖旧 Document 业务方法。
+        """
+        return interface_kind(self._document, name)
+
+    def bundle_members(self) -> dict[str, str]:
+        """返回聚合成员映射。
+
+        结果由 Document 缓存统一失效并复制后返回。
+        """
+        return self._document._read_interface_analysis(
+            "bundle_members",
+            lambda: bundle_members(self._document),
+            dict,
+        )
+
+    def interface_has_business(self, name: str) -> bool:
+        """判断成员接口是否承载独立业务。
+
+        查询只读取当前树，不改变配置。
+        """
+        return interface_has_business(self._document, name)
+
+    def bundle_binding_is_ambiguous(self, name: str) -> bool:
+        """判断成员是否存在多个聚合绑定。
+
+        查询结果用于迁移前阻断不唯一关系。
+        """
+        return bundle_binding_is_ambiguous(self._document, name)
+
+    def resolve_interface(self, value: str) -> str:
+        """返回规范接口名称。
+
+        规范化规则与配置树内部接口查找保持一致。
+        """
+        return resolve_interface(self._document, value)
+
+    def logical_names_under(self, parent: str) -> list[str]:
+        """返回父接口及其逻辑单元名称。
+
+        输出顺序稳定，可直接用于映射和审计。
+        """
+        return logical_names_under(self._document, parent)
+
+    def business_interface_names(self) -> set[str]:
+        """返回承载有效业务的接口集合。
+
+        结果由 Document 缓存统一失效并复制后返回。
+        """
+        return self._document._read_interface_analysis(
+            "business_interface_names",
+            lambda: business_interface_names(self._document),
+            set,
+        )
+
+
+class CiscoInterfaceTransform:
+    """提供 IOS XR 接口树修改能力。
+
+    每个方法自行管理局部 Editor 事务，失败时沿用现有回滚语义。
+    """
+
+    __slots__ = ("_document",)
+
+    def __init__(self, document: CiscoDocument):
+        """绑定一次调用使用的文档。
+
+        能力对象不拥有或缓存配置树。
+        """
+        self._document = document
+
+    def remove(self, name: str, include_children: bool = False) -> None:
+        """移除接口及其可选子接口。
+
+        删除通过逻辑停用完成。
+        """
+        with self._document.edit().bulk():
+            remove_interface(self._document, name, include_children)
+
+    def rename(
+        self, source: str, target: str, strip_bundle: bool = False
+    ) -> None:
+        """重命名整棵接口树。
+
+        可同时剥离不再适用的聚合成员属性。
+        """
+        with self._document.edit().bulk():
+            rename_interface_tree(self._document, source, target, strip_bundle)
+
+    def clone(
+        self, source: str, target: str, strip_bundle: bool = False
+    ) -> None:
+        """复制接口树到目标接口。
+
+        源接口树在操作后仍可继续使用。
+        """
+        with self._document.edit().bulk():
+            clone_interface_tree(self._document, source, target, strip_bundle)
+
+    def ensure_parent(self, name: str) -> None:
+        """确保目标父接口存在。
+
+        只在缺失时创建最小父节点。
+        """
+        with self._document.edit().bulk():
+            ensure_parent_interface(self._document, name)
+
+
+class CiscoInterfaceCapabilities:
+    """组合 IOS XR 接口查询和修改能力。
+
+    每次访问子能力都创建轻量对象，避免 Document 持有长期服务集合。
+    """
+
+    __slots__ = ("_document",)
+
+    def __init__(self, document: CiscoDocument):
+        """绑定接口能力所属文档。
+
+        构造阶段不读取或修改配置。
+        """
+        self._document = document
+
+    @property
+    def analysis(self) -> CiscoInterfaceAnalysis:
+        """返回只读接口分析能力。
+
+        返回对象只存活于当前调用链。
+        """
+        return CiscoInterfaceAnalysis(self._document)
+
+    @property
+    def transform(self) -> CiscoInterfaceTransform:
+        """返回接口修改能力。
+
+        修改事务由返回对象的方法管理。
+        """
+        return CiscoInterfaceTransform(self._document)

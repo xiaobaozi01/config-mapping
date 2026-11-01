@@ -33,7 +33,7 @@ class JunosNniPruningTest(unittest.TestCase):
         document = load("junos_nni_pruning.cfg")
         outcome = prune_non_nni(document, {"ge-0/0/0", "ge-0/0/20"})
         self.assertEqual(outcome.errors, [])
-        specs = {spec.name for spec in document.interface_specs()}
+        specs = {spec.name for spec in document.interfaces.analysis.interface_specs()}
         self.assertTrue({"ge-0/0/0", "ge-0/0/1", "ae0.100", "irb.100", "lo0.0", "fxp0.0", "gr-0/0/0.0", "future0.0"} <= specs)
         self.assertFalse({"ge-0/0/2.200", "ge-0/0/3.300", "irb.300"} & specs)
         rendered = document.render()
@@ -82,7 +82,7 @@ class JunosNniPruningTest(unittest.TestCase):
                 )
             },
         )
-        validation = document.validate_interfaces(
+        validation = document.validation.validate_interfaces(
             set(),
             outcome.removed_interfaces,
             outcome.deferred_interface_references,
@@ -91,7 +91,7 @@ class JunosNniPruningTest(unittest.TestCase):
 
     def test_member_cleanup_uses_the_same_conservative_reference_policy(self):
         document = load("junos_nni_pruning_unknown.cfg")
-        document.remove_interface("ge-0/0/1")
+        document.interfaces.transform.remove("ge-0/0/1")
         outcome = prune_interface_dependencies(
             document,
             {"ge-0/0/1", "ge-0/0/1.0"},
@@ -113,7 +113,7 @@ class JunosNniPruningTest(unittest.TestCase):
         self.assertEqual(outcome.errors, [])
         self.assertIn("l3-interface irb.10", document.render())
         self.assertNotIn("RED", document.render())
-        self.assertEqual({spec.name for spec in document.interface_specs()}, {"ge-0/0/0.0", "irb.10"})
+        self.assertEqual({spec.name for spec in document.interfaces.analysis.interface_specs()}, {"ge-0/0/0.0", "irb.10"})
 
     def test_final_validation_rejects_conflicting_units_and_gateway_role(self):
         document = load("junos_nni_pruning_invalid.cfg")
@@ -127,7 +127,7 @@ class JunosNniPruningTest(unittest.TestCase):
     def test_final_validation_warns_for_source_semantic_conflicts_by_default(self):
         document = load("junos_nni_pruning_invalid.cfg")
 
-        outcome = document.validate_interfaces(
+        outcome = document.validation.validate_interfaces(
             set(),
             set(),
             strict_input_validation=False,
@@ -171,7 +171,7 @@ class JunosNniPruningTest(unittest.TestCase):
 
     def test_final_reference_validation_is_read_only(self):
         document = load("junos_nni_pruning_unknown.cfg")
-        document.remove_interface("ge-0/0/1")
+        document.interfaces.transform.remove("ge-0/0/1")
         before = document.render()
         outcome = validate_pruned_references(document, {"ge-0/0/1.0"})
         self.assertTrue(outcome.errors)

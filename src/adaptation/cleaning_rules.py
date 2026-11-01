@@ -43,7 +43,9 @@ def target_parents(
     )
     return frozenset(
         interface_parent(
-            device.document.resolve_interface(mapping.target_interface)
+            device.document.interfaces.analysis.resolve_interface(
+                mapping.target_interface
+            )
         )
         for mapping in device.mappings
         if mapping.role == MappingRole.NNI
@@ -200,7 +202,7 @@ class ConfiguredCleaningRule:
         匹配和 AST 修改留在厂商实现中，规则对象只负责携带数据并把命中数转换为统一
         结果，避免流程层理解 Cisco 与 Junos 的树结构差异。
         """
-        hits = document.apply_cleaning_rule(
+        hits = document.cleaning.apply_rule(
             self.path,
             self.match,
             self.action,
@@ -287,8 +289,8 @@ class AuthenticationCleaningRule:
 
         返回值只包含删除类别和新增账号数量，用于审计范围而不泄露原密码或密钥。
         """
-        cleanup = document.clean_management_access()
-        document.add_lab_account()
+        cleanup = document.cleaning.clean_management_access()
+        document.cleaning.add_lab_account()
         return CleaningResult(
             changed=cleanup.total + 1,
             removed_by_type=dict(cleanup.removed),
@@ -388,7 +390,7 @@ class CleaningRulesHandler:
         configured.sort(key=lambda rule: rule.action != CleaningAction.DELETE)
         if not configured:
             return True
-        counts = device.document.apply_cleaning_rules(
+        counts = device.document.cleaning.apply_rules(
             [
                 CleaningOperation(
                     rule.path,

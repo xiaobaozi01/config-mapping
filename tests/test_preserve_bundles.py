@@ -172,8 +172,8 @@ class PreserveBundleTest(unittest.TestCase):
             [link.row for link in context.topology.links if link.active],
             [2, 4],
         )
-        self.assertEqual(len(device.document.bundle_members()), 2)
-        self.assertEqual(len(context.devices["B"].document.bundle_members()), 1)
+        self.assertEqual(len(device.document.interfaces.analysis.bundle_members()), 2)
+        self.assertEqual(len(context.devices["B"].document.interfaces.analysis.bundle_members()), 1)
         self.assertTrue(
             any(
                 mapping.source_interface == third_a
@@ -237,7 +237,7 @@ class PreserveBundleTest(unittest.TestCase):
         self.assertNotIn("minimum-bandwidth", output)
         self.assertNotIn("speed 100g", output)
         self.assertEqual(
-            context.devices["A"].document.bundle_members(), {"ge-0/0/0": "ae10"}
+            context.devices["A"].document.interfaces.analysis.bundle_members(), {"ge-0/0/0": "ae10"}
         )
 
     def test_lacp_is_preserved_without_enforcing_peer_mode_consistency(self):
@@ -279,7 +279,7 @@ class PreserveBundleTest(unittest.TestCase):
             [link.row for link in context.topology.links if link.active],
             [2, 3],
         )
-        self.assertEqual(len(context.devices["A"].document.bundle_members()), 2)
+        self.assertEqual(len(context.devices["A"].document.interfaces.analysis.bundle_members()), 2)
         self.assertTrue(
             any(
                 "独立业务" in warning
@@ -314,7 +314,7 @@ class PreserveBundleTest(unittest.TestCase):
             [link.row for link in context.topology.links if link.active],
             [2, 3],
         )
-        self.assertEqual(len(context.devices["A"].document.bundle_members()), 2)
+        self.assertEqual(len(context.devices["A"].document.interfaces.analysis.bundle_members()), 2)
         self.assertTrue(
             any(
                 "独立业务" in warning
@@ -351,9 +351,9 @@ class PreserveBundleTest(unittest.TestCase):
                     (FIXTURES / filename).read_text(),
                 )
                 for member in members:
-                    document.remove_interface(member)
+                    document.interfaces.transform.remove(member)
 
-                outcome = document.prune_non_nni(set())
+                outcome = document.pruning.prune_non_nni(set())
 
                 self.assertFalse(outcome.errors, outcome.errors)
                 self.assertIn(bundle, outcome.removed_interfaces)
@@ -474,7 +474,7 @@ class PreserveBundleTest(unittest.TestCase):
         build_default_pipeline().execute(context)
         device = context.devices["A"]
         self.assertFalse(context.has_errors, context.errors + device.errors)
-        self.assertIn("ge-0/0/0", device.document.bundle_members())
+        self.assertIn("ge-0/0/0", device.document.interfaces.analysis.bundle_members())
         output = device.document.render()
         self.assertNotIn("interface ge-0/0/0;", output)
         self.assertIn("interface ae10.0;", output)

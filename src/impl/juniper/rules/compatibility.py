@@ -14,6 +14,13 @@ from impl.common.domain.outcomes import (
     InterfacePruningOutcome,
 )
 
+from ..operations.interfaces import (
+    interface_name,
+    interface_nodes,
+    unit_nodes,
+    unit_number,
+)
+
 if TYPE_CHECKING:
     from ..document import JuniperNode, JunosDocument
 
@@ -94,9 +101,9 @@ def validate_pruned_references(
 
     已存在的新目标接口可复用源接口名称，因此先从删除集合中排除当前实际名称。
     """
-    actual_names = {spec.name for spec in document.interface_specs()}
+    actual_names = _actual_interface_names(document)
     actual_names.update(
-        document._interface_name(node) for node in document._interface_nodes()
+        interface_name(document, node) for node in interface_nodes(document)
     )
     return _validate_pruned_references(
         document,
@@ -118,7 +125,7 @@ def _validate_reference_bindings(
     原始剪枝阶段调用严格的内部版本，最终阶段先排除重用名称再进入同一检查逻辑。
     """
     result = InterfacePruningOutcome()
-    actual_names = {spec.name for spec in document.interface_specs()}
+    actual_names = _actual_interface_names(document)
     deferred = {
         (reference.path, reference.interface)
         for reference in deferred_interface_references
@@ -161,6 +168,16 @@ def _validate_reference_bindings(
     return result
 
 
+def _actual_interface_names(document: JunosDocument) -> set[str]:
+    """返回当前树中实际存在的接口名称。
+
+    最终校验允许新目标复用被删除源名称，因此需要先排除当前名称。
+    """
+    return {
+        spec.name for spec in document.interfaces.analysis.interface_specs()
+    }
+
+
 def validate_units(document, context, *, strict_input_validation=None):
     """校验逻辑单元编号唯一性及二三层模式互斥。
 
@@ -170,21 +187,21 @@ def validate_units(document, context, *, strict_input_validation=None):
     result = InterfacePruningOutcome()
     strict = _validation_strict(context, strict_input_validation)
     targeted_parents = {
-        interface_parent(document.resolve_interface(name))
+        interface_parent(document.interfaces.analysis.resolve_interface(name))
         for name in getattr(context, "target_interfaces", ())
     }
-    for parent in document._interface_nodes():
-        parent_name = document._interface_name(parent)
+    for parent in interface_nodes(document):
+        parent_name = interface_name(document, parent)
         if (
             targeted_parents
             and interface_parent(parent_name) not in targeted_parents
         ):
             continue
         seen = set()
-        for unit in document._unit_nodes(parent):
-            number = document._unit_number(unit)
+        for unit in unit_nodes(document, parent):
+            number = unit_number(document, unit)
             path = (
-                f"interfaces / {document._interface_name(parent)} / "
+                f"interfaces / {interface_name(document, parent)} / "
                 f"unit {number}"
             )
             if number in seen:
@@ -230,7 +247,9 @@ def validate_gateway_role(
     """
     result = InterfacePruningOutcome()
     strict = _validation_strict(context, strict_input_validation)
-    actual_names = {spec.name for spec in document.interface_specs()}
+    actual_names = {
+        spec.name for spec in document.interfaces.analysis.interface_specs()
+    }
     for node, path in _walk(document, document.root):
         header = document._parser.base_header(node.header)
         _validate_gateway_reference(
@@ -285,9 +304,11 @@ def validate_reference_bindings(document, context):
 
     当前仍存在的目标名称会从删除集合中剔除，保证名称复用不被误报为悬空引用。
     """
-    actual = {spec.name for spec in document.interface_specs()}
+    actual = {
+        spec.name for spec in document.interfaces.analysis.interface_specs()
+    }
     actual.update(
-        document._interface_name(node) for node in document._interface_nodes()
+        interface_name(document, node) for node in interface_nodes(document)
     )
     return _validate_reference_bindings(
         document,

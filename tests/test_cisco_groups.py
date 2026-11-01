@@ -20,7 +20,7 @@ class CiscoGroupExpansionTest(unittest.TestCase):
 
     def test_iosxr_group_regex_expansion(self):
         document = CiscoDocument(group_config("iosxr_group_regex.cfg"))
-        outcome = document.expand_groups(["GigabitEthernet0/0/0/5"])
+        outcome = document.groups.expand(["GigabitEthernet0/0/0/5"])
         rendered = document.render()
         self.assertFalse(outcome.warnings)
         self.assertTrue(outcome.events)
@@ -31,7 +31,7 @@ class CiscoGroupExpansionTest(unittest.TestCase):
     def test_full_expansion_rejects_unrelated_invalid_iosxr_group(self):
         source = group_config("iosxr_invalid_unrelated_group.cfg")
         document = CiscoDocument(source)
-        outcome = document.expand_groups(["GigabitEthernet0/0/0/5"])
+        outcome = document.groups.expand(["GigabitEthernet0/0/0/5"])
         self.assertFalse(outcome.success)
         self.assertTrue(
             any("TELEMETRY" in warning for warning in outcome.warnings)
@@ -40,7 +40,7 @@ class CiscoGroupExpansionTest(unittest.TestCase):
 
     def test_iosxr_expands_non_interface_group(self):
         document = CiscoDocument(group_config("iosxr_non_interface_group.cfg"))
-        outcome = document.expand_groups([])
+        outcome = document.groups.expand([])
         rendered = document.render()
         self.assertTrue(outcome.success)
         self.assertIn("telemetry model-driven", rendered)
@@ -50,7 +50,7 @@ class CiscoGroupExpansionTest(unittest.TestCase):
 
     def test_iosxr_group_conflict_precedence_and_semantic_keys(self):
         document = CiscoDocument(group_config("iosxr_group_conflicts.cfg"))
-        outcome = document.expand_groups(["GigabitEthernet0/0/0/5"])
+        outcome = document.groups.expand(["GigabitEthernet0/0/0/5"])
         rendered = document.render()
         self.assertIn("mtu 1500", rendered)
         self.assertNotIn("mtu 8000", rendered)
@@ -69,7 +69,7 @@ class CiscoGroupExpansionTest(unittest.TestCase):
 
     def test_iosxr_first_group_in_list_wins(self):
         document = CiscoDocument(group_config("iosxr_group_order.cfg"))
-        outcome = document.expand_groups(["GigabitEthernet0/0/0/5"])
+        outcome = document.groups.expand(["GigabitEthernet0/0/0/5"])
         rendered = document.render()
         self.assertIn("mtu 1111", rendered)
         self.assertNotIn("mtu 2222", rendered)
@@ -77,7 +77,7 @@ class CiscoGroupExpansionTest(unittest.TestCase):
 
     def test_iosxr_longest_regex_and_negated_single_value(self):
         document = CiscoDocument(group_config("iosxr_group_specificity.cfg"))
-        outcome = document.expand_groups(["GigabitEthernet0/0/0/5"])
+        outcome = document.groups.expand(["GigabitEthernet0/0/0/5"])
         rendered = document.render()
         self.assertIn("mtu 2000", rendered)
         self.assertNotIn("mtu 1000", rendered)
@@ -90,7 +90,7 @@ class CiscoGroupExpansionTest(unittest.TestCase):
     def test_undefined_root_group_fails_without_any_definitions(self):
         source = group_config("iosxr_undefined_root_group.cfg")
         cisco = CiscoDocument(source)
-        cisco_outcome = cisco.expand_groups([])
+        cisco_outcome = cisco.groups.expand([])
         self.assertFalse(cisco_outcome.success)
         self.assertTrue(
             any("MISSING" in item for item in cisco_outcome.warnings)

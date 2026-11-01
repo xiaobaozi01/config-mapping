@@ -23,8 +23,8 @@ class WashingTest(unittest.TestCase):
     def test_mandatory_washing_removes_management_access_and_snmp(self):
         """默认只清管理面必删项，协议认证和业务能力继续保留。"""
         cisco_document = CiscoDocument(washing_config("iosxr.cfg"))
-        cisco_cleanup = cisco_document.clean_management_access()
-        cisco_document.add_lab_account()
+        cisco_cleanup = cisco_document.cleaning.clean_management_access()
+        cisco_document.cleaning.add_lab_account()
         cisco = cisco_document.render()
         self.assertNotIn("username old-user", cisco)
         self.assertNotIn("tacacs-server", cisco)
@@ -45,8 +45,8 @@ class WashingTest(unittest.TestCase):
         self.assertEqual(cisco_cleanup.removed["ssh"], 2)
 
         junos_document = JunosDocument(washing_config("junos.cfg"))
-        junos_cleanup = junos_document.clean_management_access()
-        junos_document.add_lab_account()
+        junos_cleanup = junos_document.cleaning.clean_management_access()
+        junos_document.cleaning.add_lab_account()
         junos = junos_document.render()
         self.assertNotIn("old-user", junos)
         self.assertNotIn("RADIUSSECRET", junos)
@@ -93,7 +93,7 @@ class WashingTest(unittest.TestCase):
         def apply(document, vendor: str) -> None:
             for rule in rules:
                 if rule.vendor == vendor:
-                    document.apply_cleaning_rule(
+                    document.cleaning.apply_rule(
                         rule.path,
                         rule.match,
                         rule.action,
@@ -128,8 +128,8 @@ class WashingTest(unittest.TestCase):
 
         combined = CiscoDocument(washing_config("iosxr.cfg"))
         apply(combined, "cisco_iosxr")
-        combined.clean_management_access()
-        combined.add_lab_account()
+        combined.cleaning.clean_management_access()
+        combined.cleaning.add_lab_account()
         combined_rendered = combined.render()
         self.assertNotIn("username old-user", combined_rendered)
         self.assertNotIn("crypto pki", combined_rendered)
@@ -137,7 +137,7 @@ class WashingTest(unittest.TestCase):
     def test_cisco_bundle_thresholds_are_removed_when_flattened(self):
         """Bundle 迁移到普通物理口时不遗留 minimum-active 或 LACP。"""
         document = CiscoDocument(washing_config("iosxr.cfg"))
-        document.rename_interface_tree(
+        document.interfaces.transform.rename(
             "Bundle-Ether10",
             "GigabitEthernet0/0/0/0",
             strip_bundle=True,

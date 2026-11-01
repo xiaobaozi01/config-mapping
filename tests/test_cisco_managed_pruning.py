@@ -109,7 +109,7 @@ class ManagedPruningFailureTest(unittest.TestCase):
         )
         document = CiscoDocument(source)
         snapshot = tree_signature(document.root)
-        result = document.prune_non_nni({"Gi0/0/0/0"})
+        result = document.pruning.prune_non_nni({"Gi0/0/0/0"})
         self.assertFalse(result.errors)
         self.assertNotEqual(tree_signature(document.root), snapshot)
         self.assertEqual(result.removed_interfaces, {REMOVED})
@@ -139,7 +139,7 @@ class ManagedPruningFailureTest(unittest.TestCase):
         self.assertNotIn("track LOST", output)
         self.assertIn("track UNKNOWN", output)
         self.assertIn("custom-service FOO", output)
-        validation = document.validate_interfaces(
+        validation = document.validation.validate_interfaces(
             set(),
             {REMOVED},
             result.deferred_interface_references,
@@ -159,7 +159,7 @@ class ManagedPruningFailureTest(unittest.TestCase):
         output = document.render()
         self.assertNotIn("cost 99", output)
         self.assertIn("custom-service FOO", output)
-        validation = document.validate_interfaces(
+        validation = document.validation.validate_interfaces(
             set(),
             {REMOVED},
             result.deferred_interface_references,
@@ -193,8 +193,8 @@ class ManagedPruningResultTest(unittest.TestCase):
         self,
     ):
         first, second = CiscoDocument(FULL_SOURCE), CiscoDocument(FULL_SOURCE)
-        lost = first.prune_non_nni({"Gi0/0/0/0"})
-        retained = second.prune_non_nni({"Gi0/0/0/2"})
+        lost = first.pruning.prune_non_nni({"Gi0/0/0/0"})
+        retained = second.pruning.prune_non_nni({"Gi0/0/0/2"})
         self.assertEqual(lost.removed_interfaces, {REMOVED})
         self.assertEqual(lost.removed_addresses, {"192.0.2.1"})
         self.assertEqual(len(lost.changes), 2)
@@ -212,8 +212,8 @@ class ManagedPruningResultTest(unittest.TestCase):
         )
         self.assertEqual(retained.removed_addresses, set())
         self.assertIn("neighbor 192.0.2.2", second.source)
-        self.assertEqual(first.prune_non_nni({"Gi0/0/0/0"}).changes, [])
-        self.assertEqual(second.prune_non_nni({"Gi0/0/0/2"}).changes, [])
+        self.assertEqual(first.pruning.prune_non_nni({"Gi0/0/0/0"}).changes, [])
+        self.assertEqual(second.pruning.prune_non_nni({"Gi0/0/0/2"}).changes, [])
 
     def test_later_managed_rules_receive_removed_sets_and_committed_snapshot(
         self,
@@ -239,7 +239,7 @@ class ManagedPruningResultTest(unittest.TestCase):
             pruning.INTERFACE_BINDINGS_RULE,
         )
         with patch.object(rules, "PRUNE_RULES", registered):
-            result = document.prune_non_nni({"Gi0/0/0/0"})
+            result = document.pruning.prune_non_nni({"Gi0/0/0/0"})
         self.assertFalse(result.errors)
         self.assertEqual(
             observed[0][:2], (frozenset({REMOVED}), frozenset({"192.0.2.1"}))
@@ -275,7 +275,7 @@ class ManagedPruningResultTest(unittest.TestCase):
             result_mapper=pruning.pruning_result,
         )
         with patch.object(rules, "PRUNE_RULES", (rule,)):
-            result = document.prune_non_nni(set())
+            result = document.pruning.prune_non_nni(set())
         self.assertEqual(document.source, "")
         self.assertEqual(document.revision, 1)
         self.assertEqual(

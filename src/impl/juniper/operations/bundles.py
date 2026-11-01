@@ -5,6 +5,8 @@ import re
 from impl.common.domain.interface import BundleMode
 from impl.common.domain.outcomes import InterfaceAdaptationOutcome
 
+from .interfaces import ensure_parent_interface, find_interface_node
+
 
 def _walk(document, node):
     """递归遍历节点下的有效子节点。
@@ -22,13 +24,13 @@ def bundle_mode(document, member) -> BundleMode:
 
     模式决定跨设备聚合能否安全迁移，缺失或冲突信息统一返回未知而不做乐观推断。
     """
-    node = document._find_interface_node(member)
+    node = find_interface_node(document, member)
     if node is None:
         return BundleMode.UNKNOWN
     bundle_name = _member_bundle(document, node)
     if bundle_name is None:
         return BundleMode.UNKNOWN
-    aggregate = document._find_interface_node(bundle_name)
+    aggregate = find_interface_node(document, bundle_name)
     if aggregate is None:
         return BundleMode.ON
     return _aggregate_lacp_mode(document, aggregate) or BundleMode.ON
@@ -87,9 +89,9 @@ def adapt_bundle(document, name):
     只修改与模拟成员数量直接相关的门限，保留业务主口及其他配置不动。
     """
     result = InterfaceAdaptationOutcome()
-    node = document._find_interface_node(name)
+    node = find_interface_node(document, name)
     if node is None:
-        document.ensure_parent_interface(name)
+        ensure_parent_interface(document, name)
         return result
     for child in _walk(document, node):
         if not document._parser.is_effective(child):
@@ -115,3 +117,34 @@ def adapt_bundle(document, name):
                 }
             )
     return result
+
+
+class JunosBundleOperations:
+    """提供 Junos 聚合接口能力。
+
+    能力对象只保存当前文档引用，不缓存聚合查询结果。
+    """
+
+    __slots__ = ("_document",)
+
+    def __init__(self, document):
+        """绑定聚合能力所属文档。
+
+        构造函数不读取或修改配置。
+        """
+        self._document = document
+
+    def mode(self, member: str) -> BundleMode:
+        """返回成员聚合协商模式。
+
+        无法唯一确认时必须返回未知。
+        """
+        return bundle_mode(self._document, member)
+
+    def adapt(self, name: str) -> InterfaceAdaptationOutcome:
+        """调整聚合模拟门限。
+
+        修改通过局部批量编辑事务提交。
+        """
+        with self._document.edit().bulk():
+            return adapt_bundle(self._document, name)

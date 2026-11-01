@@ -29,6 +29,7 @@ from ..document import (
     canonical_junos_interface,
 )
 from ..support.identity import resolve_junos_identity
+from ..syntax.ast import base_header as syntax_base_header
 
 
 @dataclass(frozen=True, slots=True)
@@ -138,7 +139,7 @@ class JunosGroupExpander:
         具体归一化由 ``JunosDocument`` 统一实现，会去除 ``inactive:``、
         ``protect:`` 等控制前缀，避免展开器与解析器采用不同语义。
         """
-        return JunosDocument._base_header(header)
+        return syntax_base_header(header)
 
     @classmethod
     def _selector_matches(
@@ -1743,3 +1744,32 @@ def _record_ambiguity(
         f"Junos 路径 {record['path']} 下的未知语句族 "
         f"{record['family']} 可能存在继承冲突，{resolution}"
     )
+
+
+class JunosGroupOperations:
+    """提供 Junos Group 展开能力。
+
+    能力对象只组合现有展开器，不持有额外配置状态。
+    """
+
+    __slots__ = ("_document",)
+
+    def __init__(self, document: JunosDocument):
+        """绑定 Group 展开所属文档。
+
+        构造阶段不解析或展开任何 Group。
+        """
+        self._document = document
+
+    def expand(
+        self,
+        known_interfaces: Iterable[str],
+        policy: WashingPolicy | None = None,
+    ) -> GroupExpansionOutcome:
+        """展开当前配置引用的全部 Group。
+
+        返回结果保留既有事务回滚和冲突诊断语义。
+        """
+        return JunosGroupExpander(self._document).expand_groups(
+            known_interfaces, policy
+        )

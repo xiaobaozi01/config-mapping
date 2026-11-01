@@ -197,7 +197,10 @@ class _BgpSourcePruner:
         try:
             return "address", str(ipaddress.ip_address(value))
         except ValueError:
-            return "interface", self.document.resolve_interface(value)
+            return (
+                "interface",
+                self.document.interfaces.analysis.resolve_interface(value),
+            )
 
     def source_lost(self, source: tuple[str, str], vrf: str) -> bool:
         """判断一个本地源是否已被裁剪。
@@ -495,10 +498,12 @@ class _CiscoPruner:
         self.outcome = outcome
         self.record = record
         self.protected = {
-            interface_parent(self.document.resolve_interface(name))
+            interface_parent(
+                self.document.interfaces.analysis.resolve_interface(name)
+            )
             for name in protected_parents
         }
-        members = self.document.bundle_members()
+        members = self.document.interfaces.analysis.bundle_members()
         self.protected.update(
             bundle
             for member, bundle in members.items()
@@ -518,7 +523,7 @@ class _CiscoPruner:
         self.removed = {
             name
             for name in self.names
-            if self.document.interface_kind(name)
+            if self.document.interfaces.analysis.interface_kind(name)
             in {InterfaceKind.PHYSICAL, InterfaceKind.BUNDLE}
             and interface_parent(name) not in self.protected
         }
@@ -541,7 +546,7 @@ class _CiscoPruner:
         ]
         for domain, path in domains:
             attachments = {
-                self.document.resolve_interface(
+                self.document.interfaces.analysis.resolve_interface(
                     child.header.split(maxsplit=1)[1]
                 )
                 for child in domain.nodes
@@ -549,7 +554,7 @@ class _CiscoPruner:
                 and re.match(r"^interface\s", child.header, re.I)
             }
             gateways = {
-                self.document.resolve_interface(
+                self.document.interfaces.analysis.resolve_interface(
                     re.sub(
                         r"^routed\s+interface\s+", "", child.header, flags=re.I
                     )
@@ -584,7 +589,7 @@ class _CiscoPruner:
             ):
                 continue
             attachments = {
-                self.document.resolve_interface(
+                self.document.interfaces.analysis.resolve_interface(
                     child.header.split(maxsplit=1)[1]
                 )
                 for child in service.nodes
@@ -607,7 +612,8 @@ class _CiscoPruner:
         self.removed.update(
             name
             for name in self.names
-            if self.document.interface_kind(name) == InterfaceKind.GATEWAY
+            if self.document.interfaces.analysis.interface_kind(name)
+            == InterfaceKind.GATEWAY
             and name not in self.retained_gateways
         )
         self.removed_addresses: set[str] = set()
@@ -935,7 +941,7 @@ def _tracked_interface(document, node):
         if (match := re.fullmatch(r"interface\s+(.+)", child.header, re.I))
     ]
     return (
-        document.resolve_interface(interfaces[0])
+        document.interfaces.analysis.resolve_interface(interfaces[0])
         if len(interfaces) == 1
         else None
     )

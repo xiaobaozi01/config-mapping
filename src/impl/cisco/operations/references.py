@@ -9,7 +9,9 @@ def replace_references(document, replacements: dict[str, list[str]]) -> None:
     展开基于原始树状态并跳过接口定义 header，避免新目标再次作为源产生级联替换。
     """
     canonical = {
-        document.resolve_interface(source): list(dict.fromkeys(targets))
+        document.interfaces.analysis.resolve_interface(source): list(
+            dict.fromkeys(targets)
+        )
         for source, targets in replacements.items()
         if targets and targets != [source]
     }
@@ -25,12 +27,19 @@ def replace_references(document, replacements: dict[str, list[str]]) -> None:
         matches = [
             match
             for match in _CISCO_INTERFACE_TOKEN.finditer(value)
-            if document.resolve_interface(match.group()).lower() in source_keys
+            if document.interfaces.analysis.resolve_interface(
+                match.group()
+            ).lower()
+            in source_keys
         ]
         variants, position = [""], 0
         for match in matches:
             targets = canonical[
-                source_keys[document.resolve_interface(match.group()).lower()]
+                source_keys[
+                    document.interfaces.analysis.resolve_interface(
+                        match.group()
+                    ).lower()
+                ]
             ]
             variants = [
                 current + value[position : match.start()] + target
@@ -93,3 +102,26 @@ def _rewrite_reference_node(transaction, node, expand, *, skip_header=False):
         transaction.replace_header(node, headers[0], "改写接口引用")
     for child in node.nodes:
         _rewrite_reference_node(transaction, child, expand)
+
+
+class CiscoReferenceOperations:
+    """提供 IOS XR 接口引用改写能力。
+
+    能力对象只调用现有引用展开函数，不保存树状态。
+    """
+
+    __slots__ = ("_document",)
+
+    def __init__(self, document):
+        """绑定引用能力所属文档。
+
+        构造阶段不读取或修改配置。
+        """
+        self._document = document
+
+    def replace(self, replacements: dict[str, list[str]]) -> None:
+        """按映射表重写接口引用。
+
+        引用遍历通过 Document Editor 统一提交。
+        """
+        replace_references(self._document, replacements)

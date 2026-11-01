@@ -29,7 +29,8 @@ def select_interfaces(
     from ..operations.interfaces import interface_nodes
 
     parents = {
-        interface_parent(document.resolve_interface(name)) for name in targets
+        interface_parent(document.interfaces.analysis.resolve_interface(name))
+        for name in targets
     }
     return tuple(
         block
@@ -37,7 +38,7 @@ def select_interfaces(
         if (name := block.interface_name)
         and interface_parent(name) in parents
         and (include_subinterfaces or name == interface_parent(name))
-        and document.interface_kind(name) in kinds
+        and document.interfaces.analysis.interface_kind(name) in kinds
     )
 
 
@@ -73,7 +74,7 @@ def compatibility_interfaces_scope(document, context):
     from ..operations.interfaces import interface_nodes
 
     parents = {
-        interface_parent(document.resolve_interface(name))
+        interface_parent(document.interfaces.analysis.resolve_interface(name))
         for name in context.target_interfaces
     }
     return tuple(
@@ -82,6 +83,7 @@ def compatibility_interfaces_scope(document, context):
         if (name := block.interface_name)
         and (
             interface_parent(name) in parents
-            or document.interface_kind(name) == InterfaceKind.GATEWAY
+            or document.interfaces.analysis.interface_kind(name)
+            == InterfaceKind.GATEWAY
         )
     )

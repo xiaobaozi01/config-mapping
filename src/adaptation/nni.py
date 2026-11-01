@@ -16,6 +16,7 @@ from .models import (
     MIN_PROFILE_INTERFACE_COUNT,
     RESERVED_NNI_INTERFACE_COUNT,
     ConversionContext,
+    DeviceContext,
     EventKind,
     InterfaceMapping,
     Link,
@@ -284,6 +285,26 @@ class _NniAnalysis:
     uncompressible_rows: frozenset[int]
 
 
+def _resolve_nni_endpoint(
+    device: DeviceContext,
+    raw_interface: str,
+    member_map: dict[str, str],
+) -> tuple[str, str | None, bool]:
+    """规范化链路端点并判断聚合成员是否携带独立业务。
+
+    父口身份用于端口分配，成员业务状态用于决定该链路能否参与压缩。
+    """
+    analysis = device.document.interfaces.analysis
+    source = analysis.resolve_interface(raw_interface)
+    parent = interface_parent(source)
+    bundle = member_map.get(parent)
+    return (
+        parent,
+        bundle,
+        bool(bundle and analysis.interface_has_business(parent)),
+    )
+
+
 class NNIHandler:
     """识别并保留聚合 NNI，再分配目标镜像物理接口。
 
@@ -447,9 +468,11 @@ class NNIHandler:
             doc = context.devices[name].document
             member = analysis.resolved[(link.row, name)]
             bundle = analysis.bundles[(link.row, name)]
-            mode = doc.bundle_mode(member) if bundle else BundleMode.ON
+            mode = doc.bundles.mode(member) if bundle else BundleMode.ON
             modes.append(mode)
-            if bundle and doc.bundle_binding_is_ambiguous(member):
+            if bundle and doc.interfaces.analysis.bundle_binding_is_ambiguous(
+                member
+            ):
                 context.errors.append(
                     f"设备 {name} 成员 {member} 声明了多个不同的聚合绑定"
                 )
@@ -546,7 +569,9 @@ class NNIHandler:
                 if name in context.devices:
                     protected[name].add(
                         interface_parent(
-                            context.devices[name].document.resolve_interface(
+                            context.devices[
+                                name
+                            ].document.interfaces.analysis.resolve_interface(
                                 interface
                             )
                         )
@@ -554,7 +579,9 @@ class NNIHandler:
         for name, device in context.devices.items():
             protected[name].update(
                 interface_parent(
-                    device.document.resolve_interface(mapping.source_interface)
+                    device.document.interfaces.analysis.resolve_interface(
+                        mapping.source_interface
+                    )
                 )
                 for mapping in device.mappings
                 if mapping.action == MappingAction.SKIP
@@ -585,7 +612,7 @@ class NNIHandler:
         # member_maps 的方向是“物理成员 -> 聚合父口”。后续既用它判断链路
         # 是否属于 Bundle/ae，也用它找出缩减后不再需要的物理成员。
         member_maps = {
-            name: item.document.bundle_members()
+            name: item.document.interfaces.analysis.bundle_members()
             for name, item in context.devices.items()
         }
         # 两个索引都以 (Excel 行号, 设备名) 为键，因为同一条链路的 A/Z
@@ -599,20 +626,22 @@ class NNIHandler:
                 if device_name not in context.devices:
                     continue
                 device = context.devices[device_name]
-                # resolve_interface 处理厂商别名，interface_parent 再去掉 unit/
-                # 子接口后缀；NNI 的物理合法性必须在父接口层面判断。
-                source = device.document.resolve_interface(raw_interface)
-                parent = interface_parent(source)
+                parent, bundle, has_business = _resolve_nni_endpoint(
+                    device,
+                    raw_interface,
+                    member_maps[device_name],
+                )
                 resolved[(link.row, device_name)] = parent
-                bundle = member_maps[device_name].get(parent)
                 bundles[(link.row, device_name)] = bundle
-                if bundle and device.document.interface_has_business(parent):
+                if has_business:
                     uncompressible_rows.add(link.row)
                     context.warnings.append(
                         f"链接表第 {link.row} 行：设备 {device_name} 的聚合成员 "
                         f"{parent} 含独立业务，不参与聚合压缩"
                     )
-                kind = device.document.interface_kind(parent)
+                kind = device.document.interfaces.analysis.interface_kind(
+                    parent
+                )
                 if kind == InterfaceKind.PHYSICAL:
                     continue
                 message = (
@@ -724,7 +753,7 @@ class NNIHandler:
             member for member, bundle in members.items() if bundle in bundles
         }
         for source in selected | removed_members:
-            doc.remove_interface(source, include_children=True)
+            doc.interfaces.transform.remove(source, include_children=True)
         if not self._clean_removed_members(
             context, device_name, removed_members - selected
         ):
@@ -742,7 +771,7 @@ class NNIHandler:
         if not removed:
             return True
         device = context.devices[device_name]
-        outcome = device.document.prune_interface_dependencies(
+        outcome = device.document.pruning.prune_interface_dependencies(
             removed,
             strict_input_validation=context.strict_input_validation,
         )
@@ -762,7 +791,12 @@ class NNIHandler:
         同一后缀逐一映射可保留已有 unit 业务，同时让审计记录与最终接口树一致。
         """
         target_names = dict.fromkeys(
-            [plan.target, *device.document.logical_names_under(plan.target)]
+            [
+                plan.target,
+                *device.document.interfaces.analysis.logical_names_under(
+                    plan.target
+                ),
+            ]
         )
         for target_name in target_names:
             suffix = target_name[len(plan.target) :]
@@ -896,7 +930,7 @@ def _stage_plans(
         source = plan.source_members[0]
         selected.add(source)
         placeholder = f"ADAPT-NNI-{index}"
-        doc.clone_interface_tree(source, placeholder, strip_bundle=False)
+        doc.interfaces.transform.clone(source, placeholder, strip_bundle=False)
         staged.append((source, placeholder, plan))
     return staged, selected
 
@@ -908,8 +942,10 @@ def _apply_staged_plans(device, device_name: str, staged) -> None:
     """
     doc = device.document
     for source, placeholder, plan in staged:
-        doc.rename_interface_tree(placeholder, plan.target, strip_bundle=False)
-        doc.ensure_parent_interface(plan.target)
+        doc.interfaces.transform.rename(
+            placeholder, plan.target, strip_bundle=False
+        )
+        doc.interfaces.transform.ensure_parent(plan.target)
         NNIHandler._record_endpoint_mappings(device, device_name, source, plan)
 
 
@@ -947,7 +983,9 @@ def _record_preserved_bundles(
     """
     doc = device.document
     for bundle in sorted(bundles):
-        for name in dict.fromkeys([bundle, *doc.logical_names_under(bundle)]):
+        for name in dict.fromkeys(
+            [bundle, *doc.interfaces.analysis.logical_names_under(bundle)]
+        ):
             device.mappings.append(
                 InterfaceMapping(
                     device=device_name,
@@ -958,7 +996,7 @@ def _record_preserved_bundles(
                     reason="保留聚合业务接口类型和引用",
                 )
             )
-        outcome = doc.adapt_bundle(bundle)
+        outcome = doc.bundles.adapt(bundle)
         device.errors.extend(outcome.errors)
         device.warnings.extend(outcome.warnings)
         for warning in outcome.warnings:

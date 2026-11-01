@@ -9,6 +9,7 @@ from adaptation.cleaning_rules import CleaningRulesHandler
 from impl.cisco.document import CiscoDocument
 from impl.common.domain.interface import referenced_interface_names
 from impl.juniper.document import JunosDocument
+from impl.juniper.operations import interfaces as junos_interfaces
 
 FIXTURES = Path(__file__).parent / "fixtures" / "interfaces"
 
@@ -41,7 +42,8 @@ class CiscoInterfaceBusinessTest(unittest.TestCase):
         self.assertTrue(block.is_preconfigured_interface)
         self.assertEqual(block.interface_name, "HundredGigE0/3/0/2")
         self.assertEqual(
-            document.interface_kind(block.interface_name), "physical"
+            document.interfaces.analysis.interface_kind(block.interface_name),
+            "physical",
         )
 
     def test_ptp_cleanup_only_deactivates_ptp_interface_blocks(self):
@@ -54,13 +56,16 @@ class CiscoInterfaceBusinessTest(unittest.TestCase):
             " synchronous-ethernet prefer-interface ptp-receiver\n!\n"
         )
         ptp_block = document.root.nodes[2]
-        self.assertEqual(document.interface_kind("PTP0/RP0/CPU0/0"), "virtual")
+        self.assertEqual(
+            document.interfaces.analysis.interface_kind("PTP0/RP0/CPU0/0"),
+            "virtual",
+        )
         rule = next(
             item
             for item in CleaningRulesHandler._configured_rules()
             if item.rule_id == "cisco.remove.ptp.interface"
         )
-        hits = document.apply_cleaning_rule(
+        hits = document.cleaning.apply_rule(
             rule.path,
             rule.match,
             rule.action,
@@ -83,7 +88,7 @@ class CiscoInterfaceBusinessTest(unittest.TestCase):
             interface_config("cisco_unknown_l2_attachment.cfg")
         )
 
-        business = document.business_interface_names()
+        business = document.interfaces.analysis.business_interface_names()
         self.assertNotIn("FutureVirtual0.500", business)
         self.assertNotIn("BVI500", business)
 
@@ -93,12 +98,15 @@ class CiscoInterfaceBusinessTest(unittest.TestCase):
             interface_config("cisco_bvi_vlan_inference.cfg")
         )
 
-        specs = {spec.name: spec for spec in document.interface_specs()}
+        specs = {
+            spec.name: spec
+            for spec in document.interfaces.analysis.interface_specs()
+        }
         self.assertIsNone(specs["BVI300"].vlan)
         self.assertEqual(specs["BVI300"].inner_vlan, 100)
         self.assertIsNone(specs["BVI400"].vlan)
         self.assertIsNone(specs["BVI400"].inner_vlan)
-        business = document.business_interface_names()
+        business = document.interfaces.analysis.business_interface_names()
         self.assertIn("BVI300", business)
         self.assertNotIn("BVI400", business)
 
@@ -118,9 +126,15 @@ class CiscoInterfaceBusinessTest(unittest.TestCase):
             "!\n"
         )
 
-        self.assertFalse(plain.interface_has_business("GigabitEthernet0/0/0/0"))
+        self.assertFalse(
+            plain.interfaces.analysis.interface_has_business(
+                "GigabitEthernet0/0/0/0"
+            )
+        )
         self.assertTrue(
-            addressed.interface_has_business("GigabitEthernet0/0/0/0")
+            addressed.interfaces.analysis.interface_has_business(
+                "GigabitEthernet0/0/0/0"
+            )
         )
 
 
@@ -132,9 +146,13 @@ class JunosInterfaceClassificationTest(unittest.TestCase):
             " ae10 { mtu 9192; unit 0 { family inet { address 192.0.2.1/31; } } }"
             " }"
         )
-        document.rename_interface_tree("ae10", "ge-0/0/0", strip_bundle=True)
-        target = document._interface_nodes()[0]
-        self.assertEqual(document._interface_name(target), "ge-0/0/0")
+        document.interfaces.transform.rename(
+            "ae10", "ge-0/0/0", strip_bundle=True
+        )
+        target = junos_interfaces.interface_nodes(document)[0]
+        self.assertEqual(
+            junos_interfaces.interface_name(document, target), "ge-0/0/0"
+        )
         self.assertEqual(
             [
                 child.header
@@ -143,7 +161,7 @@ class JunosInterfaceClassificationTest(unittest.TestCase):
             ],
             ["mtu 9192"],
         )
-        for unit in document._unit_nodes(target):
+        for unit in junos_interfaces.unit_nodes(document, target):
             self.assertFalse(
                 any(child.header.startswith("mtu ") for child in unit.nodes)
             )
@@ -153,11 +171,14 @@ class JunosInterfaceClassificationTest(unittest.TestCase):
         document = JunosDocument(
             interface_config("junos_virtual_unknown_classification.cfg")
         )
-        kinds = {spec.parent: spec.kind for spec in document.interface_specs()}
+        kinds = {
+            spec.parent: spec.kind
+            for spec in document.interfaces.analysis.interface_specs()
+        }
         self.assertEqual(kinds["ge-0/0/0"], "physical")
         self.assertEqual(kinds["gr-0/0/0"], "virtual")
         self.assertEqual(kinds["future0"], "unknown")
-        business = document.business_interface_names()
+        business = document.interfaces.analysis.business_interface_names()
         self.assertNotIn("gr-0/0/0.0", business)
         self.assertNotIn("future0.0", business)
 
@@ -165,11 +186,14 @@ class JunosInterfaceClassificationTest(unittest.TestCase):
         document = JunosDocument(
             interface_config("junos_inactive_interfaces_units.cfg")
         )
-        specs = document.interface_specs()
+        specs = document.interfaces.analysis.interface_specs()
 
         self.assertEqual([spec.name for spec in specs], ["ge-0/0/1.300"])
         self.assertEqual(specs[0].vlan, 301)
-        self.assertEqual(document.business_interface_names(), {"ge-0/0/1.300"})
+        self.assertEqual(
+            document.interfaces.analysis.business_interface_names(),
+            {"ge-0/0/1.300"},
+        )
         rendered = document.render()
         self.assertIn("ge-0/0/1 {", rendered)
         self.assertIn("inactive: unit 200 {", rendered)
@@ -189,8 +213,12 @@ class JunosInterfaceClassificationTest(unittest.TestCase):
             "} }"
         )
 
-        self.assertFalse(plain.interface_has_business("ge-0/0/0"))
-        self.assertTrue(business.interface_has_business("ge-0/0/0"))
+        self.assertFalse(
+            plain.interfaces.analysis.interface_has_business("ge-0/0/0")
+        )
+        self.assertTrue(
+            business.interfaces.analysis.interface_has_business("ge-0/0/0")
+        )
 
 
 if __name__ == "__main__":

@@ -30,7 +30,7 @@ class JunosAstTest(unittest.TestCase):
     def test_junos_inline_blocks_are_parsed_and_expanded(self):
         source = junos_config("inline_blocks.cfg")
         document = JunosDocument(source)
-        outcome = document.expand_groups([])
+        outcome = document.groups.expand([])
         rendered = document.render()
 
         self.assertTrue(outcome.success)
@@ -118,11 +118,11 @@ class JunosAstTest(unittest.TestCase):
         document = JunosDocument(source)
 
         self.assertEqual(document.root.nodes[1].comment, "# ge-0/0/1")
-        self.assertEqual(document.business_interface_names(), set())
+        self.assertEqual(document.interfaces.analysis.business_interface_names(), set())
         self.assertEqual(
-            document.apply_cleaning_rule((), "^#|^/\\*", "delete", None), 0
+            document.cleaning.apply_rule((), "^#|^/\\*", "delete", None), 0
         )
-        document.replace_references({"ge-0/0/1": ["ge-0/0/2"]})
+        document.references.replace({"ge-0/0/1": ["ge-0/0/2"]})
         self.assertIn("# ge-0/0/1\n/* ge-0/0/1 */\n", document.render())
 
     def test_inactive_references_follow_interface_mapping(self):
@@ -136,7 +136,7 @@ class JunosAstTest(unittest.TestCase):
             " }\n}\n"
         )
 
-        document.replace_references(
+        document.references.replace(
             {
                 "ge-1/0/1.0": ["ge-0/0/1.0"],
                 "ge-1/0/2.0": ["ge-0/0/2.0", "ge-0/0/3.0"],
@@ -196,7 +196,7 @@ class JunosAstTest(unittest.TestCase):
         )
         self.assertIn("security {", document.render())
 
-        document.clean_management_access()
+        document.cleaning.clean_management_access()
         self.assertNotIn("security", document.render())
 
     def test_empty_block_policy_keeps_independent_family_statement(self):
@@ -252,7 +252,7 @@ class JunosAstTest(unittest.TestCase):
             "system { # block note\n    services {\n        # nested note\n        ssh;\n    }\n}\n"
         )
 
-        self.assertTrue(document.expand_groups([]).success)
+        self.assertTrue(document.groups.expand([]).success)
         rendered = document.render()
         self.assertIn("# top note\n", rendered)
         self.assertIn("# block note\n", rendered)

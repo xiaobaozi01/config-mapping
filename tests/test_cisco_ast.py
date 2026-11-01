@@ -67,7 +67,7 @@ class CiscoAstTest(unittest.TestCase):
         )
 
         self.assertTrue(interface.is_block)
-        outcome = document.expand_groups([])
+        outcome = document.groups.expand([])
 
         self.assertTrue(outcome.success)
         self.assertIn(" mtu 9000\n", document.render())
@@ -132,12 +132,12 @@ class CiscoAstTest(unittest.TestCase):
         self.assertEqual(
             document.root.nodes[2].comment, "!! GigabitEthernet0/0/0/1"
         )
-        self.assertEqual(document.business_interface_names(), set())
+        self.assertEqual(document.interfaces.analysis.business_interface_names(), set())
         self.assertEqual(
-            document.apply_cleaning_rule((), "^!!", "delete", None),
+            document.cleaning.apply_rule((), "^!!", "delete", None),
             0,
         )
-        document.replace_references(
+        document.references.replace(
             {"GigabitEthernet0/0/0/1": ["GigabitEthernet0/0/0/2"]}
         )
         self.assertEqual(document.render(), source.replace("\n!\n!\n", "\n!\n"))
@@ -150,7 +150,7 @@ class CiscoAstTest(unittest.TestCase):
         )
 
         self.assertTrue(
-            document.expand_groups(["GigabitEthernet0/0/0/1"]).success
+            document.groups.expand(["GigabitEthernet0/0/0/1"]).success
         )
         rendered = document.render()
         self.assertIn("!! top note\n", rendered)
@@ -177,7 +177,7 @@ class CiscoAstTest(unittest.TestCase):
             for item in CleaningRulesHandler._configured_rules()
             if item.rule_id == "cisco.remove.routing.protocol.auth.reference"
         )
-        hits = document.apply_cleaning_rule(
+        hits = document.cleaning.apply_rule(
             rule.path,
             rule.match,
             rule.action,
@@ -196,7 +196,7 @@ class CiscoAstTest(unittest.TestCase):
             cisco_config("reference_replacement_nested.cfg")
         )
 
-        document.replace_references(
+        document.references.replace(
             {
                 "Bundle-Ether10.100": [
                     "GigabitEthernet0/0/0/0.100",

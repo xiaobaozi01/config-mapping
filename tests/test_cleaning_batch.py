@@ -29,6 +29,8 @@ from impl.common.rules.cleaning import (
 )
 from impl.common.config_ast.model import tree_signature
 from impl.juniper.document import JunosDocument
+from impl.juniper.syntax.ast import base_header
+from impl.cisco.operations.cleaning import CiscoCleaningOperations
 
 
 def reference_clean(document, operations):
@@ -41,7 +43,7 @@ def reference_clean(document, operations):
     def normalized(node):
         if is_cisco:
             return node.header.strip()
-        return JunosDocument._base_header(node.header).rstrip(";").strip()
+        return base_header(node.header).rstrip(";").strip()
 
     with document.edit().bulk() as working_root:
         for action in ("delete", "replace"):
@@ -152,7 +154,7 @@ class CleaningBatchTest(unittest.TestCase):
             with self.subTest(vendor=cls.vendor):
                 document = cls(source)
                 self.assertEqual(
-                    document.apply_cleaning_rules(operations), [1, 1, 0, 1]
+                    document.cleaning.apply_rules(operations), [1, 1, 0, 1]
                 )
                 self.assertEqual(document.render().strip(), expected.strip())
 
@@ -169,7 +171,7 @@ class CleaningBatchTest(unittest.TestCase):
             with self.subTest(vendor=cls.vendor):
                 document = cls(source)
                 self.assertEqual(
-                    document.apply_cleaning_rules(operations), [0, 1, 0]
+                    document.cleaning.apply_rules(operations), [0, 1, 0]
                 )
                 if isinstance(document, CiscoDocument):
                     self.assertEqual(document.root.nodes, ())
@@ -182,7 +184,7 @@ class CleaningBatchTest(unittest.TestCase):
         for cls, source in [(CiscoDocument, "A\n"), (JunosDocument, "A;")]:
             with self.subTest(vendor=cls.vendor):
                 document = cls(source)
-                counts = document.apply_cleaning_rules(
+                counts = document.cleaning.apply_rules(
                     [
                         CleaningOperation((), "^A$", "replace", "A"),
                         CleaningOperation((), "^A$", "replace", "B"),
@@ -200,7 +202,7 @@ class CleaningBatchTest(unittest.TestCase):
             with self.subTest(vendor=cls.vendor):
                 document = cls(source)
                 self.assertEqual(
-                    document.apply_cleaning_rules(
+                    document.cleaning.apply_rules(
                         [
                             CleaningOperation((), "^A$", "replace", "B"),
                         ]
@@ -208,7 +210,7 @@ class CleaningBatchTest(unittest.TestCase):
                     [1],
                 )
                 self.assertEqual(
-                    document.apply_cleaning_rules(
+                    document.cleaning.apply_rules(
                         [
                             CleaningOperation((), "^B$", "replace", "C"),
                         ]
@@ -222,12 +224,12 @@ class CleaningBatchTest(unittest.TestCase):
             (
                 CiscoDocument,
                 "A\nOLD\n",
-                "impl.cisco.operations.configuration_cleaning",
+                "impl.cisco.operations.declarative_cleaning",
             ),
             (
                 JunosDocument,
                 "A; OLD;",
-                "impl.juniper.operations.configuration_cleaning",
+                "impl.juniper.operations.declarative_cleaning",
             ),
         ]:
             with self.subTest(vendor=cls.vendor):
@@ -248,7 +250,7 @@ class CleaningBatchTest(unittest.TestCase):
                         side_effect=track_compilation,
                     ):
                         self.assertEqual(
-                            document.apply_cleaning_rules(
+                            document.cleaning.apply_rules(
                                 [
                                     CleaningOperation((), "^OLD$", "delete"),
                                     CleaningOperation(
@@ -281,7 +283,7 @@ class CleaningBatchTest(unittest.TestCase):
             with self.subTest(vendor=cls.vendor):
                 document = cls(source)
                 self.assertEqual(
-                    document.apply_cleaning_rules(operations), [2, 0, 2]
+                    document.cleaning.apply_rules(operations), [2, 0, 2]
                 )
                 self.assertEqual(document.render().count("changed"), 2)
                 self.assertNotIn("wrong", document.render())
@@ -289,14 +291,14 @@ class CleaningBatchTest(unittest.TestCase):
     def test_formatting_inactive_protect_and_leaf_semicolons(self):
         operations = [CleaningOperation(("**",), "old", "replace", "new")]
         cisco = CiscoDocument("! old comment\n\nparent\n old\n!\n")
-        self.assertEqual(cisco.apply_cleaning_rules(operations), [1])
+        self.assertEqual(cisco.cleaning.apply_rules(operations), [1])
         self.assertIn("! old comment", cisco.render())
         self.assertIn(" new\n", cisco.render())
 
         junos = JunosDocument(
             "inactive: old { old; } protect: old { protect: old; } # old comment\n"
         )
-        self.assertEqual(junos.apply_cleaning_rules(operations), [2])
+        self.assertEqual(junos.cleaning.apply_rules(operations), [2])
         self.assertEqual(junos.root.nodes[0].header, "inactive: old")
         self.assertEqual(junos.root.nodes[0].nodes[0].header, "old")
         self.assertEqual(junos.root.nodes[1].header, "new")
@@ -310,7 +312,7 @@ class CleaningBatchTest(unittest.TestCase):
                     document = cls(source)
                     before = tree_signature(document.root)
                     with self.assertRaisesRegex(ValueError, "不支持的清洗动作"):
-                        document.apply_cleaning_rules(
+                        document.cleaning.apply_rules(
                             [
                                 CleaningOperation((), "old", "delete"),
                                 CleaningOperation((), "old", action),
@@ -322,11 +324,11 @@ class CleaningBatchTest(unittest.TestCase):
                     )
             document = cls(source)
             with self.assertRaisesRegex(ValueError, "必须提供 value"):
-                document.apply_cleaning_rules(
+                document.cleaning.apply_rules(
                     [CleaningOperation((), "old", "replace")]
                 )
             self.assertTrue(nodes(document)[0].active)
-            self.assertEqual(document.apply_cleaning_rules([]), [])
+            self.assertEqual(document.cleaning.apply_rules([]), [])
 
     def test_invalid_replacement_templates_fail_before_delete_even_without_a_match(
         self,
@@ -345,7 +347,7 @@ class CleaningBatchTest(unittest.TestCase):
                         with self.assertRaisesRegex(
                             ValueError, "第 2 条.*无效替换模板"
                         ):
-                            document.apply_cleaning_rules(
+                            document.cleaning.apply_rules(
                                 [
                                     CleaningOperation((), "^OLD$", "delete"),
                                     CleaningOperation(
@@ -367,7 +369,7 @@ class CleaningBatchTest(unittest.TestCase):
                 document = cls(source)
                 before = tree_signature(document.root)
                 with self.assertRaisesRegex(ValueError, "value 必须是字符串"):
-                    document.apply_cleaning_rules(
+                    document.cleaning.apply_rules(
                         [
                             CleaningOperation((), "^OLD$", "delete"),
                             CleaningOperation((), "^A$", "replace", 123),
@@ -390,7 +392,7 @@ class CleaningBatchTest(unittest.TestCase):
                 with self.subTest(vendor=cls.vendor, template=template):
                     document = cls(source)
                     self.assertEqual(
-                        document.apply_cleaning_rules(
+                        document.cleaning.apply_rules(
                             [
                                 CleaningOperation(
                                     (), pattern, "replace", template
@@ -411,7 +413,7 @@ class CleaningBatchTest(unittest.TestCase):
             with self.subTest(vendor=cls.vendor):
                 document = cls(source)
                 self.assertEqual(
-                    document.apply_cleaning_rule((), "old", "replace", ""), 1
+                    document.cleaning.apply_rule((), "old", "replace", ""), 1
                 )
                 self.assertEqual(nodes(document)[0].header, expected)
 
@@ -423,7 +425,7 @@ class CleaningBatchTest(unittest.TestCase):
             with self.subTest(vendor=cls.vendor):
                 document = cls(source)
                 self.assertEqual(
-                    document.apply_cleaning_rule((), "old", "replace", None), 1
+                    document.cleaning.apply_rule((), "old", "replace", None), 1
                 )
                 self.assertEqual(nodes(document)[0].header, expected)
 
@@ -441,14 +443,14 @@ class CleaningBatchTest(unittest.TestCase):
             "is_formatting",
             property(lambda node: visited.append(node) or original(node)),
         ):
-            self.assertEqual(cisco.apply_cleaning_rules(operations), [0] * 100)
+            self.assertEqual(cisco.cleaning.apply_rules(operations), [0] * 100)
         self.assertEqual(len(visited), 20)
 
         junos = JunosDocument(" ".join(f"node-{index};" for index in range(20)))
         with patch.object(
             junos._parser, "is_effective", wraps=junos._parser.is_effective
         ) as visit:
-            self.assertEqual(junos.apply_cleaning_rules(operations), [0] * 100)
+            self.assertEqual(junos.cleaning.apply_rules(operations), [0] * 100)
             self.assertEqual(visit.call_count, 40)
 
 
@@ -511,7 +513,7 @@ class CleaningBatchDifferentialTest(unittest.TestCase):
                 ):
                     actual, expected = cls(text), cls(text)
                     self.assertEqual(
-                        actual.apply_cleaning_rules(operations),
+                        actual.cleaning.apply_rules(operations),
                         reference_clean(expected, operations),
                     )
                     self.assertEqual(actual.source, expected.source)
@@ -575,15 +577,20 @@ class CleaningBatchHandlerTest(unittest.TestCase):
             code,
         ]
         context = self.context(document)
+        original_apply_rules = CiscoCleaningOperations.apply_rules
+
+        def apply_rules(operations):
+            return original_apply_rules(document.cleaning, operations)
+
         with (
             patch.object(
-                document,
-                "apply_cleaning_rules",
-                wraps=document.apply_cleaning_rules,
+                CiscoCleaningOperations,
+                "apply_rules",
+                side_effect=apply_rules,
             ) as bulk,
             patch.object(
-                document,
-                "apply_cleaning_rule",
+                CiscoCleaningOperations,
+                "apply_rule",
                 side_effect=AssertionError("single-rule dispatch"),
             ),
         ):

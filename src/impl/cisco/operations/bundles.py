@@ -84,3 +84,34 @@ def adapt_bundle(document, name):
             )
     transaction.apply()
     return result
+
+
+class CiscoBundleOperations:
+    """提供 IOS XR 聚合接口能力。
+
+    能力对象只保存当前文档引用，不缓存聚合查询结果。
+    """
+
+    __slots__ = ("_document",)
+
+    def __init__(self, document):
+        """绑定聚合能力所属文档。
+
+        构造函数不读取或修改配置。
+        """
+        self._document = document
+
+    def mode(self, member: str) -> BundleMode:
+        """返回成员聚合协商模式。
+
+        无法唯一确认时必须返回未知。
+        """
+        return bundle_mode(self._document, member)
+
+    def adapt(self, name: str) -> InterfaceAdaptationOutcome:
+        """调整聚合模拟门限。
+
+        修改通过局部批量编辑事务提交。
+        """
+        with self._document.edit().bulk():
+            return adapt_bundle(self._document, name)

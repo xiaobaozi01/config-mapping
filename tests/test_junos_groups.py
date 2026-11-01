@@ -42,7 +42,7 @@ class JunosGroupExpansionTest(unittest.TestCase):
             "apply-groups ACTIVE;\n"
         )
 
-        outcome = document.expand_groups([])
+        outcome = document.groups.expand([])
         rendered = document.render()
 
         self.assertTrue(outcome.success)
@@ -59,7 +59,7 @@ class JunosGroupExpansionTest(unittest.TestCase):
             "apply-groups [ re0 re1 re10 ];\n"
         )
 
-        outcome = document.expand_groups([])
+        outcome = document.groups.expand([])
         rendered = document.render()
 
         self.assertTrue(outcome.success)
@@ -77,7 +77,7 @@ class JunosGroupExpansionTest(unittest.TestCase):
             "apply-groups re0;\n"
         )
 
-        outcome = document.expand_groups([])
+        outcome = document.groups.expand([])
 
         self.assertTrue(outcome.success)
         self.assertIn("host-name primary;", document.render())
@@ -89,13 +89,13 @@ class JunosGroupExpansionTest(unittest.TestCase):
             "groups { re1 { system { host-name standby; } } }\n"
             "apply-groups re1;\n"
         )
-        self.assertTrue(only_re1.expand_groups([]).success)
+        self.assertTrue(only_re1.groups.expand([]).success)
         self.assertEqual(only_re1.render().strip(), "")
 
         unused_re1 = JunosDocument(
             "groups { re1 { system { host-name standby; } } }\n"
         )
-        self.assertTrue(unused_re1.expand_groups([]).success)
+        self.assertTrue(unused_re1.groups.expand([]).success)
         self.assertEqual(unused_re1.render().strip(), "")
 
     def test_vmx_re1_pruning_rolls_back_if_other_group_is_invalid(self):
@@ -106,7 +106,7 @@ class JunosGroupExpansionTest(unittest.TestCase):
         document = JunosDocument(source)
         original_rendered = document.render()
 
-        outcome = document.expand_groups([])
+        outcome = document.groups.expand([])
 
         self.assertFalse(outcome.success)
         self.assertEqual(document.render(), original_rendered)
@@ -118,7 +118,7 @@ class JunosGroupExpansionTest(unittest.TestCase):
             "apply-groups re1;\n"
         )
 
-        outcome = document.expand_groups(
+        outcome = document.groups.expand(
             [], policy=WashingPolicy(junos_excluded_groups=())
         )
 
@@ -127,7 +127,7 @@ class JunosGroupExpansionTest(unittest.TestCase):
 
     def test_junos_wildcard_group_expansion(self):
         document = JunosDocument(group_config("junos_group_wildcard.cfg"))
-        outcome = document.expand_groups([])
+        outcome = document.groups.expand([])
         rendered = document.render()
         self.assertFalse(outcome.warnings)
         self.assertTrue(outcome.events)
@@ -143,7 +143,7 @@ class JunosGroupExpansionTest(unittest.TestCase):
             "interface xe-9/0/0.0; interface ae1.0; } }\n"
         )
 
-        outcome = document.expand_groups([])
+        outcome = document.groups.expand([])
 
         self.assertTrue(outcome.success)
         self.assertEqual(outcome.identity_fallbacks, 4)
@@ -161,7 +161,7 @@ class JunosGroupExpansionTest(unittest.TestCase):
             "interface xe-9/0/1.0; interface ae1.0; } }\n"
         )
 
-        self.assertTrue(document.expand_groups([]).success)
+        self.assertTrue(document.groups.expand([]).success)
         rendered = document.render()
         self.assertEqual(rendered.count("aggregate;"), 2)
         self.assertIn("interface xe-9/0/0.0 {", rendered)
@@ -176,7 +176,7 @@ class JunosGroupExpansionTest(unittest.TestCase):
             "protocols { rsvp { apply-groups G; interface xe-9/0/0.0; } }\n"
         )
 
-        self.assertTrue(document.expand_groups([]).success)
+        self.assertTrue(document.groups.expand([]).success)
         self.assertIn("interface xe-9/0/0.0;", document.render())
 
     def test_group_without_matching_descendant_keeps_original_leaf(self):
@@ -186,14 +186,14 @@ class JunosGroupExpansionTest(unittest.TestCase):
             "protocols { rsvp { apply-groups G; interface xe-9/0/0.0; } }\n"
         )
 
-        self.assertTrue(document.expand_groups([]).success)
+        self.assertTrue(document.groups.expand([]).success)
         self.assertIn("interface xe-9/0/0.0;", document.render())
 
     def test_junos_multiple_group_containers_share_dependency_index(self):
         document = JunosDocument(
             group_config("junos_multiple_containers_shared_index.cfg")
         )
-        outcome = document.expand_groups([])
+        outcome = document.groups.expand([])
         rendered = document.render()
 
         self.assertTrue(outcome.success)
@@ -215,7 +215,7 @@ class JunosGroupExpansionTest(unittest.TestCase):
         document = JunosDocument(
             group_config("junos_multiple_containers_normalize.cfg")
         )
-        outcome = document.expand_groups([])
+        outcome = document.groups.expand([])
         rendered = document.render()
 
         self.assertTrue(outcome.success)
@@ -227,7 +227,7 @@ class JunosGroupExpansionTest(unittest.TestCase):
         document = JunosDocument(
             group_config("junos_duplicate_definitions_merge.cfg")
         )
-        outcome = document.expand_groups([])
+        outcome = document.groups.expand([])
         rendered = document.render()
 
         self.assertTrue(outcome.success)
@@ -238,7 +238,7 @@ class JunosGroupExpansionTest(unittest.TestCase):
     def test_full_expansion_rejects_unrelated_invalid_junos_group(self):
         source = group_config("junos_invalid_unrelated_group.cfg")
         document = JunosDocument(source)
-        outcome = document.expand_groups([])
+        outcome = document.groups.expand([])
         self.assertFalse(outcome.success)
         self.assertTrue(
             any("MISSING" in warning for warning in outcome.warnings)
@@ -247,7 +247,7 @@ class JunosGroupExpansionTest(unittest.TestCase):
 
     def test_junos_expands_non_interface_group(self):
         document = JunosDocument(group_config("junos_non_interface_group.cfg"))
-        outcome = document.expand_groups([])
+        outcome = document.groups.expand([])
         self.assertTrue(outcome.success)
         self.assertNotIn("groups {", document.render())
         self.assertNotIn("apply-groups", document.render())
@@ -255,7 +255,7 @@ class JunosGroupExpansionTest(unittest.TestCase):
 
     def test_junos_nested_list_and_except_precedence(self):
         document = JunosDocument(group_config("junos_group_precedence.cfg"))
-        outcome = document.expand_groups([])
+        outcome = document.groups.expand([])
         rendered = document.render()
         self.assertIn("mtu 3333;", rendered)
         self.assertIn("mtu 2222;", rendered)
@@ -268,7 +268,7 @@ class JunosGroupExpansionTest(unittest.TestCase):
     def test_junos_group_can_apply_groups_transitively(self):
         """Group 内的传递引用按本地、父 Group、子 Group 的顺序求值。"""
         document = JunosDocument(group_config("junos_group_transitive.cfg"))
-        outcome = document.expand_groups([])
+        outcome = document.groups.expand([])
         rendered = document.render()
         self.assertTrue(outcome.success)
         self.assertFalse(outcome.warnings)
@@ -289,7 +289,7 @@ class JunosGroupExpansionTest(unittest.TestCase):
     def test_junos_nested_group_honors_apply_groups_except(self):
         """Group 内继承的 Group 可在更深层级被 apply-groups-except 排除。"""
         document = JunosDocument(group_config("junos_nested_group_except.cfg"))
-        outcome = document.expand_groups([])
+        outcome = document.groups.expand([])
         rendered = document.render()
         self.assertTrue(outcome.success)
         self.assertEqual(rendered.count("mtu 9000;"), 1)
@@ -304,7 +304,7 @@ class JunosGroupExpansionTest(unittest.TestCase):
         """只有 except 引用时也必须校验 group 是否已定义。"""
         source = group_config("junos_undefined_except.cfg")
         document = JunosDocument(source)
-        outcome = document.expand_groups([])
+        outcome = document.groups.expand([])
         self.assertFalse(outcome.success)
         self.assertTrue(
             any(
@@ -318,7 +318,7 @@ class JunosGroupExpansionTest(unittest.TestCase):
         """一次报告同一语句中的全部未定义 except，方便集中修复。"""
         source = group_config("junos_every_undefined_exclusion.cfg")
         document = JunosDocument(source)
-        outcome = document.expand_groups([])
+        outcome = document.groups.expand([])
 
         self.assertFalse(outcome.success)
         self.assertEqual(len(outcome.warnings), 2)
@@ -334,7 +334,7 @@ class JunosGroupExpansionTest(unittest.TestCase):
         """已选中 group 内的 except 引用缺失时整体回滚。"""
         source = group_config("junos_selected_group_validates_except.cfg")
         document = JunosDocument(source)
-        outcome = document.expand_groups([])
+        outcome = document.groups.expand([])
         self.assertFalse(outcome.success)
         self.assertTrue(
             any("MISSING" in warning for warning in outcome.warnings)
@@ -348,7 +348,7 @@ class JunosGroupExpansionTest(unittest.TestCase):
         document = JunosDocument(
             group_config("junos_inactive_unused_exclusions.cfg")
         )
-        outcome = document.expand_groups([])
+        outcome = document.groups.expand([])
         rendered = document.render()
         self.assertTrue(outcome.success)
         self.assertFalse(outcome.warnings)
@@ -361,7 +361,7 @@ class JunosGroupExpansionTest(unittest.TestCase):
     def test_junos_apply_groups_except_does_not_create_dependency(self):
         """合法 except 引用只校验存在性，不会单独选中或展开 group。"""
         document = JunosDocument(group_config("junos_except_no_dependency.cfg"))
-        outcome = document.expand_groups([])
+        outcome = document.groups.expand([])
         rendered = document.render()
         self.assertTrue(outcome.success)
         self.assertNotIn("已展开 Junos 配置组 EXCLUDED", outcome.events)
@@ -372,7 +372,7 @@ class JunosGroupExpansionTest(unittest.TestCase):
         """循环与间接未定义引用均在写回前失败并保留原配置。"""
         cycle = group_config("junos_group_cycle.cfg")
         cycle_document = JunosDocument(cycle)
-        cycle_outcome = cycle_document.expand_groups([])
+        cycle_outcome = cycle_document.groups.expand([])
         self.assertFalse(cycle_outcome.success)
         self.assertTrue(
             any("循环引用" in warning for warning in cycle_outcome.warnings)
@@ -381,7 +381,7 @@ class JunosGroupExpansionTest(unittest.TestCase):
 
         missing = group_config("junos_group_missing_reference.cfg")
         missing_document = JunosDocument(missing)
-        missing_outcome = missing_document.expand_groups([])
+        missing_outcome = missing_document.groups.expand([])
         self.assertFalse(missing_outcome.success)
         self.assertTrue(
             any("MISSING" in warning for warning in missing_outcome.warnings)
@@ -393,7 +393,7 @@ class JunosGroupExpansionTest(unittest.TestCase):
         document = JunosDocument(
             group_config("junos_unapplied_definitions_removed.cfg")
         )
-        outcome = document.expand_groups([])
+        outcome = document.groups.expand([])
         rendered = document.render()
         self.assertTrue(outcome.success)
         self.assertNotIn("groups {", rendered)
@@ -403,7 +403,7 @@ class JunosGroupExpansionTest(unittest.TestCase):
     def test_group_expansion_rolls_back_on_unresolved_reference(self):
         source = group_config("junos_group_unresolved.cfg")
         document = JunosDocument(source)
-        outcome = document.expand_groups([])
+        outcome = document.groups.expand([])
         self.assertFalse(outcome.success)
         self.assertTrue(outcome.warnings)
         self.assertIn("apply-groups MISSING", document.render())
@@ -412,7 +412,7 @@ class JunosGroupExpansionTest(unittest.TestCase):
     def test_undefined_root_group_fails_without_any_definitions(self):
         junos_source = group_config("junos_undefined_root_group.cfg")
         junos = JunosDocument(junos_source)
-        junos_outcome = junos.expand_groups([])
+        junos_outcome = junos.groups.expand([])
         self.assertFalse(junos_outcome.success)
         self.assertTrue(
             any("MISSING" in item for item in junos_outcome.warnings)
@@ -423,7 +423,7 @@ class JunosGroupExpansionTest(unittest.TestCase):
         document = JunosDocument(
             group_config("junos_inactive_apply_groups.cfg")
         )
-        outcome = document.expand_groups([])
+        outcome = document.groups.expand([])
         rendered = document.render()
 
         self.assertTrue(outcome.success)
@@ -440,7 +440,7 @@ class JunosGroupExpansionTest(unittest.TestCase):
         document = JunosDocument(
             group_config("junos_inactive_group_definition.cfg")
         )
-        outcome = document.expand_groups([])
+        outcome = document.groups.expand([])
         rendered = document.render()
 
         self.assertTrue(outcome.success)
@@ -454,7 +454,7 @@ class JunosGroupExpansionTest(unittest.TestCase):
         self,
     ):
         document = JunosDocument(group_config("junos_all_inactive_nodes.cfg"))
-        outcome = document.expand_groups([])
+        outcome = document.groups.expand([])
         rendered = document.render()
 
         self.assertTrue(outcome.success)
@@ -469,7 +469,7 @@ class JunosGroupExpansionTest(unittest.TestCase):
         document = JunosDocument(
             group_config("junos_inactive_nested_controls.cfg")
         )
-        outcome = document.expand_groups([])
+        outcome = document.groups.expand([])
         rendered = document.render()
 
         self.assertTrue(outcome.success)
@@ -482,7 +482,7 @@ class JunosGroupExpansionTest(unittest.TestCase):
         document = JunosDocument(
             group_config("junos_inactive_group_not_expanded.cfg")
         )
-        outcome = document.expand_groups([])
+        outcome = document.groups.expand([])
         rendered = document.render()
 
         self.assertTrue(outcome.success)
@@ -498,7 +498,7 @@ class JunosGroupExpansionTest(unittest.TestCase):
         document = JunosDocument(
             group_config("junos_inactive_value_before_merge.cfg")
         )
-        outcome = document.expand_groups([])
+        outcome = document.groups.expand([])
         rendered = document.render()
 
         self.assertTrue(outcome.success)
@@ -508,7 +508,7 @@ class JunosGroupExpansionTest(unittest.TestCase):
 
     def test_junos_protect_prefix_is_effective_but_removed_from_output(self):
         document = JunosDocument(group_config("junos_protect_prefix.cfg"))
-        outcome = document.expand_groups([])
+        outcome = document.groups.expand([])
         rendered = document.render()
 
         self.assertTrue(outcome.success)
@@ -521,7 +521,7 @@ class JunosGroupExpansionTest(unittest.TestCase):
         document = JunosDocument(
             group_config("junos_quoted_group_names_list.cfg")
         )
-        outcome = document.expand_groups([])
+        outcome = document.groups.expand([])
         rendered = document.render()
 
         self.assertTrue(outcome.success)
@@ -541,7 +541,7 @@ class JunosGroupExpansionTest(unittest.TestCase):
         document = JunosDocument(
             group_config("junos_quoted_nested_group_except.cfg")
         )
-        outcome = document.expand_groups([])
+        outcome = document.groups.expand([])
         rendered = document.render()
 
         self.assertTrue(outcome.success)

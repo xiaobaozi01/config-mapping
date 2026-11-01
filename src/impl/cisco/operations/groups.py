@@ -17,9 +17,10 @@ from impl.common.semantic_identity import (
     find_opaque_ambiguity,
 )
 
-from ..document import CiscoDocument, canonical_cisco_interface
+from ..document import CiscoDocument
 from ..support.identity import resolve_cisco_identity
 from ..syntax.rewrite_helpers import append_top_level
+from ..syntax.semantics import canonical_cisco_interface
 
 
 @dataclass
@@ -757,7 +758,11 @@ class CiscoGroupExpander:
             if self._document._parser.interface_name(node.header)
         }
         for candidate_name in candidate_interface_names:
-            canonical_name = self._document.resolve_interface(candidate_name)
+            canonical_name = (
+                self._document.interfaces.analysis.resolve_interface(
+                    candidate_name
+                )
+            )
             if canonical_name in existing_interface_names:
                 continue
             working_root.statements.append(
@@ -1153,3 +1158,32 @@ def _rollback_expansion(outcome: GroupExpansionOutcome) -> None:
     outcome.events.append("IOS XR group 展开未完整解析，已整体回滚并保留原配置")
     outcome.conflicts.clear()
     outcome.success = False
+
+
+class CiscoGroupOperations:
+    """提供 IOS XR Group 展开能力。
+
+    能力对象只组合现有展开器，不持有额外配置状态。
+    """
+
+    __slots__ = ("_document",)
+
+    def __init__(self, document: CiscoDocument):
+        """绑定 Group 展开所属文档。
+
+        构造阶段不解析或展开任何 Group。
+        """
+        self._document = document
+
+    def expand(
+        self,
+        known_interfaces: Iterable[str],
+        policy: WashingPolicy | None = None,
+    ) -> GroupExpansionOutcome:
+        """展开当前配置引用的全部 Group。
+
+        返回结果保留既有事务回滚和冲突诊断语义。
+        """
+        return CiscoGroupExpander(self._document).expand_groups(
+            known_interfaces, policy
+        )

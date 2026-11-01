@@ -124,7 +124,7 @@ class CiscoEmptyBlockRenderingTest(unittest.TestCase):
             "router ospf CORE\n area 0\n  interface Loopback0\n"
             "   authentication key-chain PROD\n  !\n !\n!\nend\n"
         )
-        document.apply_cleaning_rule(("**",), "^authentication", "delete", None)
+        document.cleaning.apply_rule(("**",), "^authentication", "delete", None)
         self.assertEqual(self.render_with_policy(document), "!\nend\n")
         # 策略仅控制输出，后续仍可修改或以另一策略渲染原树。
         self.assertTrue(document.root.nodes[0].active)
@@ -141,7 +141,7 @@ class CiscoEmptyBlockRenderingTest(unittest.TestCase):
             "router ospf CORE\n area 0\n  interface Loopback0\n   cost 10\n"
             "  !\n !\n!\nend\n"
         )
-        document.apply_cleaning_rule(("**",), "^cost", "delete", None)
+        document.cleaning.apply_rule(("**",), "^cost", "delete", None)
         rules = (
             (
                 ("^router ospf CORE$", "^area 0$", "^interface Loopback0$"),
@@ -159,7 +159,7 @@ class CiscoEmptyBlockRenderingTest(unittest.TestCase):
             "router ospf CORE\n area 0\n  authentication key-chain PROD\n !\n"
             " area 1\n  interface Loopback0\n !\n!\nend\n"
         )
-        document.apply_cleaning_rule(("**",), "^authentication", "delete", None)
+        document.cleaning.apply_rule(("**",), "^authentication", "delete", None)
         rules = ((("^router ospf CORE$", "*"), "omit"),)
         rendered = self.render_with_policy(
             document, default="keep", rules=rules

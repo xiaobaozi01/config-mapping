@@ -70,12 +70,14 @@ def test_junos_queries_never_enter_editing_scopes():
     with patch.object(
         document, "edit", side_effect=AssertionError("query used editor")
     ):
-        assert document.interface_specs()
-        document.bundle_members()
-        document.business_interface_names()
-        document.logical_names_under("ge-0/0/0")
-        document.interface_has_business("ge-0/0/0")
-        document.bundle_binding_is_ambiguous("ge-0/0/0")
+        assert document.interfaces.analysis.interface_specs()
+        document.interfaces.analysis.bundle_members()
+        document.interfaces.analysis.business_interface_names()
+        document.interfaces.analysis.logical_names_under("ge-0/0/0")
+        document.interfaces.analysis.interface_has_business("ge-0/0/0")
+        document.interfaces.analysis.bundle_binding_is_ambiguous(
+            "ge-0/0/0"
+        )
 
 
 @pytest.mark.parametrize("vendor", ["cisco", "juniper"])
@@ -119,13 +121,13 @@ def test_managed_rule_creates_exactly_one_rollback_copy(vendor):
 def test_bulk_error_restores_tree_cache_and_revision():
     document = JunosDocument("interfaces { ge-0/0/0 {} }")
     original = document.source
-    document.interface_specs()
+    document.interfaces.analysis.interface_specs()
     with pytest.raises(RuntimeError, match="fail"):
         with document.edit().bulk() as root:
             root.nodes[0].nodes[0].header = "ge-0/0/9"
             raise RuntimeError("fail")
     assert document.source == original
-    assert document.interface_specs()[0].name == "ge-0/0/0"
+    assert document.interfaces.analysis.interface_specs()[0].name == "ge-0/0/0"
     assert document.revision == 0
 
 

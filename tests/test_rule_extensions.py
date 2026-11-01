@@ -73,11 +73,11 @@ class RuleTemplateTest(unittest.TestCase):
         document = example_document()
         rule = examples.ADAPT_DEMO_RULE
         with patch.object(rules, "ADAPT_RULES", (rule,)):
-            outcome = document.adapt_interfaces({"Gi0/0/0/0"})
+            outcome = document.compatibility.adapt_interfaces({"Gi0/0/0/0"})
             self.assertEqual(len(outcome.changes), 1)
             self.assertEqual(outcome.changes[0]["rule_id"], rule.rule_id)
             self.assertEqual(
-                document.adapt_interfaces({"Gi0/0/0/0"}).changes, []
+                document.compatibility.adapt_interfaces({"Gi0/0/0/0"}).changes, []
             )
         target = find_interface_node(document, "Gi0/0/0/0")
         other = find_interface_node(document, "Gi0/0/0/1")
@@ -91,7 +91,7 @@ class RuleTemplateTest(unittest.TestCase):
         before = tree_signature(document.root)
         rule = examples.ADAPT_DEMO_RULE
         with patch.object(rules, "ADAPT_RULES", (rule,)):
-            result = document.adapt_interfaces({"Gi0/0/0/0", "Gi0/0/0/1"})
+            result = document.compatibility.adapt_interfaces({"Gi0/0/0/0", "Gi0/0/0/1"})
         self.assertEqual(tree_signature(document.root), before)
         self.assertEqual(result.changes, [])
         self.assertEqual(result.diagnostics[0]["rule_id"], rule.rule_id)
@@ -105,14 +105,14 @@ class RuleTemplateTest(unittest.TestCase):
             "ADAPT_RULES",
             (replace(examples.ADAPT_DEMO_RULE, rule_id="adapt"),),
         ):
-            self.assertEqual(document.adapt_interfaces(set()).changes, [])
+            self.assertEqual(document.compatibility.adapt_interfaces(set()).changes, [])
         with patch.object(
             rules,
             "VALIDATION_RULES",
             (replace(examples.VALIDATE_DEMO_RULE, rule_id="validate"),),
         ):
             self.assertEqual(
-                document.validate_interfaces(set(), set()).errors, []
+                document.validation.validate_interfaces(set(), set()).errors, []
             )
         self.assertEqual(tree_signature(document.root), before)
 
@@ -129,8 +129,8 @@ class RuleTemplateTest(unittest.TestCase):
             examples.PRUNE_DEMO_RULE,
         )
         with patch.object(rules, "PRUNE_RULES", registered):
-            outcome = document.prune_non_nni({"GigabitEthernet0/0/0/0"})
-            self.assertEqual(document.prune_non_nni(set()).changes, [])
+            outcome = document.pruning.prune_non_nni({"GigabitEthernet0/0/0/0"})
+            self.assertEqual(document.pruning.prune_non_nni(set()).changes, [])
         self.assertNotIn("RULE_DEMO_DEPENDS_ON", document.render())
         self.assertEqual(outcome.removed_interfaces, {"GigabitEthernet0/0/0/9"})
         self.assertEqual(outcome.removed_addresses, {"192.0.2.9"})
@@ -153,14 +153,14 @@ class RuleTemplateTest(unittest.TestCase):
                         mode=mode, ensure_data_interfaces_enabled=enabled
                     )
                     with patch.object(rules, "SIMULATION_RULES", (rule,)):
-                        outcome = document.adapt_to_simulation(
+                        outcome = document.simulation.adapt(
                             policy, {"Gi0/0/0/0"}
                         )
                         self.assertEqual(
                             outcome.total, int(mode != "off" and enabled)
                         )
                         self.assertEqual(
-                            document.adapt_to_simulation(
+                            document.simulation.adapt(
                                 policy, {"Gi0/0/0/0"}
                             ).total,
                             0,
@@ -184,7 +184,7 @@ class RuleTemplateTest(unittest.TestCase):
         before = tree_signature(document.root)
         rule = examples.VALIDATE_DEMO_RULE
         with patch.object(rules, "VALIDATION_RULES", (rule,)):
-            outcome = document.validate_interfaces({"Gi0/0/0/0"}, set())
+            outcome = document.validation.validate_interfaces({"Gi0/0/0/0"}, set())
         self.assertEqual(len(outcome.errors), 1)
         self.assertIn("interface GigabitEthernet0/0/0/0.100", outcome.errors[0])
         self.assertEqual(outcome.diagnostics[0]["rule_id"], rule.rule_id)
@@ -197,7 +197,7 @@ class MigratedRulesTest(unittest.TestCase):
         self,
     ):
         document = example_document("ethertype.cfg")
-        outcome = document.adapt_interfaces({"Gi0/0/0/0"})
+        outcome = document.compatibility.adapt_interfaces({"Gi0/0/0/0"})
         self.assertFalse(outcome.errors)
         self.assertEqual(len(outcome.changes), 2)
         self.assertEqual(
@@ -206,7 +206,7 @@ class MigratedRulesTest(unittest.TestCase):
         )
         self.assertEqual(document.render().count("tunneling ethertype"), 1)
         self.assertEqual(document.render().strip().splitlines()[-1], "end")
-        self.assertEqual(document.adapt_interfaces({"Gi0/0/0/0"}).changes, [])
+        self.assertEqual(document.compatibility.adapt_interfaces({"Gi0/0/0/0"}).changes, [])
         self.assertEqual(
             CiscoDocument(document.render()).render(), document.render()
         )
@@ -231,7 +231,7 @@ class MigratedRulesTest(unittest.TestCase):
         self,
     ):
         document = example_document("aggregation.cfg")
-        outcome = document.adapt_interfaces(
+        outcome = document.compatibility.adapt_interfaces(
             {"Gi0/0/0/0", "Gi0/0/0/1", "BVI100"}
         )
         self.assertFalse(outcome.errors)
@@ -252,7 +252,7 @@ class MigratedRulesTest(unittest.TestCase):
             "lacp period short", [node.header for node in outside.nodes]
         )
         self.assertEqual(
-            document.adapt_interfaces({"Gi0/0/0/0", "BVI100"}).changes, []
+            document.compatibility.adapt_interfaces({"Gi0/0/0/0", "BVI100"}).changes, []
         )
 
 

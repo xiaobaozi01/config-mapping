@@ -18,7 +18,7 @@ class CiscoBgpPruningTest(unittest.TestCase):
         self,
     ):
         document = load("iosxr_p2p_pruning.cfg")
-        result = document.prune_non_nni({"Gi0/0/0/0"})
+        result = document.pruning.prune_non_nni({"Gi0/0/0/0"})
         self.assertFalse(result.errors, result.errors)
         output = document.render()
         self.assertNotIn("p2p ACCESS-ONLY", output)
@@ -34,7 +34,7 @@ class CiscoBgpPruningTest(unittest.TestCase):
 
     def test_neighbor_override_keeps_common_template_parameters(self):
         document = load("iosxr_bgp_source_overrides.cfg")
-        result = document.prune_non_nni({"Gi0/0/0/0"})
+        result = document.pruning.prune_non_nni({"Gi0/0/0/0"})
         self.assertFalse(result.errors, result.errors)
         output = document.render()
         self.assertIn(
@@ -52,7 +52,7 @@ class CiscoBgpPruningTest(unittest.TestCase):
         self,
     ):
         document = load("iosxr_bgp_source_overrides.cfg")
-        result = document.prune_non_nni({"Gi0/0/0/0"})
+        result = document.pruning.prune_non_nni({"Gi0/0/0/0"})
         self.assertFalse(result.errors, result.errors)
         output = document.render()
         for retained in (
@@ -67,14 +67,14 @@ class CiscoBgpPruningTest(unittest.TestCase):
         self.assertNotIn("neighbor 192.0.2.3", output)
         self.assertNotIn("update-source GigabitEthernet0/0/0/1", output)
         self.assertFalse(
-            document.validate_interfaces(
+            document.validation.validate_interfaces(
                 set(), result.removed_interfaces
             ).errors
         )
 
     def test_inherited_ip_source_is_evaluated_in_each_actual_neighbor_vrf(self):
         document = load("iosxr_bgp_source_overrides.cfg")
-        result = document.prune_non_nni({"Gi0/0/0/0"})
+        result = document.pruning.prune_non_nni({"Gi0/0/0/0"})
         self.assertFalse(result.errors, result.errors)
         output = document.render()
         # 192.0.2.1 只剩 BLUE 内的本地地址，缺省表邻居不能借用它。
@@ -95,7 +95,7 @@ class CiscoBgpPruningTest(unittest.TestCase):
 
     def test_multiple_inherited_sources_are_preserved_with_warning(self):
         document = load("iosxr_bgp_source_conflicts.cfg")
-        result = document.prune_non_nni({"Gi0/0/0/0"})
+        result = document.pruning.prune_non_nni({"Gi0/0/0/0"})
         self.assertFalse(result.errors)
         self.assertTrue(
             any(
@@ -132,7 +132,7 @@ class CiscoBgpPruningTest(unittest.TestCase):
         for name, (source, retained) in cases.items():
             with self.subTest(name=name):
                 document = CiscoDocument(source)
-                result = document.prune_non_nni(set())
+                result = document.pruning.prune_non_nni(set())
                 self.assertFalse(result.errors)
                 self.assertTrue(result.warnings)
                 self.assertIn(retained, document.render())
@@ -141,7 +141,7 @@ class CiscoBgpPruningTest(unittest.TestCase):
         self,
     ):
         document = load("iosxr_bgp_override_conflicting_defaults.cfg")
-        result = document.prune_non_nni({"Gi0/0/0/0"})
+        result = document.pruning.prune_non_nni({"Gi0/0/0/0"})
         self.assertFalse(result.errors, result.errors)
         output = document.render()
         self.assertIn("neighbor 10.0.0.2", output)

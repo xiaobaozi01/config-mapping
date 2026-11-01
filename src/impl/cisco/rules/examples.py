@@ -33,7 +33,7 @@ class DemoDependencyVisitor(CiscoRuleVisitor):
         """
         super().__init__(session)
         self.removed = {
-            session.document.resolve_interface(name)
+            session.document.interfaces.analysis.resolve_interface(name)
             for name in session.context.removed_interfaces
         }
 
@@ -44,8 +44,10 @@ class DemoDependencyVisitor(CiscoRuleVisitor):
         """
         prefix = "description RULE_DEMO_DEPENDS_ON "
         if node.header.startswith(prefix):
-            source = self.session.document.resolve_interface(
-                node.header[len(prefix) :]
+            source = (
+                self.session.document.interfaces.analysis.resolve_interface(
+                    node.header[len(prefix) :]
+                )
             )
             if source in self.removed:
                 self.session.edits.delete(

@@ -16,6 +16,7 @@ from adaptation.nni import NNIHandler
 from adaptation.pipeline import build_default_pipeline
 from adaptation.profiles import load_profiles
 from impl.juniper.document import JunosDocument
+from impl.juniper.operations import interfaces as junos_interfaces
 
 FIXTURES = Path(__file__).parent / "fixtures" / "reference_rewrite"
 
@@ -92,7 +93,7 @@ class JunosReferenceRewriteTest(unittest.TestCase):
         document = JunosDocument(
             (FIXTURES / "junos_definition_and_references.cfg").read_text()
         )
-        document.replace_references(
+        document.references.replace(
             {
                 "ge-0/0/0": ["ge-0/0/1"],
                 "ge-0/0/0.0": ["ge-0/0/1.0"],
@@ -100,7 +101,7 @@ class JunosReferenceRewriteTest(unittest.TestCase):
                 "ge-0/0/1.0": ["ge-0/0/2.0"],
             }
         )
-        definitions = document._interfaces_block().nodes
+        definitions = junos_interfaces.interfaces_block(document).nodes
         self.assertEqual(
             [node.header for node in definitions],
             ["ge-0/0/1", "ge-0/0/2", "demux0", "inactive: ge-0/0/0"],
@@ -123,7 +124,7 @@ class JunosReferenceRewriteTest(unittest.TestCase):
         document = JunosDocument(
             (FIXTURES / "junos_definition_and_references.cfg").read_text()
         )
-        document.replace_references(
+        document.references.replace(
             {"ge-0/0/0.0": ["ge-0/0/3.0", "ge-0/0/4.0"]}
         )
         output = document.render()
@@ -137,12 +138,14 @@ class JunosReferenceRewriteTest(unittest.TestCase):
         document = JunosDocument(
             (FIXTURES / "junos_definition_and_references.cfg").read_text()
         )
-        node = document._interfaces_block().nodes[0]
+        node = junos_interfaces.interfaces_block(document).nodes[0]
         transaction = document.edit()
         transaction.delete(node, "test deletion")
         transaction.apply()
-        document.replace_references({"ge-0/0/0.0": ["ge-0/0/5.0"]})
-        self.assertIsNone(document._find_interface_node("ge-0/0/0"))
+        document.references.replace({"ge-0/0/0.0": ["ge-0/0/5.0"]})
+        self.assertIsNone(
+            junos_interfaces.find_interface_node(document, "ge-0/0/0")
+        )
         self.assertIn("inactive: ge-0/0/0", document.source)
 
 

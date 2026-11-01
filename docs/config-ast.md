@@ -102,13 +102,17 @@ python scripts/check_docstrings.py
 
 ## Document 与 AST 的职责边界
 
-Document 持有 `root`、修订和分析缓存，提供厂商能力入口；AST 节点保存结构及纯语义属性。
+Document 持有 `root`、修订、分析缓存和按需能力入口；AST 节点保存结构及纯语义属性。
 节点不导入 Document、Writer 或 Editor，不提供 `text` 输出属性。子树文本使用
 `document.writer.subtree(node)`；Cisco 共享命令语义位于 `impl/cisco/syntax/semantics.py`。
 
-清洗遍历位于厂商 `configuration_cleaning.py`，引用转换位于 `references.py`；
-Document 对应方法只转发调用。语法校验委托 Parser，规范化文本及最终输出策略由
-Writer 负责。`render()` 不创建 Editor、不复制树，也不改变修订或缓存状态。
+厂商 `management_cleaning.py` 保存管理面清洗策略，`declarative_cleaning.py`
+提供声明式规则遍历和执行器，`cleaning.py` 只组合 `CleaningOperations` 能力门面；
+引用转换位于 `references.py`。分别通过 `document.cleaning.apply_rules()` 和
+`document.references.replace()` 调用。接口查询、修改、裁剪、兼容、校验和模拟也由
+对应能力对象提供。Document 只保留树生命周期和组合入口。语法校验委托 Parser，
+规范化文本及最终输出策略由 Writer 负责。`render()` 不创建 Editor、不复制树，
+也不改变修订或缓存状态。
 
 结构修改统一由 Editor 管理：普通操作收集后 `apply()`；现有多步厂商算法使用
 `with document.edit().bulk() as root:`，由 Editor 在退出时校验父子关系和更新缓存，

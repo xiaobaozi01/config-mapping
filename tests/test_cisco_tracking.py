@@ -31,7 +31,7 @@ class CiscoTrackingTest(unittest.TestCase):
 
     def test_removed_interface_removes_track_and_all_vrrp_uses_only(self):
         document = load_document()
-        outcome = document.prune_non_nni({"Gi0/0/0/0"})
+        outcome = document.pruning.prune_non_nni({"Gi0/0/0/0"})
         self.assertFalse(outcome.errors, outcome.errors)
         output = document.render()
         self.assertIsNone(top_node(document, "track LOST-LINK"))
@@ -64,18 +64,18 @@ class CiscoTrackingTest(unittest.TestCase):
             )
         )
         self.assertFalse(
-            document.validate_interfaces(
+            document.validation.validate_interfaces(
                 set(), outcome.removed_interfaces
             ).errors
         )
-        self.assertEqual(document.prune_non_nni({"Gi0/0/0/0"}).changes, [])
+        self.assertEqual(document.pruning.prune_non_nni({"Gi0/0/0/0"}).changes, [])
 
     def test_monitored_interface_rename_keeps_tracking_and_vrrp(self):
         document = load_document()
-        outcome = document.prune_non_nni({"Gi0/0/0/0", "Te0/0/0/67"})
+        outcome = document.pruning.prune_non_nni({"Gi0/0/0/0", "Te0/0/0/67"})
         self.assertFalse(outcome.errors, outcome.errors)
-        document.rename_interface_tree("Te0/0/0/67", "Gi0/0/0/2")
-        document.replace_references(
+        document.interfaces.transform.rename("Te0/0/0/67", "Gi0/0/0/2")
+        document.references.replace(
             {"TenGigE0/0/0/67": ["GigabitEthernet0/0/0/2"]}
         )
         output = document.render()
@@ -85,15 +85,15 @@ class CiscoTrackingTest(unittest.TestCase):
         self.assertIn("track object LOST-LINK 20", output)
         self.assertNotIn("Te 0/0/0/67", output)
         self.assertFalse(
-            document.validate_interfaces(
+            document.validation.validate_interfaces(
                 set(), outcome.removed_interfaces | {"TenGigE0/0/0/67"}
             ).errors
         )
 
     def test_member_removal_cleanup_also_cascades_track_references(self):
         document = load_document()
-        document.remove_interface("Te0/0/0/67")
-        outcome = document.prune_interface_dependencies({"TenGigE0/0/0/67"})
+        document.interfaces.transform.remove("Te0/0/0/67")
+        outcome = document.pruning.prune_interface_dependencies({"TenGigE0/0/0/67"})
         self.assertFalse(outcome.errors, outcome.errors)
         self.assertIsNone(top_node(document, "track LOST-LINK"))
         output = document.render()
@@ -112,7 +112,7 @@ class CiscoTrackingTest(unittest.TestCase):
             "custom-service FOO\n track object LOST-LINK\n!\n"
         )
         insert_before(document, document.root.nodes[0], extra.source)
-        outcome = document.prune_non_nni({"Gi0/0/0/0"})
+        outcome = document.pruning.prune_non_nni({"Gi0/0/0/0"})
         self.assertFalse(outcome.errors)
         self.assertTrue(
             any(
@@ -123,7 +123,7 @@ class CiscoTrackingTest(unittest.TestCase):
         self.assertTrue(top_node(document, "track LOST-LINK").active)
         self.assertIn("track object LOST-LINK 30", document.render())
         self.assertFalse(
-            document.validate_interfaces(
+            document.validation.validate_interfaces(
                 set(),
                 outcome.removed_interfaces,
                 outcome.deferred_interface_references,
@@ -143,7 +143,7 @@ class CiscoTrackingTest(unittest.TestCase):
                     replace_header(
                         document, node.nodes[0], "type unsupported-state"
                     )
-                outcome = document.prune_non_nni({"Gi0/0/0/0"})
+                outcome = document.pruning.prune_non_nni({"Gi0/0/0/0"})
                 self.assertFalse(outcome.errors)
                 self.assertTrue(outcome.warnings)
                 self.assertTrue(node.active)
@@ -151,12 +151,12 @@ class CiscoTrackingTest(unittest.TestCase):
 
     def test_deleted_vrrp_interface_removes_its_whole_binding(self):
         document = load_document()
-        outcome = document.prune_non_nni(set())
+        outcome = document.pruning.prune_non_nni(set())
         self.assertFalse(outcome.errors, outcome.errors)
         self.assertNotIn("vrrp 110", document.render())
         self.assertNotIn("track object LOST-LINK", document.render())
         self.assertFalse(
-            document.validate_interfaces(
+            document.validation.validate_interfaces(
                 set(), outcome.removed_interfaces
             ).errors
         )
@@ -191,14 +191,14 @@ class CiscoTrackingTest(unittest.TestCase):
             with self.subTest(member_cleanup=member_cleanup):
                 document = load_document()
                 if member_cleanup:
-                    document.remove_interface("Te0/0/0/67")
+                    document.interfaces.transform.remove("Te0/0/0/67")
                 with patch.object(cisco_rules, "PRUNE_RULES", rules):
                     if member_cleanup:
-                        outcome = document.prune_interface_dependencies(
+                        outcome = document.pruning.prune_interface_dependencies(
                             {"TenGigE0/0/0/67"}
                         )
                     else:
-                        outcome = document.prune_non_nni({"Gi0/0/0/0"})
+                        outcome = document.pruning.prune_non_nni({"Gi0/0/0/0"})
                 self.assertFalse(outcome.errors)
                 self.assertTrue(outcome.warnings)
                 self.assertTrue(top_node(document, "track LOST-LINK").active)

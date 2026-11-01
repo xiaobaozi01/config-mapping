@@ -18,7 +18,7 @@ class JunosPruningScopeTest(unittest.TestCase):
         self,
     ):
         document = load("junos_scoped_addresses.cfg")
-        outcome = document.prune_non_nni({"ge-0/0/0", "ge-0/0/2"})
+        outcome = document.pruning.prune_non_nni({"ge-0/0/0", "ge-0/0/2"})
         self.assertFalse(outcome.errors, outcome.errors)
         rendered = document.render()
         for kept in (
@@ -36,7 +36,7 @@ class JunosPruningScopeTest(unittest.TestCase):
         ):
             self.assertNotIn(removed, rendered)
         self.assertFalse(
-            document.validate_interfaces(
+            document.validation.validate_interfaces(
                 set(), outcome.removed_interfaces
             ).errors
         )
@@ -45,7 +45,7 @@ class JunosPruningScopeTest(unittest.TestCase):
         self,
     ):
         document = load("junos_scoped_vlans.cfg")
-        outcome = document.prune_non_nni({"ge-0/0/0", "ge-0/0/2"})
+        outcome = document.pruning.prune_non_nni({"ge-0/0/0", "ge-0/0/2"})
         self.assertFalse(outcome.errors, outcome.errors)
         rendered = document.render()
         self.assertIn("CORE-BD", rendered)
@@ -54,7 +54,7 @@ class JunosPruningScopeTest(unittest.TestCase):
         self.assertNotIn("CUSTOMER-BD", rendered)
         self.assertNotIn("irb.200", rendered)
         self.assertNotIn("irb.400", rendered)
-        specs = {spec.name for spec in document.interface_specs()}
+        specs = {spec.name for spec in document.interfaces.analysis.interface_specs()}
         self.assertTrue({"irb.100", "irb.300"} <= specs)
         self.assertFalse({"irb.200", "irb.400"} & specs)
 
@@ -62,7 +62,7 @@ class JunosPruningScopeTest(unittest.TestCase):
         self,
     ):
         document = load("junos_explicit_domain_members.cfg")
-        outcome = document.prune_non_nni({"ge-0/0/0"})
+        outcome = document.pruning.prune_non_nni({"ge-0/0/0"})
         self.assertFalse(outcome.errors, outcome.errors)
         rendered = document.render()
         self.assertIn("NNI-DOMAIN", rendered)
@@ -73,7 +73,7 @@ class JunosPruningScopeTest(unittest.TestCase):
         self,
     ):
         document = load("junos_bgp_source_overrides.cfg")
-        outcome = document.prune_non_nni({"ge-0/0/0"})
+        outcome = document.pruning.prune_non_nni({"ge-0/0/0"})
         self.assertFalse(outcome.errors, outcome.errors)
         rendered = document.render()
         for kept in (
@@ -96,7 +96,7 @@ class JunosPruningScopeTest(unittest.TestCase):
         ):
             self.assertNotIn(removed, rendered)
         self.assertFalse(
-            document.validate_interfaces(
+            document.validation.validate_interfaces(
                 set(), outcome.removed_interfaces
             ).errors
         )

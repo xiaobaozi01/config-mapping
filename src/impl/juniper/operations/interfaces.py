@@ -12,13 +12,107 @@ from impl.common.domain.interface import (
     referenced_interface_names,
 )
 from impl.common.support.errors import require_invariant
+from impl.common.support.interface_cache import copy_interface_specs
 
 from ..document import (
     JuniperNode,
     JunosDocument,
 )
+from ..syntax.ast import top_block
 
 MAX_VLAN_ID = 4094
+
+
+def interfaces_block(
+    document: JunosDocument, create: bool = False
+) -> JuniperNode | None:
+    """返回顶层 ``interfaces`` 块，并可按需创建。
+
+    该辅助函数只操作调用方提供的当前树，不负责提交编辑事务。
+    """
+    return top_block(document.root, "interfaces", create=create)
+
+
+def interface_nodes(document: JunosDocument) -> list[JuniperNode]:
+    """返回当前活动且可承载子配置的接口节点。
+
+    非块节点、注释节点和 inactive 接口不会进入接口分析。
+    """
+    block = interfaces_block(document)
+    if not block or not block.is_block:
+        return []
+    return [
+        node
+        for node in block.nodes
+        if document._parser.is_effective(node) and node.is_block
+    ]
+
+
+def interface_name(document: JunosDocument, node: JuniperNode) -> str:
+    """返回接口节点的规范父接口名称。
+
+    状态前缀和空白差异在匹配前统一移除。
+    """
+    return document._parser.canonical_interface(
+        document._parser.base_header(node.header).split()[0]
+    )
+
+
+def unit_nodes(
+    document: JunosDocument, interface: JuniperNode
+) -> list[JuniperNode]:
+    """返回接口节点下的有效 unit 节点。
+
+    空叶子 unit 也需要保留，因为它仍表示一个逻辑业务接口。
+    """
+    if not interface.is_block:
+        return []
+    return [
+        node
+        for node in interface.nodes
+        if document._parser.is_effective(node)
+        and document._parser.is_unit(node.header)
+    ]
+
+
+def unit_number(document: JunosDocument, node: JuniperNode) -> str:
+    """从 unit 节点提取原始逻辑编号。
+
+    保留字符串形式可避免前导零损失。
+    """
+    return document._parser.unit_number(node.header)
+
+
+def find_vlan(document: JunosDocument, unit: JuniperNode) -> int | None:
+    """返回 unit 的单层或 QinQ 外层 VLAN。
+
+    未配置 VLAN 时返回空值。
+    """
+    if not unit.is_block:
+        return None
+    for child in unit.nodes:
+        if not document._parser.is_effective(child):
+            continue
+        vlan = document._parser.vlan(child.header)
+        if vlan is not None:
+            return vlan
+    return None
+
+
+def find_inner_vlan(document: JunosDocument, unit: JuniperNode) -> int | None:
+    """返回 unit 的 QinQ 内层 VLAN。
+
+    单层或无 VLAN unit 返回空值。
+    """
+    if not unit.is_block:
+        return None
+    for child in unit.nodes:
+        if not document._parser.is_effective(child):
+            continue
+        vlan = document._parser.inner_vlan(child.header)
+        if vlan is not None:
+            return vlan
+    return None
 
 
 def _walk(document: JunosDocument, node: JuniperNode):
@@ -40,19 +134,23 @@ def interface_specs(document: JunosDocument) -> list[InterfaceSpec]:
     作为 VLAN，供广播域网关关联使用。
     """
     result: list[InterfaceSpec] = []
-    for node in document._interface_nodes():
-        parent = document._interface_name(node)
-        units = document._unit_nodes(node)
+    for node in interface_nodes(document):
+        parent = interface_name(document, node)
+        units = unit_nodes(document, node)
         if not units:
             result.append(
                 InterfaceSpec(
-                    parent, parent, None, None, document.interface_kind(parent)
+                    parent,
+                    parent,
+                    None,
+                    None,
+                    document._parser.interface_kind(parent),
                 )
             )
             continue
         for unit in units:
-            number = document._unit_number(unit)
-            vlan = document._find_vlan(unit)
+            number = unit_number(document, unit)
+            vlan = find_vlan(document, unit)
             if (
                 vlan is None
                 and parent.lower() == "irb"
@@ -66,8 +164,8 @@ def interface_specs(document: JunosDocument) -> list[InterfaceSpec]:
                     parent=parent,
                     unit=number,
                     vlan=vlan,
-                    kind=document.interface_kind(parent),
-                    inner_vlan=document._find_inner_vlan(unit),
+                    kind=document._parser.interface_kind(parent),
+                    inner_vlan=find_inner_vlan(document, unit),
                 )
             )
     return result
@@ -79,7 +177,7 @@ def interface_kind(document: JunosDocument, name: str) -> InterfaceKind:
     分类本身只依赖接口名，复用当前文档的私有解析缓存，供拓扑校验及
     物理口、ae 聚合口、IRB 网关口分流使用。
     """
-    return document.interface_kind(name)
+    return document._parser.interface_kind(name)
 
 
 def bundle_members(document: JunosDocument) -> dict[str, str]:
@@ -89,9 +187,9 @@ def bundle_members(document: JunosDocument) -> dict[str, str]:
     聚合成员；其他接口类型即使包含相似文本也不会被误判。
     """
     result: dict[str, str] = {}
-    for node in document._interface_nodes():
-        parent = document._interface_name(node)
-        if document.interface_kind(parent) != InterfaceKind.PHYSICAL:
+    for node in interface_nodes(document):
+        parent = interface_name(document, node)
+        if document._parser.interface_kind(parent) != InterfaceKind.PHYSICAL:
             continue
         rendered = document.writer.effective(node, document._parser)
         match = re.search(r"\b802\.3ad\s+(ae\d+)\s*;", rendered)
@@ -105,13 +203,13 @@ def interface_has_business(document: JunosDocument, name: str) -> bool:
 
     识别结果用于禁止压缩删除成员业务；纯物理选项不触发保护。
     """
-    parent = document.resolve_interface(name)
+    parent = document._parser.canonical_interface(name)
     if any(
         spec.parent == parent and spec.name != parent
-        for spec in document.interface_specs()
+        for spec in document.interfaces.analysis.interface_specs()
     ):
         return True
-    node = document._find_interface_node(parent)
+    node = find_interface_node(document, parent)
     if node is None:
         return False
     return any(
@@ -130,7 +228,9 @@ def bundle_binding_is_ambiguous(document: JunosDocument, name: str) -> bool:
 
     多个绑定无法唯一映射，必须与普通成员业务告警区分。
     """
-    node = document._find_interface_node(document.resolve_interface(name))
+    node = find_interface_node(
+        document, document._parser.canonical_interface(name)
+    )
     if node is None:
         return False
     bindings = {
@@ -152,7 +252,7 @@ def resolve_interface(document: JunosDocument, value: str) -> str:
     复用当前文档的私有解析缓存；名称统一后，拓扑数据才能与配置树中的接口
     节点可靠匹配。
     """
-    return document.resolve_interface(value)
+    return document._parser.canonical_interface(value)
 
 
 def logical_names_under(document: JunosDocument, parent: str) -> list[str]:
@@ -161,11 +261,11 @@ def logical_names_under(document: JunosDocument, parent: str) -> list[str]:
     对含 unit 的 Junos 接口，接口规格只包含各 unit；无 unit 时则返回父口本身。
     集合去重和稳定排序便于 NNI 克隆以及生成可重复的审计映射。
     """
-    parent = document.resolve_interface(parent)
+    parent = document._parser.canonical_interface(parent)
     return sorted(
         {
             spec.name
-            for spec in document.interface_specs()
+            for spec in document.interfaces.analysis.interface_specs()
             if spec.parent == parent
         },
         key=lambda value: (interface_unit(value) is not None, value),
@@ -180,7 +280,7 @@ def business_interface_names(document: JunosDocument) -> set[str]:
     二层接口收集 VLAN ID/名称，并沿 bridge-domain 或 vlans 配置激活对应 IRB。
     这样可识别真正关联的网关，避免仅因 IRB 配有地址就误判为活跃业务。
     """
-    specs = document.interface_specs()
+    specs = document.interfaces.analysis.interface_specs()
     known = {spec.name for spec in specs}
     kinds = {spec.name: spec.kind for spec in specs}
     mappable_kinds = {InterfaceKind.PHYSICAL, InterfaceKind.BUNDLE}
@@ -221,12 +321,12 @@ def _collect_interface_business(
         r"encapsulation\s+(?:ethernet-ccc|vlan-ccc)|"
         r"input-vlan-map|output-vlan-map)\b"
     )
-    for node in document._interface_nodes():
-        parent = document._interface_name(node)
-        units = document._unit_nodes(node)
+    for node in interface_nodes(document):
+        parent = interface_name(document, node)
+        units = unit_nodes(document, node)
         if not units:
             rendered = document.writer.effective(node, document._parser)
-            if document.interface_kind(
+            if document._parser.interface_kind(
                 parent
             ) in mappable_kinds and business_pattern.search(rendered):
                 active.add(parent)
@@ -241,7 +341,7 @@ def _collect_interface_business(
         )
         for unit in units:
             rendered = document.writer.effective(unit, document._parser)
-            name = f"{parent}.{document._unit_number(unit)}"
+            name = f"{parent}.{unit_number(document, unit)}"
             if kinds.get(name) in mappable_kinds and (
                 parent_business or business_pattern.search(rendered)
             ):
@@ -357,14 +457,14 @@ def _domain_gateways(
     parser = document._parser
     rendered = document.writer.effective(domain, document._parser)
     interfaces = {
-        document.resolve_interface(value)
+        document._parser.canonical_interface(value)
         for value in re.findall(
             r"(?<![-\w])interface\s+([^;\s]+)\s*;",
             rendered,
         )
     }
     gateways = {
-        document.resolve_interface(value)
+        document._parser.canonical_interface(value)
         for value in re.findall(
             r"\b(?:routing-interface|l3-interface)\s+([^;\s]+)\s*;",
             rendered,
@@ -397,7 +497,9 @@ def _collect_active_vlans(
         spec = spec_by_name.get(name)
         if not spec or spec.kind == InterfaceKind.GATEWAY:
             continue
-        parent = interface_parent(document.resolve_interface(spec.parent))
+        parent = interface_parent(
+            document._parser.canonical_interface(spec.parent)
+        )
         node = parents.get(parent)
         if not node:
             continue
@@ -423,13 +525,13 @@ def _interface_index(
     """
     parents: dict[str, JuniperNode] = {}
     units: dict[tuple[str, str], JuniperNode] = {}
-    for node in document._interface_nodes():
-        parent = document._interface_name(node)
+    for node in interface_nodes(document):
+        parent = interface_name(document, node)
         if parent in parents:
             continue
         parents[parent] = node
-        for unit in document._unit_nodes(node):
-            units.setdefault((parent, document._unit_number(unit)), unit)
+        for unit in unit_nodes(document, node):
+            units.setdefault((parent, unit_number(document, unit)), unit)
     return parents, units
 
 
@@ -476,12 +578,12 @@ def find_interface_node(
     调用方可以传父接口或 unit 名；先去掉 unit 是因为 Junos 把 unit 存在父接口
     节点内部，而不是独立的顶层接口节点。
     """
-    canonical = document.resolve_interface(interface_parent(name))
+    canonical = document._parser.canonical_interface(interface_parent(name))
     return next(
         (
             node
-            for node in document._interface_nodes()
-            if document._interface_name(node) == canonical
+            for node in interface_nodes(document)
+            if interface_name(document, node) == canonical
         ),
         None,
     )
@@ -538,7 +640,7 @@ def rename_interface_tree(
     node = find_interface_node(document, source)
     if not node:
         return
-    node.header = document.resolve_interface(target)
+    node.header = document._parser.canonical_interface(target)
     if strip_bundle and node.is_block:
         node.children = _strip_bundle_options(document, node.children)
     _merge_duplicate_interface(document, node)
@@ -556,16 +658,16 @@ def clone_interface_tree(
     目标节点，使后续迁移步骤有稳定落点；追加后与同名节点合并，避免重复定义。
     """
     source_node = find_interface_node(document, source)
-    interfaces = document._interfaces_block(create=True)
+    interfaces = interfaces_block(document, create=True)
     require_invariant(
         interfaces is not None and interfaces.is_block,
         "Junos interfaces 块在 create=True 后必须存在且可包含子节点",
     )
     if source_node is None:
-        clone = JuniperNode(document.resolve_interface(target), [])
+        clone = JuniperNode(document._parser.canonical_interface(target), [])
     else:
         clone = source_node.clone()
-        clone.header = document.resolve_interface(target)
+        clone.header = document._parser.canonical_interface(target)
         clone.active = True
         if strip_bundle and clone.is_block:
             clone.children = _strip_bundle_options(document, clone.children)
@@ -581,11 +683,11 @@ def _merge_duplicate_interface(
     接口改名或克隆可能与已有目标节点碰撞；以渲染后的子节点文本判重可保留双方
     的不同配置，同时让最终输出只剩一个活动接口定义。
     """
-    name = document._interface_name(preferred)
+    name = interface_name(document, preferred)
     duplicates = [
         node
-        for node in document._interface_nodes()
-        if document._interface_name(node) == name
+        for node in interface_nodes(document)
+        if interface_name(document, node) == name
     ]
     if len(duplicates) < 2:
         return
@@ -612,9 +714,177 @@ def ensure_parent_interface(document: JunosDocument, name: str) -> None:
     """
     if find_interface_node(document, name) is not None:
         return
-    interfaces = document._interfaces_block(create=True)
+    interfaces = interfaces_block(document, create=True)
     require_invariant(
         interfaces is not None and interfaces.is_block,
         "Junos interfaces 块必须存在且可包含子节点",
     )
     interfaces.children.append(JuniperNode(name, []))
+
+
+class JunosInterfaceAnalysis:
+    """提供 Junos 只读接口查询能力。
+
+    分析结果通过 Document 缓存读取，能力对象本身不保存树状态。
+    """
+
+    __slots__ = ("_document",)
+
+    def __init__(self, document: JunosDocument):
+        """绑定一次调用使用的文档。
+
+        构造函数只保存引用，不读取配置或创建缓存。
+        """
+        self._document = document
+
+    def interface_specs(self) -> list[InterfaceSpec]:
+        """返回当前文档的接口规格。
+
+        结果由 Document 缓存统一失效并复制后返回。
+        """
+        return self._document._read_interface_analysis(
+            "interface_specs",
+            lambda: interface_specs(self._document),
+            copy_interface_specs,
+        )
+
+    def interface_kind(self, name: str) -> InterfaceKind:
+        """返回接口的业务类别。
+
+        分类直接使用厂商解析缓存，不依赖旧 Document 业务方法。
+        """
+        return interface_kind(self._document, name)
+
+    def bundle_members(self) -> dict[str, str]:
+        """返回聚合成员映射。
+
+        结果由 Document 缓存统一失效并复制后返回。
+        """
+        return self._document._read_interface_analysis(
+            "bundle_members",
+            lambda: bundle_members(self._document),
+            dict,
+        )
+
+    def interface_has_business(self, name: str) -> bool:
+        """判断成员接口是否承载独立业务。
+
+        查询只读取当前树，不改变配置。
+        """
+        return interface_has_business(self._document, name)
+
+    def bundle_binding_is_ambiguous(self, name: str) -> bool:
+        """判断成员是否存在多个聚合绑定。
+
+        查询结果用于迁移前阻断不唯一关系。
+        """
+        return bundle_binding_is_ambiguous(self._document, name)
+
+    def resolve_interface(self, value: str) -> str:
+        """返回规范接口名称。
+
+        规范化规则与配置树内部接口查找保持一致。
+        """
+        return resolve_interface(self._document, value)
+
+    def logical_names_under(self, parent: str) -> list[str]:
+        """返回父接口及其逻辑单元名称。
+
+        输出顺序稳定，可直接用于映射和审计。
+        """
+        return logical_names_under(self._document, parent)
+
+    def business_interface_names(self) -> set[str]:
+        """返回承载有效业务的接口集合。
+
+        结果由 Document 缓存统一失效并复制后返回。
+        """
+        return self._document._read_interface_analysis(
+            "business_interface_names",
+            lambda: business_interface_names(self._document),
+            set,
+        )
+
+
+class JunosInterfaceTransform:
+    """提供 Junos 接口树修改能力。
+
+    每个修改方法自行创建局部批量编辑事务。
+    """
+
+    __slots__ = ("_document",)
+
+    def __init__(self, document: JunosDocument):
+        """绑定一次调用使用的文档。
+
+        能力对象不拥有或缓存配置树。
+        """
+        self._document = document
+
+    def remove(self, name: str, include_children: bool = False) -> None:
+        """移除接口及其全部 unit。
+
+        Junos unit 属于父接口子树，因此会随父节点一起停用。
+        """
+        with self._document.edit().bulk():
+            remove_interface(self._document, name, include_children)
+
+    def rename(
+        self, source: str, target: str, strip_bundle: bool = False
+    ) -> None:
+        """重命名整个接口节点。
+
+        可同时移除不再适用的聚合 options。
+        """
+        with self._document.edit().bulk():
+            rename_interface_tree(self._document, source, target, strip_bundle)
+
+    def clone(
+        self, source: str, target: str, strip_bundle: bool = False
+    ) -> None:
+        """复制接口树到目标接口。
+
+        源接口树在操作后仍可继续使用。
+        """
+        with self._document.edit().bulk():
+            clone_interface_tree(self._document, source, target, strip_bundle)
+
+    def ensure_parent(self, name: str) -> None:
+        """确保目标父接口存在。
+
+        只在缺失时创建空父节点。
+        """
+        with self._document.edit().bulk():
+            ensure_parent_interface(self._document, name)
+
+
+class JunosInterfaceCapabilities:
+    """组合 Junos 接口查询和修改能力。
+
+    每次访问子能力都创建轻量对象，避免 Document 持有长期服务集合。
+    """
+
+    __slots__ = ("_document",)
+
+    def __init__(self, document: JunosDocument):
+        """绑定接口能力所属文档。
+
+        构造阶段不读取或修改配置。
+        """
+        self._document = document
+
+    @property
+    def analysis(self) -> JunosInterfaceAnalysis:
+        """返回只读接口分析能力。
+
+        返回对象只存活于当前调用链。
+        """
+        return JunosInterfaceAnalysis(self._document)
+
+    @property
+    def transform(self) -> JunosInterfaceTransform:
+        """返回接口修改能力。
+
+        修改事务由返回对象的方法管理。
+        """
+        return JunosInterfaceTransform(self._document)

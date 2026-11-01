@@ -85,7 +85,7 @@ class AggregationAttributesVisitor(CiscoRuleVisitor):
         当前接口名用于把子接口属性归属到同一物理父口。
         """
         super().__init__(session)
-        self.members = session.document.bundle_members()
+        self.members = session.document.interfaces.analysis.bundle_members()
         self.interface = None
 
     def visit_node(self, node):
@@ -238,7 +238,8 @@ def _scope(document, targets):
     规则以父口覆盖完整接口树，避免遗漏与目标共享父口的子接口。
     """
     return {
-        interface_parent(document.resolve_interface(name)) for name in targets
+        interface_parent(document.interfaces.analysis.resolve_interface(name))
+        for name in targets
     }
 
 
@@ -394,7 +395,7 @@ class InterfaceTypesVisitor(CiscoRuleVisitor):
         索引使父口和成员判断无需反复遍历完整文档。
         """
         super().__init__(session)
-        self.members = session.document.bundle_members()
+        self.members = session.document.interfaces.analysis.bundle_members()
         self.blocks = {
             block.interface_name: block
             for block in interface_nodes(session.document)
@@ -407,7 +408,7 @@ class InterfaceTypesVisitor(CiscoRuleVisitor):
         """
         document, outcome = self.session.document, self.session.result
         name = block.interface_name
-        kind = document.interface_kind(name)
+        kind = document.interfaces.analysis.interface_kind(name)
         l2, unit = _is_l2(block), interface_unit(name)
         if kind == InterfaceKind.GATEWAY and (l2 or unit is not None):
             _record_input_semantic(
@@ -449,7 +450,7 @@ class BundleBindingsVisitor(CiscoRuleVisitor):
         索引只在当前只读校验会话内使用。
         """
         super().__init__(session)
-        self.members = session.document.bundle_members()
+        self.members = session.document.interfaces.analysis.bundle_members()
 
     def visit_node(self, block):
         """把成员绑定歧义作为始终阻断的完整性错误。
@@ -459,7 +460,7 @@ class BundleBindingsVisitor(CiscoRuleVisitor):
         name = block.interface_name
         if (
             name in self.members
-            and self.session.document.bundle_mode(name) == BundleMode.UNKNOWN
+            and self.session.document.bundles.mode(name) == BundleMode.UNKNOWN
         ):
             self.session.result.errors.append(f"聚合成员 {name} 包含冲突绑定")
         return None
@@ -477,7 +478,7 @@ class CompatibleCommandsVisitor(CiscoRuleVisitor):
         成员接口允许 bundle 绑定命令，而 Bundle 主口和独立接口不允许，因此需要区分。
         """
         super().__init__(session)
-        self.members = session.document.bundle_members()
+        self.members = session.document.interfaces.analysis.bundle_members()
 
     def visit_node(self, block):
         """扫描接口块的直接命令并生成兼容性诊断。
@@ -485,7 +486,7 @@ class CompatibleCommandsVisitor(CiscoRuleVisitor):
         已覆盖命令族只做基本检查，未覆盖命令族保留并提示镜像人工核验。
         """
         name = block.interface_name
-        kind = self.session.document.interface_kind(name)
+        kind = self.session.document.interfaces.analysis.interface_kind(name)
         outcome = self.session.result
         for node in block.nodes:
             if node.is_formatting:
@@ -532,9 +533,12 @@ class L2vpnVisitor(CiscoRuleVisitor):
         routed = re.match(r"^routed\s+interface\s+(.+)$", node.header, re.I)
         attachment = re.match(r"^interface\s+(.+)$", node.header, re.I)
         if routed:
-            name = document.resolve_interface(routed.group(1))
+            name = document.interfaces.analysis.resolve_interface(
+                routed.group(1)
+            )
             if (
-                document.interface_kind(name) != InterfaceKind.GATEWAY
+                document.interfaces.analysis.interface_kind(name)
+                != InterfaceKind.GATEWAY
                 or interface_unit(name) is not None
             ):
                 _record_input_semantic(
@@ -549,7 +553,9 @@ class L2vpnVisitor(CiscoRuleVisitor):
                     f"L2VPN routed interface 引用不存在的 BVI: {name}",
                 )
         elif attachment:
-            name = document.resolve_interface(attachment.group(1))
+            name = document.interfaces.analysis.resolve_interface(
+                attachment.group(1)
+            )
             target = self.blocks.get(name)
             if target is not None and not _is_l2(target):
                 _record_input_semantic(

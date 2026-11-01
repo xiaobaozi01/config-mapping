@@ -186,7 +186,7 @@ class FinalIntegrityValidationTest(unittest.TestCase):
             "end\n"
         )
 
-        outcome = document.validate_final_integrity(
+        outcome = document.validation.validate_final_integrity(
             {"GigabitEthernet0/0/0/0"},
             set(),
         )

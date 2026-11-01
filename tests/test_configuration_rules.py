@@ -52,12 +52,12 @@ class ConfigurationRuleTest(unittest.TestCase):
         )
         document = CiscoDocument("hostname R1\n")
         with patch.object(cisco_rules, "SIMULATION_RULES", (rule,)):
-            result = document.adapt_to_simulation(
+            result = document.simulation.adapt(
                 SimulationAdaptationPolicy(), set()
             )
         off_document = CiscoDocument("hostname R1\n")
         with patch.object(cisco_rules, "SIMULATION_RULES", (rule,)):
-            off_document.adapt_to_simulation(
+            off_document.simulation.adapt(
                 SimulationAdaptationPolicy(mode="off"), set()
             )
         self.assertNotIn("custom-simulation", off_document.render())
@@ -98,7 +98,7 @@ class ConfigurationRuleTest(unittest.TestCase):
             CiscoVisitorRule("last", LastVisitor, readonly=True),
         )
         with patch.object(cisco_rules, "VALIDATION_RULES", rules):
-            result = CiscoDocument("hostname R1\n").validate_interfaces(
+            result = CiscoDocument("hostname R1\n").validation.validate_interfaces(
                 set(), set()
             )
         self.assertEqual(result.errors, ["first-error", "last-error"])
@@ -126,7 +126,7 @@ class ConfigurationRuleTest(unittest.TestCase):
             with self.subTest(vendor=factory.vendor):
                 document = factory(source)
                 before = tree_signature(document.root)
-                result = document.validate_interfaces(targets, set())
+                result = document.validation.validate_interfaces(targets, set())
                 self.assertTrue(result.errors)
                 self.assertTrue(result.diagnostics)
                 self.assertEqual(
@@ -139,12 +139,12 @@ class ConfigurationRuleTest(unittest.TestCase):
             "interface Gi0/0/0/0\n shutdown\n speed 10000\n!\n"
         )
         source = document.render()
-        result = document.adapt_to_simulation(
+        result = document.simulation.adapt(
             SimulationAdaptationPolicy(mode="off"), {"Gi0/0/0/0"}
         )
         self.assertEqual(document.render(), source)
         self.assertEqual(result.rule_changes, {})
-        result = document.adapt_to_simulation(
+        result = document.simulation.adapt(
             SimulationAdaptationPolicy(
                 mode="compatible", ensure_data_interfaces_enabled=False
             ),

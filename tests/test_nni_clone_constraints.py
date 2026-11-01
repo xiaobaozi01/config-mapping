@@ -131,7 +131,9 @@ class NniCloneConstraintsTest(unittest.TestCase):
         transaction = document.edit()
         transaction.delete(protocols, "test setup")
         transaction.apply()
-        outcome = document.validate_nni_clone("ae10", {"ge-0/0/0", "ge-0/0/1"})
+        outcome = document.validation.validate_nni_clone(
+            "ae10", {"ge-0/0/0", "ge-0/0/1"}
+        )
         self.assertEqual(outcome.errors, [])
 
     def test_cross_peer_bundles_are_rejected_without_cloning_even_for_l2(self):

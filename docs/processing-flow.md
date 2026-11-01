@@ -768,7 +768,7 @@ Junos 会跳过 `interfaces` 定义本身，只递归更新其他层级中的引
 
 ## 10. 统一清洗规则
 
-`CleaningRulesHandler` 同时执行 YAML 规则和实现 `ExecutableCleaningRule` 的代码规则。YAML 规则固定在 `post_rewrite`，一次批量提交给 Document。代码规则只能选择 `pre_analysis` 或 `post_rewrite`；banner 在分析前处理，认证替换晚于 YAML 清洗：
+`CleaningRulesHandler` 同时执行 YAML 规则和实现 `ExecutableCleaningRule` 的代码规则。YAML 规则固定在 `post_rewrite`，通过 `document.cleaning.apply_rules()` 一次批量提交。代码规则只能选择 `pre_analysis` 或 `post_rewrite`；banner 在分析前处理，认证替换晚于 YAML 清洗：
 
 ```text
 delete 逻辑轮  → 每个节点只执行首条匹配的删除规则，命中后跳过子树

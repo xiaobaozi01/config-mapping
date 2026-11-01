@@ -287,9 +287,9 @@ def test_insert_after_preserves_declaration_order():
 
 def test_cisco_cache_tracks_mutable_headers():
     document = CiscoDocument("interface Gi0/0/0/0\n")
-    assert document.interface_specs()[0].name == "GigabitEthernet0/0/0/0"
+    assert document.interfaces.analysis.interface_specs()[0].name == "GigabitEthernet0/0/0/0"
     document.root.nodes[0].header = "interface Loopback0"
-    assert document.interface_specs()[0].name == "Loopback0"
+    assert document.interfaces.analysis.interface_specs()[0].name == "Loopback0"
 
 
 def test_banner_body_preserves_trailing_spaces_and_fragment_whitespace():

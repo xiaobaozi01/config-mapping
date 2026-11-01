@@ -12,6 +12,7 @@ from impl.common.domain.outcomes import (
 from impl.common.domain.policies import SimulationAdaptationPolicy
 
 from ..document import JuniperNode, JunosDocument
+from ..operations.interfaces import interface_name, interface_nodes
 
 
 def adapt_to_simulation(
@@ -35,7 +36,7 @@ def enable_data_interfaces(document, context):
     """
     outcome = SimulationAdaptationOutcome()
     parents = {
-        interface_parent(document.resolve_interface(name))
+        interface_parent(document.interfaces.analysis.resolve_interface(name))
         for name in context.data_interfaces
     }
     _enable_data_interfaces(document, parents, outcome)
@@ -57,9 +58,9 @@ def _enable_data_interfaces(document, target_parents, outcome):
 
     只删除顶层 disable 叶子并保留聚合 options，避免改变成员的协商与封装属性。
     """
-    for interface in document._interface_nodes():
+    for interface in interface_nodes(document):
         if (
-            document._interface_name(interface) not in target_parents
+            interface_name(document, interface) not in target_parents
             or not interface.is_block
         ):
             continue
@@ -139,13 +140,13 @@ def remove_empty_interface_options(document, context):
     """
     outcome = SimulationAdaptationOutcome()
     parents = {
-        interface_parent(document.resolve_interface(name))
+        interface_parent(document.interfaces.analysis.resolve_interface(name))
         for name in context.data_interfaces
     }
     options = {"aggregated-ether-options", "gigether-options", "ether-options"}
-    for interface in document._interface_nodes():
+    for interface in interface_nodes(document):
         if (
-            document._interface_name(interface) not in parents
+            interface_name(document, interface) not in parents
             or not interface.is_block
         ):
             continue

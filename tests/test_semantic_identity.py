@@ -114,7 +114,7 @@ class SemanticIdentityTest(unittest.TestCase):
 
     def test_known_rules_drive_group_override(self):
         cisco = CiscoDocument(semantic_config("cisco_group_bgp_override.cfg"))
-        cisco_outcome = cisco.expand_groups([])
+        cisco_outcome = cisco.groups.expand([])
         self.assertTrue(cisco_outcome.success)
         self.assertIn("timers bgp 60 180", cisco.render())
         self.assertNotIn("timers bgp 30 90", cisco.render())
@@ -123,7 +123,7 @@ class SemanticIdentityTest(unittest.TestCase):
         )
 
         junos = JunosDocument(semantic_config("junos_group_bgp_override.cfg"))
-        junos_outcome = junos.expand_groups([])
+        junos_outcome = junos.groups.expand([])
         self.assertTrue(junos_outcome.success)
         self.assertIn("peer-as 65002;", junos.render())
         self.assertNotIn("peer-as 65001;", junos.render())
@@ -134,7 +134,7 @@ class SemanticIdentityTest(unittest.TestCase):
     def test_unknown_identity_warns_or_rolls_back(self):
         source = semantic_config("cisco_group_unknown_identity.cfg")
         warning_document = CiscoDocument(source)
-        warning_outcome = warning_document.expand_groups(
+        warning_outcome = warning_document.groups.expand(
             ["GigabitEthernet0/0/0/0"],
             policy=WashingPolicy(group_unknown_identity="warn"),
         )
@@ -145,7 +145,7 @@ class SemanticIdentityTest(unittest.TestCase):
 
         failing_document = CiscoDocument(source)
         before = failing_document.render()
-        failing_outcome = failing_document.expand_groups(
+        failing_outcome = failing_document.groups.expand(
             ["GigabitEthernet0/0/0/0"],
             policy=WashingPolicy(group_unknown_identity="fail"),
         )

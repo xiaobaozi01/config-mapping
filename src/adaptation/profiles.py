@@ -52,7 +52,10 @@ def normalize_data_interfaces(
     ):
         raise ValueError(f"{vendor.value} 镜像接口名称必须是非空字符串")
     document = parse_document(vendor.value, "")
-    normalized = [document.resolve_interface(name) for name in interfaces]
+    normalized = [
+        document.interfaces.analysis.resolve_interface(name)
+        for name in interfaces
+    ]
     # 分类器负责厂商接口族；完整形态约束防止前缀匹配把垃圾后缀当作物理口。
     shape = (
         r"[A-Za-z-]+\d+(?:/\d+)*(?::\d+)?"
@@ -62,7 +65,8 @@ def normalize_data_interfaces(
     invalid = [
         name
         for name in normalized
-        if document.interface_kind(name) != InterfaceKind.PHYSICAL
+        if document.interfaces.analysis.interface_kind(name)
+        != InterfaceKind.PHYSICAL
         or interface_parent(name) != name
         or re.fullmatch(shape, name) is None
     ]

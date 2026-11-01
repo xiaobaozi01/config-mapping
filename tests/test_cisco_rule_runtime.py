@@ -73,9 +73,9 @@ class RuntimeLifecycleTest(unittest.TestCase):
             "hostname OLD\n"
         )
         with patch.object(rules, "ADAPT_RULES", (rule,)):
-            a = first.adapt_interfaces(set())
-            b = second.adapt_interfaces(set())
-            c = first.adapt_interfaces(set())
+            a = first.compatibility.adapt_interfaces(set())
+            b = second.compatibility.adapt_interfaces(set())
+            c = first.compatibility.adapt_interfaces(set())
         self.assertEqual([visitor.count for visitor in created], [1, 1, 1])
         self.assertEqual(len({id(visitor.session) for visitor in created}), 3)
         self.assertIsNot(created[0].session.result, created[1].session.result)
@@ -242,7 +242,7 @@ class RuntimeFailureTest(unittest.TestCase):
             patch.object(rules, "ADAPT_RULES", (rule,)),
             self.assertRaises(ConfigurationParseError),
         ):
-            document.adapt_interfaces(set())
+            document.compatibility.adapt_interfaces(set())
         self.assertEqual(tree_signature(document.root), snapshot)
         self.assertEqual(document.revision, 0)
 
@@ -407,7 +407,7 @@ class RuntimeReadonlyTest(unittest.TestCase):
         class DirectWriteVisitor(CiscoRuleVisitor):
 
             def visit_node(self, node):
-                self.session.document.replace_references(
+                self.session.document.references.replace(
                     {"Gi0/0/0/0": ["Gi0/0/0/1"]}
                 )
 
@@ -460,7 +460,7 @@ class MigratedScopeTest(unittest.TestCase):
         policy = SimulationAdaptationPolicy(
             mode="stable", ensure_data_interfaces_enabled=False
         )
-        result = document.adapt_to_simulation(policy, set())
+        result = document.simulation.adapt(policy, set())
         self.assertEqual(
             document.root.nodes[0].header, "bfd minimum-interval 10"
         )
@@ -468,10 +468,10 @@ class MigratedScopeTest(unittest.TestCase):
             result.replaced, {"bfd-minimum-interval": 1, "bfd-multiplier": 1}
         )
         self.assertEqual(result.rule_changes, {"cisco.simulate.bfd": 2})
-        self.assertEqual(document.adapt_to_simulation(policy, set()).total, 0)
+        self.assertEqual(document.simulation.adapt(policy, set()).total, 0)
         compatible = CiscoDocument(source)
         self.assertEqual(
-            compatible.adapt_to_simulation(
+            compatible.simulation.adapt(
                 replace(policy, mode="compatible"), set()
             ).total,
             0,

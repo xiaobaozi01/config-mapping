@@ -98,7 +98,7 @@ def _source_semantic_parents(
     仅消费活动链路，并纳入已选 Bundle 的全部物理成员，避免审计遗漏
     未直接出现在拓扑表中的同 Bundle 成员。
     """
-    members = device.document.bundle_members()
+    members = device.document.interfaces.analysis.bundle_members()
     parents = set()
     selected_bundles = set()
     for link in context.topology.links:
@@ -108,7 +108,9 @@ def _source_semantic_parents(
             if endpoint_name != device_name:
                 continue
             parent = interface_parent(
-                device.document.resolve_interface(raw_interface)
+                device.document.interfaces.analysis.resolve_interface(
+                    raw_interface
+                )
             )
             parents.add(parent)
             if bundle := members.get(parent):
@@ -121,7 +123,7 @@ def _source_semantic_parents(
     )
     parents.update(
         spec.parent
-        for spec in device.document.interface_specs()
+        for spec in device.document.interfaces.analysis.interface_specs()
         if spec.kind == InterfaceKind.GATEWAY
     )
     return parents
@@ -177,7 +179,9 @@ class SourceSemanticValidationHandler:
                 device_name,
                 device,
             )
-            outcome = device.document.validate_source_semantics(parents)
+            outcome = device.document.validation.validate_source_semantics(
+                parents
+            )
             if context.strict_input_validation:
                 _report(
                     context,
@@ -224,7 +228,7 @@ class InterfaceClassificationHandler:
             unknown_parents = sorted(
                 {
                     spec.parent
-                    for spec in device.document.interface_specs()
+                    for spec in device.document.interfaces.analysis.interface_specs()
                     if spec.kind == InterfaceKind.UNKNOWN
                 }
             )
@@ -259,12 +263,16 @@ class NonNNICleanupHandler:
             device = context.devices[name]
             # inactive 的预检跳过行同样保护，避免把暂时缺失的拓扑端点当作 UNI。
             protected = {
-                interface_parent(device.document.resolve_interface(interface))
+                interface_parent(
+                    device.document.interfaces.analysis.resolve_interface(
+                        interface
+                    )
+                )
                 for link in context.topology.links
                 for endpoint, interface in link.endpoints()
                 if endpoint == name
             }
-            outcome = device.document.prune_non_nni(
+            outcome = device.document.pruning.prune_non_nni(
                 protected,
                 strict_input_validation=context.strict_input_validation,
             )
@@ -303,7 +311,7 @@ class ReferenceRewriteHandler:
         """
         for device_name in sorted(context.devices):
             device = context.devices[device_name]
-            device.document.replace_references(device.replacement_map)
+            device.document.references.replace(device.replacement_map)
 
 
 class InterfaceCompatibilityHandler:
@@ -319,7 +327,7 @@ class InterfaceCompatibilityHandler:
         """
         for name in sorted(context.devices):
             device = context.devices[name]
-            outcome = device.document.adapt_interfaces(
+            outcome = device.document.compatibility.adapt_interfaces(
                 set(target_parents(device))
             )
             _report(context, name, EventKind.INTERFACE_COMPATIBILITY, outcome)
@@ -345,7 +353,7 @@ class FinalInterfaceValidationHandler:
                 and mapping.action
                 not in {MappingAction.SKIP, MappingAction.PRESERVE}
             }
-            outcome = device.document.validate_final_integrity(
+            outcome = device.document.validation.validate_final_integrity(
                 set(target_parents(device)),
                 removed,
                 device.deferred_interface_references,

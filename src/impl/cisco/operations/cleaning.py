@@ -1,87 +1,65 @@
-"""Cisco IOS XR 配置清洗函数。"""
+"""Cisco IOS XR 清洗能力门面。"""
 
-from __future__ import annotations
-
-import re
+from collections.abc import Sequence
 
 from impl.common.domain.outcomes import CleanupOutcome
-from impl.common.support.lab_account import LAB_PASSWORD, LAB_USERNAME
+from impl.common.rules.cleaning import CleaningAction, CleaningOperation
 
 from ..document import CiscoDocument
-from ..syntax.rewrite_helpers import append_top_level, delete_matching
-
-# 模块级预编译，避免每次调用重复编译正则，并把清洗数据与遍历逻辑分离。
-_MANAGEMENT_TOP_LEVEL: tuple[tuple[str, re.Pattern[str]], ...] = (
-    ("username", re.compile(r"^username\b", re.IGNORECASE)),
-    ("aaa", re.compile(r"^aaa\b", re.IGNORECASE)),
-    ("tacacs", re.compile(r"^(?:tacacs-server|tacacs)\b", re.IGNORECASE)),
-    ("radius", re.compile(r"^(?:radius-server|radius)\b", re.IGNORECASE)),
-    ("taskgroup", re.compile(r"^task-?group\b", re.IGNORECASE)),
-    ("usergroup", re.compile(r"^user-?group\b", re.IGNORECASE)),
-    ("snmp", re.compile(r"^snmp-server\b", re.IGNORECASE)),
-    ("ssh", re.compile(r"^ssh\b", re.IGNORECASE)),
-    ("telnet", re.compile(r"^telnet\b", re.IGNORECASE)),
-)
-
-# line 块内需剥除的认证子命令；line 块本身要保留以承载登录终端。
-_LINE_AUTH_PATTERN = re.compile(
-    r"^(?:password|secret)\b"
-    r"|^login\s+authentication\b"
-    r"|^authorization\b"
-    r"|^accounting\b"
-    r"|^users\s+group\b",
-    re.IGNORECASE,
-)
+from .declarative_cleaning import apply_cleaning_rules
+from .management_cleaning import add_lab_account, clean_management_access
 
 
-def clean_management_access(document: CiscoDocument) -> CleanupOutcome:
-    """删除 IOS XR 顶层管理面块，并剥除 ``line`` 块内的认证子命令。
+class CiscoCleaningOperations:
+    """组合 IOS XR 管理面清洗和声明式规则执行能力。
 
-    删除 username/aaa/tacacs/radius/taskgroup/usergroup/snmp/ssh/telnet 等顶层块，
-    避免生产账号与远程管理凭据进入实验环境；``line`` 块承载 console/vty 等登录终端
-    需要保留，因此只递归删除其中的认证子命令而非整块。
+    能力对象只转发到两个专用模块，不缓存配置状态。
     """
-    outcome = CleanupOutcome()
-    transaction = document.edit()
-    for block in document.root.nodes:
-        if not block.active:
-            continue
-        header = block.header.strip()
-        matched = next(
-            (
-                category
-                for category, pattern in _MANAGEMENT_TOP_LEVEL
-                if pattern.match(header)
-            ),
-            None,
-        )
-        if matched:
-            transaction.delete(block, "删除生产管理面配置")
-            outcome.record(matched)
-            continue
-        if re.match(r"^line\b", header, re.IGNORECASE):
-            removed = delete_matching(
-                transaction,
-                block.nodes,
-                _LINE_AUTH_PATTERN,
-                match_anywhere=True,
-            )
-            outcome.record("line-auth-reference", removed)
-    transaction.apply()
-    return outcome
 
+    __slots__ = ("_document",)
 
-def add_lab_account(document: CiscoDocument) -> None:
-    """在 ``end``/``commit`` 结束标记前插入统一的实验账号。
+    def __init__(self, document: CiscoDocument):
+        """绑定清洗能力所属文档。
 
-    清除生产认证后必须建立已知的本地登录入口，否则输出设备无法接管；插在结束
-    标记之前可确保账号落在配置主体内，又不破坏结束标记之后的任何内容。
-    """
-    transaction = document.edit()
-    account = (
-        f"username {LAB_USERNAME}\n"
-        f" secret 0 {LAB_PASSWORD}\n"
-        " group root-system\n!\n"
-    )
-    append_top_level(transaction, document, account, "建立实验账号")
-    transaction.apply()
+        构造阶段不读取或修改配置。
+        """
+        self._document = document
+
+    def clean_management_access(self) -> CleanupOutcome:
+        """删除生产管理面配置。
+
+        返回结果只包含分类统计。
+        """
+        return clean_management_access(self._document)
+
+    def add_lab_account(self) -> None:
+        """添加统一实验账号。
+
+        账号写入通过 Document 编辑事务完成。
+        """
+        add_lab_account(self._document)
+
+    def apply_rule(
+        self,
+        path: tuple[str, ...],
+        match: str,
+        action: CleaningAction,
+        value: str | None,
+    ) -> int:
+        """执行一条声明式清洗规则。
+
+        返回值是该规则的命中数量。
+        """
+        action = CleaningAction(action)
+        if action == CleaningAction.REPLACE and value is None:
+            value = ""
+        return self.apply_rules(
+            [CleaningOperation(path, match, action, value)]
+        )[0]
+
+    def apply_rules(self, operations: Sequence[CleaningOperation]) -> list[int]:
+        """批量执行声明式清洗规则。
+
+        返回顺序与输入规则顺序一致。
+        """
+        return apply_cleaning_rules(self._document, operations)

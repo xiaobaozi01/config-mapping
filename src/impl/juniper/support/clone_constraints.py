@@ -8,6 +8,8 @@ from typing import TYPE_CHECKING
 from impl.common.domain.interface import referenced_interface_names
 from impl.common.domain.outcomes import InterfaceAdaptationOutcome
 
+from ..operations.interfaces import find_interface_node, logical_names_under
+
 if TYPE_CHECKING:
     from ..document import JuniperNode, JunosDocument
 
@@ -41,9 +43,9 @@ def validate_nni_clone(
     outcome = InterfaceAdaptationOutcome()
     if len(target_interfaces) < 2:
         return outcome
-    source = document.resolve_interface(source)
-    sources = {source, *document.logical_names_under(source)}
-    parent = document._find_interface_node(source)
+    source = document._parser.canonical_interface(source)
+    sources = {source, *logical_names_under(document, source)}
+    parent = find_interface_node(document, source)
     if parent is not None:
         for _, path in _walk(document, parent):
             if re.match(r"^(?:address|unnumbered-address)\b", path[-1]) and any(

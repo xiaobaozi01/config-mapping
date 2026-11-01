@@ -39,7 +39,7 @@ class GroupExpansionHandler:
 
         for device_name in sorted(context.devices):
             device = context.devices[device_name]
-            outcome = device.document.expand_groups(
+            outcome = device.document.groups.expand(
                 known_by_device[device_name],
                 policy=context.washing_policy,
             )

@@ -363,9 +363,13 @@ class TopologyPreflightHandler:
             if not device:
                 continue
             source = interface_parent(
-                device.document.resolve_interface(raw_interface)
+                device.document.interfaces.analysis.resolve_interface(
+                    raw_interface
+                )
             )
-            logical = device.document.bundle_members().get(source)
+            logical = device.document.interfaces.analysis.bundle_members().get(
+                source
+            )
             for reserved in dict.fromkeys((source, logical)):
                 if not reserved:
                     continue

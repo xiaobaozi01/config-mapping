@@ -40,7 +40,7 @@ class CleaningPathTest(unittest.TestCase):
             "   maximum-paths ebgp 8\n"
             "!\n"
         )
-        hits = document.apply_cleaning_rule(
+        hits = document.cleaning.apply_rule(
             (
                 r"^router\s+bgp\s+65000$",
                 r"^vrf\s+CUST-A$",
@@ -65,7 +65,7 @@ class CleaningPathTest(unittest.TestCase):
             "    }\n"
             "}\n"
         )
-        hits = document.apply_cleaning_rule(
+        hits = document.cleaning.apply_rule(
             (r"^interfaces$", "**"),
             r"^sampling$",
             "delete",

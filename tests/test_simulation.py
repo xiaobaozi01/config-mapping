@@ -29,7 +29,7 @@ class SimulationAdaptationTest(unittest.TestCase):
         policy = SimulationAdaptationPolicy()
         document = CiscoDocument(simulation_config("iosxr.cfg"))
         clean_hardware(document, {"GigabitEthernet0/0/0/0"}, policy)
-        first = document.adapt_to_simulation(policy, {"GigabitEthernet0/0/0/0"})
+        first = document.simulation.adapt(policy, {"GigabitEthernet0/0/0/0"})
         rendered = document.render()
 
         self.assertNotIn("carrier-delay", rendered)
@@ -44,7 +44,7 @@ class SimulationAdaptationTest(unittest.TestCase):
         self.assertEqual(rendered.count("bfd multiplier 3"), 2)
         self.assertGreater(first.total, 0)
 
-        second = document.adapt_to_simulation(policy, {"GigabitEthernet0/0/0/0"})
+        second = document.simulation.adapt(policy, {"GigabitEthernet0/0/0/0"})
         self.assertEqual(second.total, 0)
 
     def test_junos_simulation_adaptation_is_scoped_and_idempotent(self):
@@ -52,7 +52,7 @@ class SimulationAdaptationTest(unittest.TestCase):
         policy = SimulationAdaptationPolicy()
         document = JunosDocument(simulation_config("junos.cfg"))
         clean_hardware(document, {"ge-0/0/0"}, policy)
-        first = document.adapt_to_simulation(policy, {"ge-0/0/0"})
+        first = document.simulation.adapt(policy, {"ge-0/0/0"})
         rendered = document.render()
 
         self.assertNotIn("gigether-options", rendered)
@@ -63,14 +63,14 @@ class SimulationAdaptationTest(unittest.TestCase):
         self.assertIn("multiplier 3;", rendered)
         self.assertGreater(first.total, 0)
 
-        second = document.adapt_to_simulation(policy, {"ge-0/0/0"})
+        second = document.simulation.adapt(policy, {"ge-0/0/0"})
         self.assertEqual(second.total, 0)
 
     def test_compatible_simulation_adaptation_preserves_bfd_values(self):
         """compatible 模式只做接口兼容，不改协议稳定性参数。"""
         policy = SimulationAdaptationPolicy(mode="compatible")
         document = CiscoDocument(simulation_config("iosxr.cfg"))
-        document.adapt_to_simulation(policy, {"GigabitEthernet0/0/0/0"})
+        document.simulation.adapt(policy, {"GigabitEthernet0/0/0/0"})
         rendered = document.render()
         self.assertIn("bfd minimum-interval 50", rendered)
         self.assertIn("bfd multiplier 2", rendered)
@@ -85,7 +85,7 @@ class SimulationAdaptationTest(unittest.TestCase):
 
         source = simulation_config("iosxr.cfg")
         document = CiscoDocument(source)
-        outcome = document.adapt_to_simulation(
+        outcome = document.simulation.adapt(
             SimulationAdaptationPolicy(mode="off"),
             {"GigabitEthernet0/0/0/0"},
         )

@@ -14,7 +14,14 @@ from impl.common.domain.interface import (
 from impl.common.domain.outcomes import InterfacePruningOutcome
 from impl.common.rules import merge_interface_results
 
-from ..operations.interfaces import _collect_active_vlans, _expand_vlan_tokens
+from ..operations.interfaces import (
+    _collect_active_vlans,
+    _expand_vlan_tokens,
+    interface_name,
+    interface_nodes,
+    unit_nodes,
+    unit_number,
+)
 from .compatibility import _validate_pruned_references, _walk
 
 if TYPE_CHECKING:
@@ -64,10 +71,10 @@ class _JunosPruner:
         self.strict_input_validation = strict_input_validation
         self.result = InterfacePruningOutcome()
         self.protected = {
-            interface_parent(self.document.resolve_interface(name))
+            interface_parent(self.document._parser.canonical_interface(name))
             for name in protected_parents
         }
-        members = self.document.bundle_members()
+        members = self.document.interfaces.analysis.bundle_members()
         # 拓扑引用成员口时，聚合业务及其全部成员均留给 NNI 阶段处理。
         self.protected.update(
             bundle
@@ -79,8 +86,8 @@ class _JunosPruner:
             for member, bundle in members.items()
             if bundle in self.protected
         )
-        self.nodes = list(self.document._interface_nodes())
-        self.specs = self.document.interface_specs()
+        self.nodes = list(interface_nodes(self.document))
+        self.specs = self.document.interfaces.analysis.interface_specs()
         self.bindings = self._collect_bindings()
         self.removed = self.result.removed_interfaces
         self.vlan_cache = {}
@@ -132,11 +139,11 @@ class _JunosPruner:
         self.payloads = {}
         self.source_addresses: dict[tuple[tuple[str, ...], str], set[str]] = {}
         for node in self.nodes:
-            parent = self.document._interface_name(node)
-            units = list(self.document._unit_nodes(node))
+            parent = interface_name(self.document, node)
+            units = list(unit_nodes(self.document, node))
             for payload in units or [node]:
                 name = (
-                    f"{parent}.{self.document._unit_number(payload)}"
+                    f"{parent}.{unit_number(self.document, payload)}"
                     if units
                     else parent
                 )
@@ -332,9 +339,9 @@ class _JunosPruner:
         父口保护集合同时覆盖子 unit，使拓扑引用父口或子口都能保留完整业务树。
         """
         for node in self.nodes:
-            parent = self.document._interface_name(node)
-            kind = self.document.interface_kind(parent)
-            units = list(self.document._unit_nodes(node))
+            parent = interface_name(self.document, node)
+            kind = self.document.interfaces.analysis.interface_kind(parent)
+            units = list(unit_nodes(self.document, node))
             if (
                 kind in {InterfaceKind.PHYSICAL, InterfaceKind.BUNDLE}
                 and parent not in self.protected
@@ -350,7 +357,7 @@ class _JunosPruner:
         """
         names = {
             parent,
-            *(f"{parent}.{self.document._unit_number(unit)}" for unit in units),
+            *(f"{parent}.{unit_number(self.document, unit)}" for unit in units),
         }
         self.result.removed_interfaces.update(names)
         for child, _ in _walk(self.document, node):
@@ -363,7 +370,7 @@ class _JunosPruner:
         被保留业务引用的 unit 单独保留；所有 unit 都失效时才删除整个父接口。
         """
         for unit in units:
-            name = f"{parent}.{self.document._unit_number(unit)}"
+            name = f"{parent}.{unit_number(self.document, unit)}"
             if name in self.kept_gateways:
                 continue
             self.result.removed_interfaces.add(name)
@@ -662,7 +669,8 @@ def prune_interface_dependencies(
             strict_input_validation=strict_input_validation,
         )
         worker.result.removed_interfaces.update(
-            document.resolve_interface(name) for name in removed_interfaces
+            document._parser.canonical_interface(name)
+            for name in removed_interfaces
         )
         worker.clean(document.root)
         validation = _validate_pruned_references(

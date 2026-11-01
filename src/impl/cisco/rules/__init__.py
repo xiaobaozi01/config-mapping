@@ -104,7 +104,8 @@ def prune_member_dependencies(
     context = PruneContext(
         frozenset(),
         frozenset(
-            document.resolve_interface(name) for name in removed_interfaces
+            document.interfaces.analysis.resolve_interface(name)
+            for name in removed_interfaces
         ),
         remove_non_nni=False,
     )

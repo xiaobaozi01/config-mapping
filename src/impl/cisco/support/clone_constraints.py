@@ -8,6 +8,7 @@ from typing import TYPE_CHECKING
 from impl.common.domain.interface import interface_parent
 from impl.common.domain.outcomes import InterfaceAdaptationOutcome
 
+from ..operations.interfaces import interface_nodes, logical_names_under
 from ..syntax.semantics import _CISCO_INTERFACE_TOKEN
 
 if TYPE_CHECKING:
@@ -40,10 +41,10 @@ def validate_nni_clone(
     outcome = InterfaceAdaptationOutcome()
     if len(target_interfaces) < 2:
         return outcome
-    source = document.resolve_interface(source)
-    sources = {source, *document.logical_names_under(source)}
+    source = document._parser.canonical_interface(source)
+    sources = {source, *logical_names_under(document, source)}
     indexed = {name.lower(): name for name in sources}
-    for block in document._interface_nodes():
+    for block in interface_nodes(document):
         name = block.interface_name
         if name is None or interface_parent(name) != source:
             continue
@@ -67,9 +68,10 @@ def validate_nni_clone(
         if not (bgp_source or ldp_source or unnumbered):
             continue
         refs = {
-            indexed[document.resolve_interface(match.group()).lower()]
+            indexed[document._parser.canonical_interface(match.group()).lower()]
             for match in _CISCO_INTERFACE_TOKEN.finditer(node.header)
-            if document.resolve_interface(match.group()).lower() in indexed
+            if document._parser.canonical_interface(match.group()).lower()
+            in indexed
         }
         if refs:
             outcome.errors.append(

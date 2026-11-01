@@ -68,3 +68,25 @@ class JuniperNode(ConfigNode):
             and not self.configured_inactive
             and not self.is_comment_only
         )
+
+
+def top_block(
+    root: JuniperNode,
+    name: str,
+    *,
+    create: bool = False,
+) -> JuniperNode | None:
+    """查找活动顶层配置块，并可按需创建。
+
+    新块使用显式子节点列表创建；调用方负责在需要时通过 Document Editor
+    发布工作树修改。
+    """
+    for node in root.nodes:
+        if node.effective and node.is_block and node.base_header == name:
+            return node
+    if not create:
+        return None
+    node = JuniperNode(name, [])
+    root.children.append(node)
+    node.parent = root
+    return node

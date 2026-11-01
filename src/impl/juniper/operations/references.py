@@ -84,10 +84,35 @@ def replace_references(document, replacements: dict[str, list[str]]) -> None:
     接口定义名称由迁移步骤处理，本方法只更新定义之外的引用且过滤恒等映射。
     """
     relevant = {
-        document.resolve_interface(source): list(dict.fromkeys(targets))
+        document.interfaces.analysis.resolve_interface(source): list(
+            dict.fromkeys(targets)
+        )
         for source, targets in replacements.items()
         if targets and targets != [source]
     }
     if relevant:
         with document.edit().bulk() as working_root:
             _ReferenceRewriter(document, relevant).walk(working_root)
+
+
+class JunosReferenceOperations:
+    """提供 Junos 接口引用改写能力。
+
+    能力对象只调用现有引用展开函数，不保存树状态。
+    """
+
+    __slots__ = ("_document",)
+
+    def __init__(self, document):
+        """绑定引用能力所属文档。
+
+        构造阶段不读取或修改配置。
+        """
+        self._document = document
+
+    def replace(self, replacements: dict[str, list[str]]) -> None:
+        """按映射表重写接口引用。
+
+        引用遍历通过 Document 批量编辑事务提交。
+        """
+        replace_references(self._document, replacements)

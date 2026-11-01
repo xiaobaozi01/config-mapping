@@ -370,10 +370,16 @@ classDiagram
 
     class VendorConfiguration {
         <<Protocol>>
-        expand_groups()
-        interface_specs()
-        replace_references()
-        clean_management_access()
+        interfaces
+        bundles
+        groups
+        cleaning
+        pruning
+        compatibility
+        validation
+        references
+        simulation
+        hostname()
         render()
     }
 
@@ -499,16 +505,26 @@ Excel 只列物理链路。Group 展开后从成员绑定反查 Bundle/ae，再�
 
 ### 11.1 应用层只依赖业务能力
 
-`adaptation` 的业务处理模块不应该知道 Cisco 或 Junos Context 类型。它们只通过 `VendorConfiguration` 调用：
+`adaptation` 的业务处理模块不应该知道 Cisco 或 Junos Context 类型。它们通过
+`VendorDocument` 暴露的窄能力调用：
 
-- `expand_groups()`
-- `interface_specs()` / `business_interface_names()`
-- `clone_interface_tree()` / `rename_interface_tree()`
-- `prune_non_nni()` / `adapt_interfaces()` / `validate_interfaces()`
-- `replace_references()`
-- `clean_management_access()`
-- `adapt_to_simulation()`
-- `render()`
+- `document.interfaces.analysis`
+- `document.interfaces.transform`
+- `document.bundles`
+- `document.groups`
+- `document.cleaning`
+- `document.pruning`
+- `document.compatibility`
+- `document.validation`
+- `document.references`
+- `document.simulation`
+
+Document 只保留 `hostname()`、`render()`、树生命周期、编辑事务和分析缓存。
+VendorConfiguration 是 VendorDocument 的兼容别名。
+
+所有能力门面类统一位于厂商 `operations/`。裁剪、兼容、校验和模拟的规则实现仍在
+`rules/`，`operations/` 中的对应模块只提供薄能力入口，使 Document 的依赖位置
+保持一致。
 
 这使相同的 NNI 与非 NNI 清理流程可以同时调度 Cisco 与 Juniper，而厂商语法差异留在各自实现中。
 
@@ -549,7 +565,7 @@ interfaces {
 
 1. 在 `Vendor` 中增加厂商枚举及别名。
 2. 增加配置 Document、AST、解析和渲染。
-3. 实现 `VendorConfiguration` 的全部能力。
+3. 实现 `VendorDocument` 核心与各窄能力协议。
 4. 增加 Profile 默认值及 YAML 支持。
 5. 在 `parse_document()` 中注册解析器。
 6. 增加独立 fixture 与端到端测试。
@@ -766,11 +782,14 @@ flowchart TD
 2. 实现只带 `process(context)` 的 Stage。
 3. 在 `build_default_pipeline()` 中显式插入。
 4. 测试阶段顺序和出错停止行为。
-5. 如果存在厂商差异，把语法操作加入 `VendorConfiguration`，实现放到厂商模块。
+5. 如果存在厂商差异，先归入对应的窄能力 Protocol（例如
+   `InterfaceAnalysis`、`InterfaceTransform`、`CleaningOperations`），实现放到
+   厂商能力模块；Document 只增加按需能力入口。
 
 ### 16.5 增加清洗项
 
-- 所有环境都必须清理的管理面内容：修改厂商 `clean_management_access()`。
+- 所有环境都必须清理的管理面内容：修改厂商
+  `CleaningOperations.clean_management_access()`。
 - PTP、协议认证、PKI、硬件、NAT、流量统计及镜像版本相关内容：在对应厂商目标镜像目录的 `cleaning.yaml` 增加规则。
 - 规则默认 `enable: true`；需要保留某类配置时由项目维护者在内置文件中关闭，同一 `category` 的规则应同时开关。
 - 只有“删除旧认证并配置实验登录凭据”这类复合业务动作继续保留专用 Handler。
@@ -888,7 +907,7 @@ adaptation.service.convert
   → adaptation.pipeline.build_default_pipeline
   → ConversionPipeline.execute
   → 各 Handler.process
-  → CleaningRulesHandler / VendorConfiguration 的厂商实现
+  → CleaningRulesHandler / VendorDocument 对应的厂商能力实现
   → adaptation.service.write_outputs
 ```
 
