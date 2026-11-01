@@ -428,6 +428,42 @@ class ImplementationPackageLayoutTest(unittest.TestCase):
                 self.assertIsNone(importlib.util.find_spec(module))
 
 
+class HeaderParserOwnershipTest(unittest.TestCase):
+    def test_header_parsers_are_owned_by_syntax_modules(self):
+        from impl.cisco import CiscoDocument
+        from impl.cisco.syntax.header_parser import _CiscoHeaderParser
+        from impl.juniper import JunosDocument
+        from impl.juniper.syntax.header_parser import _JunosHeaderParser
+
+        self.assertEqual(
+            _CiscoHeaderParser.__module__,
+            "impl.cisco.syntax.header_parser",
+        )
+        self.assertEqual(
+            _JunosHeaderParser.__module__,
+            "impl.juniper.syntax.header_parser",
+        )
+        self.assertIsInstance(CiscoDocument("")._parser, _CiscoHeaderParser)
+        self.assertIsInstance(JunosDocument("")._parser, _JunosHeaderParser)
+
+    def test_header_parser_classes_are_not_defined_in_document(self):
+        project_root = Path(__file__).parents[1]
+        blocked = {
+            "cisco": "_CiscoHeaderParser",
+            "juniper": "_JunosHeaderParser",
+        }
+        for vendor, class_name in blocked.items():
+            path = project_root / "src" / "impl" / vendor / "document.py"
+            tree = ast.parse(path.read_text(encoding="utf-8"))
+            names = {
+                node.name
+                for node in tree.body
+                if isinstance(node, (ast.ClassDef, ast.FunctionDef))
+            }
+            with self.subTest(vendor=vendor):
+                self.assertNotIn(class_name, names)
+
+
 class CapabilityProtocolLayoutTest(unittest.TestCase):
 
     def test_capability_protocols_are_importable(self):

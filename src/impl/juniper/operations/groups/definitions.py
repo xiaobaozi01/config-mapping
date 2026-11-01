@@ -12,10 +12,8 @@ from impl.common.domain.outcomes import GroupExpansionOutcome
 from impl.common.domain.policies import WashingPolicy
 from impl.common.support.errors import require_invariant
 
-from ...document import (
-    JuniperNode,
-    canonical_junos_interface,
-)
+from ...syntax.ast import JuniperNode
+from ...syntax.header_parser import canonical_junos_interface
 from .models import _ExpansionState, _PreparedExpansion
 
 

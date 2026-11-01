@@ -15,10 +15,12 @@ from impl.common.domain.outcomes import (
 from ..document import (
     CiscoDocument,
     CiscoNode,
-    canonical_cisco_interface,
 )
 from ..operations.interfaces.access import interface_nodes
-from ..syntax.semantics import _CISCO_INTERFACE_TOKEN
+from ..syntax.semantics import (
+    _CISCO_INTERFACE_TOKEN,
+    canonical_cisco_interface,
+)
 from .support import CiscoRuleVisitor, CiscoVisitorRule, document_scope
 
 # 整个接口 token 一次规范化，避免 Gi/BE 缩写和主口/子口前缀误匹配。

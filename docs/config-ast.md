@@ -5,8 +5,9 @@ Cisco 和 Juniper 使用纯 Python Parser，不依赖解析器生成器、Java �
 
 ## 节点与解析
 
-共享代码位于 `src/impl/common/config_ast/`，厂商的 `ast.py`、`parser.py` 和
-`writer.py` 位于各自的 `syntax/` 子包。节点保存 `header`、`children`、`parent`、`kind`、
+共享代码位于 `src/impl/common/config_ast/`，厂商的 `ast.py`、`parser.py`、
+`header_parser.py` 和 `writer.py` 位于各自的 `syntax/` 子包。节点保存
+`header`、`children`、`parent`、`kind`、
 注释及原始 `location`。`header` 不含缩进和结构分号、大括号；`kind` 区分根、
 普通语句、块、group、注释、分隔符及不透明 banner。空块仍是块。
 
