@@ -10,7 +10,6 @@ from adaptation.cleaning_rules import CleaningRulesHandler
 from impl.cisco.document import CiscoDocument
 from impl.juniper.document import JunosDocument
 
-
 FIXTURES = Path(__file__).parent / "fixtures"
 
 
@@ -20,6 +19,7 @@ def washing_config(name: str) -> str:
 
 
 class WashingTest(unittest.TestCase):
+
     def test_mandatory_washing_removes_management_access_and_snmp(self):
         """默认只清管理面必删项，协议认证和业务能力继续保留。"""
         cisco_document = CiscoDocument(washing_config("iosxr.cfg"))

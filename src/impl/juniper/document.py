@@ -5,6 +5,7 @@ from __future__ import annotations
 import copy
 import re
 from collections.abc import Iterable, Sequence
+from contextlib import contextmanager
 from dataclasses import dataclass
 from functools import lru_cache
 
@@ -15,7 +16,6 @@ from impl.common.cleaning import (
 )
 from impl.common.contracts import VendorConfiguration
 from impl.common.empty_blocks import EmptyBlockAction
-from impl.common.errors import require_invariant
 from impl.common.interface import (
     BundleMode,
     InterfaceKind,
@@ -36,6 +36,9 @@ from impl.common.outcomes import (
 )
 from impl.common.policies import SimulationAdaptationPolicy, WashingPolicy
 
+from .antlr.context import JunosContext
+from .antlr.parsing import JunosSnapshot
+from .antlr.rewriting import JunosRewriteTransaction
 from .empty_blocks import vmx_empty_block_policy
 
 
@@ -151,7 +154,7 @@ def _inner_vlan_from_header(header: str) -> int | None:
 
 
 @dataclass
-class JunosNode:
+class _WorkNode:
     """表示 Junos 大括号配置树中的块节点或叶子语句。
 
     ``children=None`` 表示叶子，列表表示块；``active`` 仅表示转换过程中的逻辑
@@ -163,7 +166,7 @@ class JunosNode:
     """
 
     header: str
-    children: list[JunosNode] | None = None
+    children: list[_WorkNode] | None = None
     active: bool = True
     origin: str = "explicit"
     rank: tuple[int, ...] = (1_000_000, 0)
@@ -189,6 +192,14 @@ class JunosNode:
         return _parse_header_prefixes(self.header)[1]
 
     @property
+    def base_header(self) -> str:
+        """返回去除 inactive/protect 前缀的语句头。
+
+        工作树节点仍需复现 Context 的语义身份，避免临时计算改变规则匹配结果。
+        """
+        return _parse_header_prefixes(self.header)[0]
+
+    @property
     def is_comment_only(self) -> bool:
         """判断节点是否只承载独立注释。
 
@@ -208,13 +219,33 @@ class JunosNode:
             and not self.is_comment_only
         )
 
-    def clone(self) -> JunosNode:
+    def clone(self) -> _WorkNode:
         """深拷贝当前节点及其完整子树。
 
         M-LAG 拆分和引用一对多展开都需要从同一源配置生成多个目标；
         深拷贝可防止修改某个目标时连带改变原节点或其他副本。
         """
         return copy.deepcopy(self)
+
+    @property
+    def nodes(self):
+        """返回与只读 Context 对齐的直接子节点视图。
+
+        统一节点协议后，分析代码无需区分正式 Context 和临时业务工作树。
+        """
+        return tuple(self.children or [])
+
+    def walk(self, *, include_self=False, include_formatting=False):
+        """按深度优先顺序遍历临时业务工作节点。
+
+        输出顺序与 Context.walk 保持一致，使复用算法得到相同的遍历语义。
+        """
+        pending = [self] if include_self else list(reversed(self.nodes))
+        while pending:
+            node = pending.pop()
+            if include_formatting or not node.is_comment_only:
+                yield node
+            pending.extend(reversed(node.nodes))
 
 
 class _JunosHeaderParser:
@@ -272,7 +303,7 @@ class _JunosHeaderParser:
         result, inactive = self.header_prefixes(header)
         return f"inactive: {result}" if inactive else result
 
-    def is_effective(self, node: JunosNode) -> bool:
+    def is_effective(self, node: _WorkNode) -> bool:
         """判断节点是否参与当前生效配置。
 
         header 解析可以缓存，但节点活动和注释会直接变化，因此这些状态始终实时读取。
@@ -328,7 +359,7 @@ class _ReferenceRewriter:
             dict.fromkeys(current + value[cursor:] for current in variants)
         )
 
-    def walk(self, node: JunosNode, path: tuple[str, ...] = ()) -> None:
+    def walk(self, node: _WorkNode, path: tuple[str, ...] = ()) -> None:
         """递归改写有效节点中的接口引用。
 
         根 interfaces 下的定义名称由迁移步骤负责，仅其内部引用在这里替换，避免重复改名。
@@ -363,22 +394,327 @@ class JunosDocument(VendorConfiguration):
     """提供可修改 Junos 配置树及应用层所需的统一厂商门面。
 
     类本身负责大括号解析、渲染、声明式清洗规则和引用替换；接口迁移、group、清洗及模拟
-    适配委托给独立厂商模块。这样应用层不需要了解 ``JunosNode``，厂商语法操作也
+    适配委托给独立厂商模块。这样应用层不需要了解 ``_WorkNode``，厂商语法操作也
     能按职责拆分，而仍由一个文档对象维护完整转换状态。
     """
 
     vendor = "juniper_junos"
 
     def __init__(self, text: str):
-        """创建不参与渲染的虚拟根节点，并解析完整 Junos 文本。
+        """从 Junos 文本建立当前源码与 ANTLR 解析快照。
 
-        虚拟根统一承载多个顶层块，使所有遍历都可从单一节点开始；构造时立即解析并
-        校验括号，可在任何配置改写发生前拒绝结构损坏的输入。
+        构造时立即完成结构校验，后续业务查询只读取同一不可变修订。
         """
         self._parser = _JunosHeaderParser()
-        self.root = JunosNode("<root>", [])
-        self._parse(text)
+        self._snapshot = JunosSnapshot(text)
         self._interface_analysis_cache = InterfaceAnalysisCache()
+
+    @property
+    def snapshot(self):
+        """返回当前不可变 Junos 解析快照。
+
+        事务和缓存都以快照为一致性边界，避免读取跨修订混合状态。
+        """
+        return self._snapshot
+
+    @property
+    def source(self):
+        """返回当前快照的完整源码。
+
+        源码与 token 流共享同一修订，可保证查询和输出不会看到不同版本。
+        """
+        return self.snapshot.text
+
+    @property
+    def revision(self):
+        """返回当前快照的单调修订号。
+
+        修订号用于识别发布次数和缓存失效，不承担持久化标识职责。
+        """
+        return self.snapshot.revision
+
+    @property
+    def root(self):
+        """返回当前快照的 Junos 配置根 Context。
+
+        正常查询使用只读根，临时算法执行期间才切换到隔离工作树。
+        """
+        working_root = getattr(self, "_working_root", None)
+        if working_root is not None:
+            return working_root
+        return self.snapshot.root
+
+    def rewrite(self):
+        """创建绑定当前快照的文本重写事务。
+
+        延迟提交使多步编辑共享相同坐标，并在候选文本重新解析后原子发布。
+        """
+        return JunosRewriteTransaction(self)
+
+    def _publish(self, snapshot):
+        """原子替换当前快照并使接口分析缓存失效。
+
+        快照变化代表配置语义已改变，旧缓存和旧 Context 不能继续复用。
+        """
+        self._snapshot = snapshot
+        self._interface_analysis_cache = InterfaceAnalysisCache()
+
+    def __deepcopy__(self, _memo):
+        """复制当前源码并从同一文本建立独立快照。
+
+        重新解析而不是共享 Context，可让副本后续编辑不影响原文档。
+        """
+        return type(self)(self.source)
+
+    def _work_root(self):
+        """把当前只读 Context 快照转换成临时业务工作树。
+
+        复杂业务算法需要可变结构，但工作树只存在一次操作期间且不成为文档状态。
+        """
+        return _WorkNode(
+            "<root>",
+            [self._work_node(node) for node in self.root.nodes],
+        )
+
+    @contextmanager
+    def _working_tree(self):
+        """在临时工作树上执行既有算法，退出后恢复只读 Context 根。
+
+        作用域隔离保证异常或校验失败不会泄漏部分业务树修改。
+        """
+        working_root = self._work_root()
+        previous = getattr(self, "_working_root", None)
+        self._working_root = working_root
+        try:
+            yield working_root
+        finally:
+            if previous is None:
+                del self._working_root
+            else:
+                self._working_root = previous
+
+    def _work_node(self, node):
+        """递归复制一个 Context 为独立的 Junos 业务节点。
+
+        同时复制状态和源码声明来源，使临时算法保持与当前修订一致的业务语义。
+        """
+        return _WorkNode(
+            node.header,
+            None
+            if not node.is_block
+            else [self._work_node(child) for child in node.nodes],
+            comment=node.comment,
+            declared_in_source=node.declared_in_source,
+        )
+
+    @staticmethod
+    def _work_signature(node: _WorkNode):
+        """生成工作节点的结构和原始文本签名。
+
+        递归签名可识别真实变化，避免把未修改子树重新格式化后写回源码。
+        """
+        return (
+            node.header,
+            node.active,
+            node.comment,
+            tuple(
+                JunosDocument._work_signature(child)
+                for child in node.children or []
+            ),
+            node.children is None,
+        )
+
+    def _render_work_node(self, node: _WorkNode, depth: int = 0) -> str:
+        """把工作节点渲染成未经最终空块策略处理的 Junos 文本。
+
+        发布阶段需要保留源码块和生成块的差异，最终空块策略稍后才在 render 应用。
+        """
+        if not node.active:
+            return ""
+        if node.is_block and not self._has_renderable_work_child(node):
+            if not node.declared_in_source:
+                return ""
+            indent = "    " * depth
+            statement = indent + self._parser.output_header(node.header) + ";"
+            if node.comment:
+                statement += " " + node.comment
+            return statement
+        if not node.is_block and not node.header and not node.comment:
+            return ""
+        indent = "    " * depth
+        header = self._parser.output_header(node.header)
+        if node.children is None:
+            if node.comment:
+                header = f"{header} {node.comment}" if header else node.comment
+            return indent + header
+        opening = indent + header + " {"
+        children = [
+            self._render_work_node(child, depth + 1) for child in node.children
+        ]
+        result = "\n".join(
+            [
+                opening,
+                *(child for child in children if child),
+                indent + "}",
+            ]
+        )
+        if node.comment:
+            return f"{result} {node.comment}"
+        return result
+
+    def _has_renderable_work_child(self, node: _WorkNode) -> bool:
+        """判断块内是否至少有一个最终可输出的子节点。
+
+        递归识别可输出后代，避免新生成的空容器因中间节点存在而污染最终配置。
+        """
+        for child in node.children or []:
+            if not child.active:
+                continue
+            if not child.is_block:
+                if child.header or child.comment:
+                    return True
+                continue
+            if child.declared_in_source or self._has_renderable_work_child(
+                child
+            ):
+                return True
+        return False
+
+    def _publish_work_root(self, working_root: _WorkNode) -> None:
+        """把临时工作树中实际变化的顶层节点发布到当前快照。
+
+        只通过一个文本事务发布全部差异，确保候选语法失败时整体保持原快照。
+        """
+        baseline = self._work_root()
+        transaction = self.rewrite()
+        contexts = [
+            node for node in self.root.nodes if not node.is_comment_only
+        ]
+        baseline_nodes = [
+            node for node in baseline.children or [] if not node.is_comment_only
+        ]
+        replacements = [
+            node
+            for node in working_root.children or []
+            if not node.is_comment_only
+        ]
+        self._publish_children(
+            transaction,
+            self.root,
+            contexts,
+            baseline_nodes,
+            replacements,
+        )
+        transaction.commit()
+
+    def _publish_children(
+        self,
+        transaction,
+        parent,
+        contexts,
+        originals,
+        replacements,
+    ) -> None:
+        """递归发布同级节点，仅替换实际变化的子树。
+
+        细粒度差异能保留未修改兄弟节点的原始空白、注释和源码写法。
+        """
+        pairs, unmatched = self._match_children(
+            contexts, originals, replacements
+        )
+        for context, original, replacement in pairs:
+            self._publish_node(transaction, context, original, replacement)
+        for context in unmatched:
+            transaction.delete(context, "删除不再生效的 Junos 配置")
+        consumed = {id(replacement) for _, _, replacement in pairs}
+        for replacement in replacements:
+            if id(replacement) not in consumed:
+                rendered = self._render_work_node(replacement)
+                if rendered:
+                    transaction.append_child(
+                        parent,
+                        rendered + "\n",
+                        "新增 Junos 配置",
+                    )
+
+    def _match_children(self, contexts, originals, replacements):
+        """按位置或稳定 header 匹配原始 Context 和工作节点。
+
+        顺序稳定时优先按位置匹配以支持改名，存在删除时再按身份匹配避免错位。
+        """
+        if len(contexts) == len(replacements) and all(
+            replacement.active for replacement in replacements
+        ):
+            pairs = list(zip(contexts, originals, replacements, strict=True))
+            return pairs, ()
+        queues = {}
+        for replacement in replacements:
+            queues.setdefault(self._node_key(replacement), []).append(
+                replacement
+            )
+        pairs, unmatched = [], []
+        for context, original in zip(contexts, originals, strict=True):
+            choices = queues.get(self._node_key(context))
+            if not choices:
+                unmatched.append(context)
+                continue
+            pairs.append((context, original, choices.pop(0)))
+        return pairs, tuple(unmatched)
+
+    @staticmethod
+    def _node_key(node):
+        """返回用于无序匹配的语句身份。
+
+        注释和普通语句使用不同键空间，防止注释文本与命令头被错误配对。
+        """
+        if node.is_comment_only:
+            return ("comment", node.comment)
+        return ("statement", node.header)
+
+    def _publish_node(
+        self, transaction, context, original, replacement
+    ) -> None:
+        """发布一个已匹配节点的局部变化。
+
+        只在类型、注释或头部变化时改写最小范围，并继续递归处理父级相同的子树。
+        """
+        if not replacement.active:
+            transaction.delete(context, "删除不再生效的 Junos 配置")
+            return
+        if self._work_signature(replacement) == self._work_signature(original):
+            return
+        if context.is_block != replacement.is_block:
+            self._replace_work_subtree(transaction, context, replacement)
+            return
+        if context.comment != replacement.comment:
+            self._replace_work_subtree(transaction, context, replacement)
+            return
+        if context.header != replacement.header:
+            transaction.replace_header(
+                context,
+                replacement.header,
+                "发布 Junos 配置变换",
+            )
+        if context.is_block:
+            self._publish_children(
+                transaction,
+                context,
+                tuple(context.nodes),
+                tuple(original.children or []),
+                tuple(child for child in replacement.children or []),
+            )
+
+    def _replace_work_subtree(self, transaction, context, replacement) -> None:
+        """用工作节点文本替换一个完整子树。
+
+        结构性变化无法局部 patch 时统一走完整替换，并由事务负责缩进和重解析。
+        """
+        rendered = self._render_work_node(replacement)
+        transaction.replace_subtree(
+            context,
+            rendered + ("\n" if rendered else ""),
+            "发布 Junos 配置变换",
+        )
 
     def hostname(self) -> str | None:
         """返回 ``system`` 块下最后一条有效的 ``host-name`` 语句值，未配置时返回 ``None``。
@@ -388,10 +724,10 @@ class JunosDocument(VendorConfiguration):
         结尾分号，便于与 Excel 中的设备名直接比较。
         """
         system = self._top_block("system")
-        if not system or system.children is None:
+        if not system or not system.is_block:
             return None
         value: str | None = None
-        for child in system.children:
+        for child in system.nodes:
             if not self._parser.is_effective(child) or child.is_block:
                 continue
             statement = self._parser.base_header(child.header)
@@ -614,7 +950,7 @@ class JunosDocument(VendorConfiguration):
         stack = [self.root]
         for header, comment, number in self._expand_inline_fragments(text):
             if not header:
-                stack[-1].children.append(JunosNode("", comment=comment))
+                stack[-1].children.append(_WorkNode("", comment=comment))
                 continue
             if header in {"}", "};"}:
                 if len(stack) == 1:
@@ -623,10 +959,10 @@ class JunosDocument(VendorConfiguration):
                     )
                 stack.pop()
                 if comment:
-                    stack[-1].children.append(JunosNode("", comment=comment))
+                    stack[-1].children.append(_WorkNode("", comment=comment))
                 continue
             if header.endswith("{"):
-                node = JunosNode(
+                node = _WorkNode(
                     header[:-1].strip(),
                     [],
                     comment=comment,
@@ -637,9 +973,9 @@ class JunosDocument(VendorConfiguration):
                 continue
             if "{" in header or "}" in header:
                 # 预处理未拆分的未知写法继续按原策略作为叶子保留。
-                stack[-1].children.append(JunosNode(header, comment=comment))
+                stack[-1].children.append(_WorkNode(header, comment=comment))
                 continue
-            stack[-1].children.append(JunosNode(header, comment=comment))
+            stack[-1].children.append(_WorkNode(header, comment=comment))
         if len(stack) != 1:
             raise ValueError("Junos 配置大括号不平衡")
 
@@ -653,18 +989,20 @@ class JunosDocument(VendorConfiguration):
         """
         return _parse_header_prefixes(header)[0]
 
-    def _top_block(self, name: str, create: bool = False) -> JunosNode | None:
+    def _top_block(self, name: str, create: bool = False) -> _WorkNode | None:
         """查找指定活动顶层块，并在请求时创建缺失块。
 
         清洗和账号注入等操作经常需要访问 ``system``、``security`` 或 ``interfaces``；
         统一入口可避免各模块重复遍历根节点，并保证新块只在明确 ``create=True`` 时
         追加，从而不因只读查询意外改变配置。
         """
-        require_invariant(
-            self.root.children is not None,
-            "Junos 文档根节点必须可包含子节点",
+        working_root = getattr(self, "_working_root", None)
+        nodes = (
+            working_root.children
+            if working_root is not None
+            else self.root.nodes
         )
-        for node in self.root.children:
+        for node in nodes:
             if (
                 self._parser.is_effective(node)
                 and node.is_block
@@ -672,12 +1010,28 @@ class JunosDocument(VendorConfiguration):
             ):
                 return node
         if create:
-            node = JunosNode(name, [])
-            self.root.children.append(node)
-            return node
+            if working_root is not None:
+                node = _WorkNode(name, [])
+                working_root.children.append(node)
+                return node
+            transaction = self.rewrite()
+            transaction.append_child(
+                self.root, f"{name} {{\n}}", "创建 Junos 配置容器"
+            )
+            transaction.commit()
+            return next(
+                (
+                    node
+                    for node in self.root.nodes
+                    if self._parser.is_effective(node)
+                    and node.is_block
+                    and self._parser.base_header(node.header) == name
+                ),
+                None,
+            )
         return None
 
-    def _interfaces_block(self, create: bool = False) -> JunosNode | None:
+    def _interfaces_block(self, create: bool = False) -> _WorkNode | None:
         """返回顶层 ``interfaces`` 块，并可按需创建。
 
         该专用入口让接口操作不必重复硬编码顶层名称，同时继承 ``_top_block`` 的活动
@@ -685,22 +1039,22 @@ class JunosDocument(VendorConfiguration):
         """
         return self._top_block("interfaces", create=create)
 
-    def _interface_nodes(self) -> list[JunosNode]:
+    def _interface_nodes(self) -> list[_WorkNode]:
         """返回 ``interfaces`` 下仍有效且具有子树的接口节点。
 
         过滤内部逻辑删除节点和非块语句，可让接口规格、聚合关系及迁移操作只处理
         真正的接口定义，而不会把注释式叶子或已停用副本当作活动接口。
         """
         block = self._interfaces_block()
-        if not block or block.children is None:
+        if not block or not block.is_block:
             return []
         return [
             node
-            for node in block.children
+            for node in block.nodes
             if self._parser.is_effective(node) and node.is_block
         ]
 
-    def _interface_name(self, node: JunosNode) -> str:
+    def _interface_name(self, node: _WorkNode) -> str:
         """从接口节点 header 的首个字段提取规范化接口名。
 
         先移除状态前缀再规范化，可使 ``inactive:``、``protect:`` 或空白差异不影响
@@ -710,22 +1064,22 @@ class JunosDocument(VendorConfiguration):
             self._parser.base_header(node.header).split()[0]
         )
 
-    def _unit_nodes(self, interface: JunosNode) -> list[JunosNode]:
+    def _unit_nodes(self, interface: _WorkNode) -> list[_WorkNode]:
         """列出接口节点下有效的 ``unit`` 子节点，包括空的叶子 unit。
 
         Junos 把逻辑接口嵌套在父口内；集中枚举 unit 可让规格提取和 NNI 复制使用
         相同结构判定。``unit 0;`` 也是逻辑接口，不能被当作父口业务复制。
         """
-        if interface.children is None:
+        if not interface.is_block:
             return []
         return [
             node
-            for node in interface.children
+            for node in interface.nodes
             if self._parser.is_effective(node)
             and self._parser.is_unit(node.header)
         ]
 
-    def _unit_number(self, node: JunosNode) -> str:
+    def _unit_number(self, node: _WorkNode) -> str:
         """从已识别的 ``unit`` 节点头提取逻辑单元编号。
 
         保留字符串形式可兼容解析阶段尚未限制的输入，并在拼接完整接口名及选择源
@@ -733,15 +1087,15 @@ class JunosDocument(VendorConfiguration):
         """
         return self._parser.unit_number(node.header)
 
-    def _find_vlan(self, unit: JunosNode) -> int | None:
+    def _find_vlan(self, unit: _WorkNode) -> int | None:
         """读取 unit 的单层 VLAN 或 QinQ 外层 VLAN，未配置时返回 ``None``。
 
         业务分析同时识别 ``vlan-id`` 和
         ``vlan-tags outer``，可让单层与双层终结使用同一 ``InterfaceSpec.vlan``。
         """
-        if unit.children is None:
+        if not unit.is_block:
             return None
-        for child in unit.children:
+        for child in unit.nodes:
             if not self._parser.is_effective(child):
                 continue
             vlan = self._parser.vlan(child.header)
@@ -749,15 +1103,15 @@ class JunosDocument(VendorConfiguration):
                 return vlan
         return None
 
-    def _find_inner_vlan(self, unit: JunosNode) -> int | None:
+    def _find_inner_vlan(self, unit: _WorkNode) -> int | None:
         """读取 ``vlan-tags`` 语句中的 QinQ 内层 VLAN。
 
         内层标签代表原客户业务 VLAN；单层或无标签 unit
         返回 ``None``，让上层按明确的回退规则选择内层标签。
         """
-        if unit.children is None:
+        if not unit.is_block:
             return None
-        for child in unit.children:
+        for child in unit.nodes:
             if not self._parser.is_effective(child):
                 continue
             vlan = self._parser.inner_vlan(child.header)
@@ -785,18 +1139,19 @@ class JunosDocument(VendorConfiguration):
         返回厂商无关的 ``InterfaceSpec``，使 NNI 规划无需遍历 Junos 节点；统一
         规格也让业务筛选、VLAN 分配和审计映射共享同一事实来源。
         """
-        return self._interface_analysis_cache.read(
-            self.root,
-            "interface_specs",
-            lambda: self._interfaces().interface_specs(self),
-            copy_interface_specs,
-        )
+        with self._working_tree() as working_root:
+            return self._interface_analysis_cache.read(
+                working_root,
+                "interface_specs",
+                lambda: self._interfaces().interface_specs(self),
+                copy_interface_specs,
+            )
 
     @staticmethod
     def _interfaces():
         """延迟返回 Juniper 接口操作模块。
 
-        接口模块需要引用 ``JunosDocument`` 和 ``JunosNode``；在方法调用时再导入可
+        接口模块需要引用 ``JunosDocument`` 和 ``_WorkNode``；在方法调用时再导入可
         打破模块初始化阶段的循环依赖，同时保持文档类对外提供稳定门面。
         """
         from . import interfaces
@@ -817,26 +1172,29 @@ class JunosDocument(VendorConfiguration):
         NNI 扁平化需要从拓扑物理端点反查真正承载业务的逻辑聚合口，并在迁移后
         清理原成员，因此统一暴露该方向的关系。
         """
-        return self._interface_analysis_cache.read(
-            self.root,
-            "bundle_members",
-            lambda: self._interfaces().bundle_members(self),
-            dict,
-        )
+        with self._working_tree() as working_root:
+            return self._interface_analysis_cache.read(
+                working_root,
+                "bundle_members",
+                lambda: self._interfaces().bundle_members(self),
+                dict,
+            )
 
     def interface_has_business(self, name: str) -> bool:
         """判断物理聚合成员是否含 unit、family 等独立业务。
 
         该结果用于让成员退出压缩，而不是判断源配置是否正确。
         """
-        return self._interfaces().interface_has_business(self, name)
+        with self._working_tree():
+            return self._interfaces().interface_has_business(self, name)
 
     def bundle_binding_is_ambiguous(self, name: str) -> bool:
         """判断物理成员是否声明了多个不同 ae 绑定。
 
         多个绑定无法唯一映射，仍作为转换错误处理。
         """
-        return self._interfaces().bundle_binding_is_ambiguous(self, name)
+        with self._working_tree():
+            return self._interfaces().bundle_binding_is_ambiguous(self, name)
 
     def resolve_interface(self, value: str) -> str:
         """把拓扑中的 Junos 接口写法转换为解析器的规范形式。
@@ -852,7 +1210,8 @@ class JunosDocument(VendorConfiguration):
         NNI 克隆和映射审计需要逐个保留逻辑单元后缀；集中枚举可避免处理器自行遍历
         Junos 子树，并保证无 unit 父口与有 unit 接口使用一致入口。
         """
-        return self._interfaces().logical_names_under(self, parent)
+        with self._working_tree():
+            return self._interfaces().logical_names_under(self, parent)
 
     def business_interface_names(self) -> set[str]:
         """识别承载三层、二层及活跃广播域网关的 Junos 接口。
@@ -860,14 +1219,15 @@ class JunosDocument(VendorConfiguration):
         IRB 不因自身配置地址就自动迁移；只有 bridge-domain/vlan 中仍有
         活跃接入口，或其 unit 命中活跃业务 VLAN 时才视为关联业务。
         """
-        return self._interface_analysis_cache.read(
-            self.root,
-            "business_interface_names",
-            lambda: self._interfaces().business_interface_names(self),
-            set,
-        )
+        with self._working_tree() as working_root:
+            return self._interface_analysis_cache.read(
+                working_root,
+                "business_interface_names",
+                lambda: self._interfaces().business_interface_names(self),
+                set,
+            )
 
-    def _find_interface_node(self, name: str) -> JunosNode | None:
+    def _find_interface_node(self, name: str) -> _WorkNode | None:
         """按父接口名查找第一个有效 Junos 接口节点。
 
         unit 并非顶层节点，因此查找会归一到父口；委托接口模块可确保调用方
@@ -883,7 +1243,9 @@ class JunosDocument(VendorConfiguration):
         Junos unit 天然嵌套在父口中，因此删除父节点即可覆盖子接口；保留
         ``include_children`` 参数是为了实现统一厂商协议，而不需要伪造独立 unit 删除。
         """
-        self._interfaces().remove_interface(self, name, include_children)
+        with self._working_tree() as working_root:
+            self._interfaces().remove_interface(self, name, include_children)
+        self._publish_work_root(working_root)
 
     def rename_interface_tree(
         self, source: str, target: str, strip_bundle: bool = False
@@ -893,9 +1255,11 @@ class JunosDocument(VendorConfiguration):
         父节点改名会自然携带全部 unit，适合 NNI 暂存与最终落位；迁出 ae 成员时
         清除旧 options，可避免目标物理口继续引用已不存在的聚合关系。
         """
-        self._interfaces().rename_interface_tree(
-            self, source, target, strip_bundle
-        )
+        with self._working_tree() as working_root:
+            self._interfaces().rename_interface_tree(
+                self, source, target, strip_bundle
+            )
+        self._publish_work_root(working_root)
 
     def clone_interface_tree(
         self, source: str, target: str, strip_bundle: bool = False
@@ -905,11 +1269,13 @@ class JunosDocument(VendorConfiguration):
         M-LAG 可能要求同一 ae 业务按多个对端拆成多份，不能直接改名并消耗唯一源树；
         克隆保留源配置供后续目标继续复制，``strip_bundle`` 防止旧成员选项泄漏。
         """
-        self._interfaces().clone_interface_tree(
-            self, source, target, strip_bundle
-        )
+        with self._working_tree() as working_root:
+            self._interfaces().clone_interface_tree(
+                self, source, target, strip_bundle
+            )
+        self._publish_work_root(working_root)
 
-    def _merge_duplicate_interface(self, preferred: JunosNode) -> None:
+    def _merge_duplicate_interface(self, preferred: _WorkNode) -> None:
         """把同名接口节点的非重复子树合并到首选节点并停用副本。
 
         接口改名或克隆可能撞上已有目标定义；按渲染结果去重可保留双方不同配置，
@@ -922,7 +1288,9 @@ class JunosDocument(VendorConfiguration):
 
         已有接口保持原 unit 和封装，仅有缺失时创建空父节点，避免伪造业务配置。
         """
-        self._interfaces().ensure_parent_interface(self, name)
+        with self._working_tree() as working_root:
+            self._interfaces().ensure_parent_interface(self, name)
+        self._publish_work_root(working_root)
 
     def bundle_mode(self, member: str) -> BundleMode:
         """读取聚合成员的原协商方式。
@@ -940,7 +1308,10 @@ class JunosDocument(VendorConfiguration):
         """
         from .bundles import adapt_bundle
 
-        return adapt_bundle(self, name)
+        with self._working_tree() as working_root:
+            outcome = adapt_bundle(self, name)
+        self._publish_work_root(working_root)
+        return outcome
 
     def validate_nni_clone(
         self,
@@ -967,11 +1338,14 @@ class JunosDocument(VendorConfiguration):
         """
         from .rules.pruning import prune_non_nni
 
-        return prune_non_nni(
-            self,
-            protected_parents,
-            strict_input_validation=strict_input_validation,
-        )
+        with self._working_tree() as working_root:
+            outcome = prune_non_nni(
+                self,
+                protected_parents,
+                strict_input_validation=strict_input_validation,
+            )
+        self._publish_work_root(working_root)
+        return outcome
 
     def prune_interface_dependencies(
         self,
@@ -985,11 +1359,14 @@ class JunosDocument(VendorConfiguration):
         """
         from .rules.pruning import prune_interface_dependencies
 
-        return prune_interface_dependencies(
-            self,
-            removed_interfaces,
-            strict_input_validation=strict_input_validation,
-        )
+        with self._working_tree() as working_root:
+            outcome = prune_interface_dependencies(
+                self,
+                removed_interfaces,
+                strict_input_validation=strict_input_validation,
+            )
+        self._publish_work_root(working_root)
+        return outcome
 
     def adapt_interfaces(
         self, target_interfaces: set[str]
@@ -1011,7 +1388,8 @@ class JunosDocument(VendorConfiguration):
         """
         from .rules import validate_source_semantics
 
-        return validate_source_semantics(self, target_interfaces)
+        with self._working_tree():
+            return validate_source_semantics(self, target_interfaces)
 
     def validate_final_integrity(
         self,
@@ -1025,12 +1403,13 @@ class JunosDocument(VendorConfiguration):
         """
         from .rules import validate_final_integrity
 
-        return validate_final_integrity(
-            self,
-            target_interfaces,
-            removed_interfaces,
-            deferred_interface_references,
-        )
+        with self._working_tree():
+            return validate_final_integrity(
+                self,
+                target_interfaces,
+                removed_interfaces,
+                deferred_interface_references,
+            )
 
     def validate_interfaces(
         self,
@@ -1046,13 +1425,14 @@ class JunosDocument(VendorConfiguration):
         """
         from .rules import validate_interfaces
 
-        return validate_interfaces(
-            self,
-            target_interfaces,
-            removed_interfaces,
-            deferred_interface_references,
-            strict_input_validation=strict_input_validation,
-        )
+        with self._working_tree():
+            return validate_interfaces(
+                self,
+                target_interfaces,
+                removed_interfaces,
+                deferred_interface_references,
+                strict_input_validation=strict_input_validation,
+            )
 
     def adapt_to_simulation(
         self,
@@ -1066,7 +1446,10 @@ class JunosDocument(VendorConfiguration):
         """
         from .rules.simulation import adapt_to_simulation
 
-        return adapt_to_simulation(self, policy, data_interfaces)
+        with self._working_tree() as working_root:
+            outcome = adapt_to_simulation(self, policy, data_interfaces)
+        self._publish_work_root(working_root)
+        return outcome
 
     def clean_management_access(self) -> CleanupOutcome:
         """清除 Junos 原有管理访问和认证配置，并返回分类统计。
@@ -1116,21 +1499,23 @@ class JunosDocument(VendorConfiguration):
         phases = compile_cleaning_rules(operations)
         hits = [0] * len(operations)
         parser = self._parser
-        for phase in phases:
-            for block in self.root.children or []:
-                self._walk_cleaning_phase(
-                    block,
-                    (),
-                    None,
-                    phase,
-                    hits,
-                    parser,
-                )
+        with self._working_tree() as working_root:
+            for phase in phases:
+                for block in working_root.children or []:
+                    self._walk_cleaning_phase(
+                        block,
+                        (),
+                        None,
+                        phase,
+                        hits,
+                        parser,
+                    )
+        self._publish_work_root(working_root)
         return hits
 
     def _walk_cleaning_phase(
         self,
-        node: JunosNode,
+        node: _WorkNode,
         ancestors: tuple[str, ...],
         interface: str | None,
         phase,
@@ -1169,7 +1554,7 @@ class JunosDocument(VendorConfiguration):
 
     @staticmethod
     def _apply_cleaning_phase(
-        node: JunosNode,
+        node: _WorkNode,
         phase,
         operations,
         hits: list[int],
@@ -1209,10 +1594,12 @@ class JunosDocument(VendorConfiguration):
             if targets and targets != [source]
         }
         if relevant:
-            _ReferenceRewriter(self, relevant).walk(self.root)
+            with self._working_tree() as working_root:
+                _ReferenceRewriter(self, relevant).walk(working_root)
+            self._publish_work_root(working_root)
 
     def _render_node(
-        self, node: JunosNode, depth: int, ancestors: tuple[str, ...] = ()
+        self, node: _WorkNode, depth: int, ancestors: tuple[str, ...] = ()
     ) -> str:
         """按深度递归渲染一个活动 Junos 节点及其子树。
 
@@ -1243,7 +1630,7 @@ class JunosDocument(VendorConfiguration):
             )
         return "\n".join([opening, *children, indent + "}"])
 
-    def _render_leaf(self, node: JunosNode, indent: str) -> str:
+    def _render_leaf(self, node: _WorkNode, indent: str) -> str:
         """渲染叶子节点及其行内注释。
 
         protect 前缀在输出时移除，inactive 状态则继续保留以维持原节点是否生效。
@@ -1255,7 +1642,7 @@ class JunosDocument(VendorConfiguration):
 
     def _render_children(
         self,
-        node: JunosNode,
+        node: _WorkNode,
         depth: int,
         path: tuple[str, ...],
     ) -> tuple[list[str], bool, list[str]]:
@@ -1279,7 +1666,7 @@ class JunosDocument(VendorConfiguration):
 
     def _render_empty_block(
         self,
-        node: JunosNode,
+        node: _WorkNode,
         indent: str,
         opening: str,
         path: tuple[str, ...],
@@ -1313,7 +1700,7 @@ class JunosDocument(VendorConfiguration):
             ]
         )
 
-    def _render_effective_node(self, node: JunosNode, depth: int) -> str:
+    def _render_effective_node(self, node: _WorkNode, depth: int) -> str:
         """渲染仅含当前生效节点的语义视图。
 
         该视图供分析使用且不触发空块策略，避免分析结果改变最终配置输出。
@@ -1321,29 +1708,74 @@ class JunosDocument(VendorConfiguration):
         if not self._parser.is_effective(node):
             return ""
         indent = "    " * depth
-        if node.children is None:
+        if not node.is_block:
             return indent + self._parser.output_header(node.header)
         lines = [indent + self._parser.output_header(node.header) + " {"]
-        for child in node.children:
+        for child in node.nodes:
             rendered = self._render_effective_node(child, depth + 1)
             if rendered:
                 lines.append(rendered)
         lines.append(indent + "}")
         return "\n".join(lines)
 
-    def render(self) -> str:
-        """把虚拟根下的全部活动节点渲染为标准 Junos 大括号配置。
+    def _output_header(self, header: str) -> str:
+        """移除 protect，同时保留 inactive 状态前缀。
 
-        根节点本身不输出，已逻辑删除的子树被跳过，并统一添加末尾换行；稳定格式便于
-        设备加载、生成可读差异，也使相同节点树得到确定性文本结果。
+        输出必须保留设备停用语义，但编辑保护不应阻止实验镜像加载配置。
         """
-        require_invariant(
-            self.root.children is not None,
-            "Junos 文档根节点必须可包含子节点",
-        )
-        rendered = [
-            self._render_node(node, 0)
-            for node in self.root.children
-            if node.active
-        ]
-        return "\n".join(item for item in rendered if item).rstrip() + "\n"
+        result, inactive = self._parser.header_prefixes(header)
+        return f"inactive: {result}" if inactive else result
+
+    def render(self) -> str:
+        """返回应用输出策略后的当前配置文本。
+
+        渲染使用临时事务预览空块和 protect 处理，不会发布修订或修改源码快照。
+        """
+        transaction = self.rewrite()
+
+        def visit(node: JunosContext) -> None:
+            """递归收集当前节点的输出策略编辑。
+
+            先处理空块可跳过整棵子树，避免对将被省略的内容登记无效操作。
+            """
+            if node.is_comment_only:
+                return
+            if node.is_block and not any(
+                not child.is_comment_only for child in node.nodes
+            ):
+                path = (*node.path, node.base_header)
+                action = vmx_empty_block_policy().action_for(path)
+                if (
+                    not node.declared_in_source
+                    or action == EmptyBlockAction.OMIT
+                ):
+                    transaction.delete(node, "省略 Junos 空块")
+                    return
+                if action == EmptyBlockAction.SEMICOLON:
+                    opening = self._output_header(node.header) + ";"
+                    if node.comment:
+                        opening += " " + node.comment
+                    lines = [
+                        " " * child.indent + child.comment
+                        for child in node.nodes
+                        if child.is_comment_only and child.comment
+                    ]
+                    lines.append(" " * node.indent + opening)
+                    transaction.replace_subtree(
+                        node,
+                        "\n".join(lines) + "\n",
+                        "按策略输出 Junos 空块",
+                    )
+                    return
+            output_header = self._output_header(node.header)
+            if output_header != node.header:
+                transaction.replace_header(
+                    node, output_header, "移除 Junos protect 前缀"
+                )
+            for child in node.nodes:
+                visit(child)
+
+        for node in self.root.nodes:
+            visit(node)
+        rendered = transaction.preview()
+        return rendered if rendered.strip() else "\n"

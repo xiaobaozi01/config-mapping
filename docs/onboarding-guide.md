@@ -497,7 +497,7 @@ Excel 只列物理链路。Group 展开后从成员绑定反查 Bundle/ae，再�
 
 ### 11.1 应用层只依赖业务能力
 
-`adaptation` 的业务处理模块不应该知道 `CiscoNode` 或 `JunosNode`。它们只通过 `VendorConfiguration` 调用：
+`adaptation` 的业务处理模块不应该知道 Cisco 或 Junos Context 类型。它们只通过 `VendorConfiguration` 调用：
 
 - `expand_groups()`
 - `interface_specs()` / `business_interface_names()`
@@ -539,7 +539,11 @@ interfaces {
 }
 ```
 
-主要对象是 `JunosNode`。`JunosDocument` 管理整棵树并提供相同的 Facade 能力，具体算法位于 `impl/juniper/`。
+`JunosDocument.root` 是 ANTLR4 生成的只读 `ConfigurationContext`。业务代码通过
+`root.nodes`、`context.nodes`、`header`、`path` 和 `text` 查询配置，修改统一通过
+`document.rewrite()` 事务完成。`JunosVisitorRule` 负责规则范围和一次提交，
+`JunosDocument` 保留与 Cisco 对齐的 Facade 能力。具体算法位于 `impl/juniper/`，
+机制说明见 [Junos ANTLR4 文档](antlr-juniper.md)。
 
 ### 11.4 新增厂商时应遵循的边界
 

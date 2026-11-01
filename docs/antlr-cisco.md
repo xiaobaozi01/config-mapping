@@ -1,6 +1,6 @@
 # Cisco ANTLR4 解析与重写
 
-Cisco 的唯一配置状态是当前源码和对应的 ANTLR 解析快照。`CiscoDocument` 保留转换器使用的业务方法，内部不再维护可变的 CiscoNode 配置树。Juniper 本轮不变。
+Cisco 的唯一配置状态是当前源码和对应的 ANTLR 解析快照。`CiscoDocument` 保留转换器使用的业务方法，内部不再维护可变的 CiscoNode 配置树。Juniper 使用独立 grammar 和相同的快照/事务原则，见 [Junos ANTLR4 说明](antlr-juniper.md)。
 
 ## 数据流
 

@@ -97,19 +97,20 @@ class DocstringCheckerTest(TestCase):
 
     def test_generated_antlr_files_are_excluded(self):
         with TemporaryDirectory() as directory:
-            generated = (
-                Path(directory)
-                / "impl"
-                / "cisco"
-                / "antlr"
-                / "generated"
-                / "parser.py"
-            )
-            generated.parent.mkdir(parents=True)
-            generated.write_text(
-                "class Generated:\n    pass\n", encoding="utf-8"
-            )
+            for vendor in ("cisco", "juniper"):
+                generated = (
+                    Path(directory)
+                    / "impl"
+                    / vendor
+                    / "antlr"
+                    / "generated"
+                    / "parser.py"
+                )
+                generated.parent.mkdir(parents=True)
+                generated.write_text(
+                    "class Generated:\n    pass\n", encoding="utf-8"
+                )
 
-            violations = check_file(generated)
+                violations = check_file(generated)
 
-        self.assertEqual(violations, [])
+                self.assertEqual(violations, [])

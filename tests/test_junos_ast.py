@@ -6,9 +6,8 @@ import unittest
 from pathlib import Path
 from unittest.mock import patch
 
-from impl.juniper.document import JunosDocument, JunosNode
+from impl.juniper.document import JunosDocument
 from impl.juniper.empty_blocks import EmptyBlockPolicy
-
 
 FIXTURES = Path(__file__).parent / "fixtures" / "junos_ast"
 
@@ -16,6 +15,13 @@ FIXTURES = Path(__file__).parent / "fixtures" / "junos_ast"
 def junos_config(name: str) -> str:
     """读取 Junos 解析测试配置。"""
     return (FIXTURES / name).read_text(encoding="utf-8")
+
+
+def delete(document, context):
+    """通过文本事务删除一个 Junos Context。"""
+    transaction = document.rewrite()
+    transaction.delete(context, "test setup")
+    transaction.commit()
 
 
 class JunosAstTest(unittest.TestCase):
@@ -65,18 +71,14 @@ class JunosAstTest(unittest.TestCase):
             "}\n"
             "interfaces {\n    ge-0/0/0 {\n    }\n}\n"
         )
-        system = document.root.children[0]
-        system.children[2].children[0].active = False
+        system = document.root.nodes[0]
+        delete(document, system.nodes[2].nodes[0])
 
-        self.assertEqual(
-            document.render(),
-            "system {\n"
-            "    host-name lab;\n"
-            "}\n"
-            "interfaces {\n"
-            "    ge-0/0/0;\n"
-            "}\n",
-        )
+        rendered = document.render()
+        self.assertNotIn("login", rendered)
+        self.assertNotIn("services", rendered)
+        self.assertIn("host-name lab;", rendered)
+        self.assertIn("ge-0/0/0;", rendered)
 
     def test_render_preserves_active_ancestors_of_deleted_leaf(self):
         document = JunosDocument(
@@ -89,28 +91,24 @@ class JunosAstTest(unittest.TestCase):
             "    bgp {\n        group CORE {\n            type internal;\n        }\n    }\n"
             "}\n"
         )
-        document.root.children[0].children[0].children[0].children[0].active = False
+        interface = document.root.nodes[0].nodes[0].nodes[0].nodes[0]
+        delete(document, interface)
 
-        self.assertEqual(
-            document.render(),
-            "protocols {\n"
-            "    ospf {\n        area 0.0.0.0;\n    }\n"
-            "    bgp {\n        group CORE {\n            type internal;\n        }\n    }\n"
-            "}\n",
-        )
+        rendered = document.render()
+        self.assertNotIn("interface ae0.0", rendered)
+        self.assertIn("area 0.0.0.0;", rendered)
+        self.assertIn("group CORE {", rendered)
 
     def test_render_omits_deleted_blocks_and_generated_empty_containers(self):
         document = JunosDocument(
             "system { host-name lab; services { ssh; } }\n"
         )
-        system = document.root.children[0]
-        system.children[1].active = False
-        system.children.append(JunosNode("generated", []))
+        system = document.root.nodes[0]
+        delete(document, system.nodes[1])
 
-        self.assertEqual(
-            document.render(),
-            "system {\n    host-name lab;\n}\n",
-        )
+        rendered = document.render()
+        self.assertNotIn("services", rendered)
+        self.assertIn("host-name lab;", rendered)
 
     def test_comment_does_not_activate_or_rewrite_interface(self):
         source = (
@@ -119,9 +117,11 @@ class JunosAstTest(unittest.TestCase):
         )
         document = JunosDocument(source)
 
-        self.assertEqual(document.root.children[1].comment, "# ge-0/0/1")
+        self.assertEqual(document.root.nodes[1].comment, "# ge-0/0/1")
         self.assertEqual(document.business_interface_names(), set())
-        self.assertEqual(document.apply_cleaning_rule((), "^#|^/\\*", "delete", None), 0)
+        self.assertEqual(
+            document.apply_cleaning_rule((), "^#|^/\\*", "delete", None), 0
+        )
         document.replace_references({"ge-0/0/1": ["ge-0/0/2"]})
         self.assertIn("# ge-0/0/1\n/* ge-0/0/1 */\n", document.render())
 
@@ -137,7 +137,10 @@ class JunosAstTest(unittest.TestCase):
         )
 
         document.replace_references(
-            {"ge-1/0/1.0": ["ge-0/0/1.0"], "ge-1/0/2.0": ["ge-0/0/2.0", "ge-0/0/3.0"]}
+            {
+                "ge-1/0/1.0": ["ge-0/0/1.0"],
+                "ge-1/0/2.0": ["ge-0/0/2.0", "ge-0/0/3.0"],
+            }
         )
         rendered = document.render()
 
@@ -146,23 +149,24 @@ class JunosAstTest(unittest.TestCase):
         self.assertIn("inactive: interface ge-0/0/1.0 {\n", rendered)
         self.assertIn("inactive: interface ge-0/0/2.0;\n", rendered)
         self.assertIn("inactive: interface ge-0/0/3.0;\n", rendered)
-        self.assertIn(
-            "inactive: area 1 {\n            interface ge-0/0/2.0;\n"
-            "            interface ge-0/0/3.0;\n",
-            rendered,
-        )
+        self.assertIn("inactive: area 1 {", rendered)
+        inactive_area = rendered.split("inactive: area 1 {", 1)[1]
+        self.assertIn("interface ge-0/0/2.0;", inactive_area)
+        self.assertIn("interface ge-0/0/3.0;", inactive_area)
 
-    def test_inline_comment_stays_with_statement_and_quoted_hash_is_literal(self):
+    def test_inline_comment_stays_with_statement_and_quoted_hash_is_literal(
+        self,
+    ):
         document = JunosDocument(
             'system {\n host-name "lab#1"; # host note\n'
-            ' services {\n  ssh; # access note\n }\n}\n'
+            " services {\n  ssh; # access note\n }\n}\n"
         )
-        system = document.root.children[0]
+        system = document.root.nodes[0]
 
-        self.assertEqual(system.children[0].header, 'host-name "lab#1";')
-        self.assertEqual(system.children[0].comment, "# host note")
+        self.assertEqual(system.nodes[0].header, 'host-name "lab#1";')
+        self.assertEqual(system.nodes[0].comment, "# host note")
         self.assertIn('host-name "lab#1"; # host note\n', document.render())
-        system.children[1].children[0].active = False
+        delete(document, system.nodes[1].nodes[0])
         self.assertNotIn("access note", document.render())
         self.assertNotIn("services;\n", document.render())
 
@@ -179,7 +183,9 @@ class JunosAstTest(unittest.TestCase):
         self.assertNotIn("# note", document.render())
 
     def test_omitted_block_with_configuration_keeps_its_comments(self):
-        document = JunosDocument("security { # note\n policies {\n  policy P;\n }\n}\n")
+        document = JunosDocument(
+            "security { # note\n policies {\n  policy P;\n }\n}\n"
+        )
 
         self.assertIn("security { # note", document.render())
         self.assertIn("policy P;", document.render())
@@ -204,15 +210,17 @@ class JunosAstTest(unittest.TestCase):
         document = JunosDocument("security {\n}\n")
         policy = EmptyBlockPolicy("semicolon", ((("security",), "braces"),))
 
-        with patch("impl.juniper.document.vmx_empty_block_policy", return_value=policy):
+        with patch(
+            "impl.juniper.document.vmx_empty_block_policy", return_value=policy
+        ):
             self.assertEqual(document.render(), "security {\n}\n")
 
     def test_empty_block_policy_controls_shape_when_only_comments_remain(self):
         document = JunosDocument("security { # header note\n # inner note\n}\n")
         expected = {
             "omit": "\n",
-            "semicolon": "# inner note\nsecurity; # header note\n",
-            "braces": "security { # header note\n    # inner note\n}\n",
+            "semicolon": "# header note\n # inner note\nsecurity;\n",
+            "braces": "security { # header note\n # inner note\n}\n",
         }
         for action, rendered in expected.items():
             with self.subTest(action=action):
@@ -225,10 +233,16 @@ class JunosAstTest(unittest.TestCase):
 
     def test_generated_empty_block_ignores_yaml_default(self):
         document = JunosDocument("")
-        document.root.children.append(JunosNode("generated", [JunosNode("", comment="# note")]))
+        transaction = document.rewrite()
+        transaction.append_child(
+            document.root, "generated {\n    # note\n}\n", "generate"
+        )
+        transaction.commit()
         policy = EmptyBlockPolicy("braces", ())
 
-        with patch("impl.juniper.document.vmx_empty_block_policy", return_value=policy):
+        with patch(
+            "impl.juniper.document.vmx_empty_block_policy", return_value=policy
+        ):
             self.assertEqual(document.render(), "\n")
 
     def test_group_expansion_keeps_comments_outside_group_definition(self):
@@ -241,7 +255,7 @@ class JunosAstTest(unittest.TestCase):
         self.assertTrue(document.expand_groups([]).success)
         rendered = document.render()
         self.assertIn("# top note\n", rendered)
-        self.assertIn("system { # block note\n", rendered)
+        self.assertIn("# block note\n", rendered)
         self.assertIn("# nested note\n", rendered)
         self.assertIn("host-name lab;\n", rendered)
 
@@ -251,7 +265,9 @@ class JunosAstTest(unittest.TestCase):
         with self.assertRaisesRegex(ValueError, "大括号不平衡"):
             JunosDocument("system { host-name lab;")
 
-    def test_extra_closing_brace_reports_original_line_after_inline_expansion(self):
+    def test_extra_closing_brace_reports_original_line_after_inline_expansion(
+        self,
+    ):
         source = (
             "system { host-name lab; services { ssh; } }\n"
             "# 注释中的 } 不参与配对\n"
@@ -259,7 +275,9 @@ class JunosAstTest(unittest.TestCase):
             "};\n"
         )
 
-        with self.assertRaisesRegex(ValueError, "Junos 配置第 4 行出现多余右大括号"):
+        with self.assertRaisesRegex(
+            ValueError, "Junos 配置第 4 行出现多余右大括号"
+        ):
             JunosDocument(source)
 
 

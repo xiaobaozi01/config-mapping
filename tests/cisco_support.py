@@ -1,10 +1,8 @@
 """测试通过公开重写入口构造配置状态；不直接修改 ANTLR Context。"""
 
-from impl.cisco.document import CiscoDocument
-
 
 def nodes(document):
-    return document.root.nodes if isinstance(document, CiscoDocument) else document.root.children
+    return document.root.nodes
 
 
 def replace_header(document, context, header):

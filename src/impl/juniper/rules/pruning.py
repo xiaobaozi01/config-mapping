@@ -18,7 +18,7 @@ from ..interfaces import _collect_active_vlans, _expand_vlan_tokens
 from .compatibility import _validate_pruned_references, _walk
 
 if TYPE_CHECKING:
-    from ..document import JunosDocument, JunosNode
+    from ..document import JunosDocument, _WorkNode
 
 
 def _address(value: str) -> str | None:
@@ -94,7 +94,7 @@ class _JunosPruner:
         for container, path in _walk(self.document, self.document.root):
             if path[-1] != "routing-instances":
                 continue
-            for instance in container.children or []:
+            for instance in container.nodes:
                 if not self.document._parser.is_effective(instance):
                     continue
                 scope = (
@@ -195,7 +195,7 @@ class _JunosPruner:
 
     def record(
         self,
-        node: JunosNode,
+        node: _WorkNode,
         path: tuple[str, ...],
         reason: str,
         names: set[str] | None = None,
@@ -226,7 +226,7 @@ class _JunosPruner:
         ):
             if container_path[-1] not in {"bridge-domains", "vlans"}:
                 continue
-            for domain in container.children or []:
+            for domain in container.nodes:
                 if not self.document._parser.is_effective(domain):
                     continue
                 state = self._domain_state(domain, container_path)
@@ -400,7 +400,7 @@ class _JunosPruner:
         if match and (address := _address(match.group(1))):
             self.result.removed_addresses.add(address)
 
-    def references(self, node: JunosNode) -> set[str]:
+    def references(self, node: _WorkNode) -> set[str]:
         """返回单个节点的 header 中可识别的已删除接口引用。
 
         只检查当前语句，避免父节点误吞子树引用而提前删除本应单独审计的配置。
@@ -409,7 +409,7 @@ class _JunosPruner:
             self.document._parser.base_header(node.header), self.removed
         )
 
-    def subtree_references(self, node: JunosNode) -> set[str]:
+    def subtree_references(self, node: _WorkNode) -> set[str]:
         """返回节点及其有效子树中的已删除接口引用。
 
         静态路由可能在子语句保存下一跳或出接口，汇总检查后才能安全删除父节点。
@@ -445,7 +445,7 @@ class _JunosPruner:
         ):
             if container_path[-1] != "routing-instances":
                 continue
-            for instance in container.children or []:
+            for instance in container.nodes:
                 if not self.document._parser.is_effective(instance):
                     continue
                 statements = [
@@ -472,12 +472,12 @@ class _JunosPruner:
                         interfaces,
                     )
 
-    def local_source(self, node: JunosNode):
+    def local_source(self, node: _WorkNode):
         """读取节点下首个有效 local-address 及其地址值。
 
         返回值同时携带节点和标准化地址，使调用方能够删除具体语句而不重新定位。
         """
-        for child in node.children or []:
+        for child in node.nodes:
             if self.document._parser.is_effective(child):
                 match = re.fullmatch(
                     r"local-address\s+(\S+)",
@@ -541,12 +541,12 @@ class _JunosPruner:
                 else:
                     self.record(group, path, "BGP 组无使用有效源的保留邻居")
 
-    def clean(self, node: JunosNode, path: tuple[str, ...] = ()) -> None:
+    def clean(self, node: _WorkNode, path: tuple[str, ...] = ()) -> None:
         """递归删除指向已删接口的明确业务依赖。
 
         仅处理已知协议、VPN、桥域和 QoS 上下文，未知引用保留给最终校验审计。
         """
-        for child in node.children or []:
+        for child in node.nodes:
             if not self.document._parser.is_effective(child):
                 continue
             header = self.document._parser.base_header(child.header).rstrip(";")
@@ -633,11 +633,20 @@ def prune_non_nni(
     """
     from . import prune_non_nni as execute
 
-    return execute(
-        document,
-        protected_parents,
-        strict_input_validation=strict_input_validation,
-    )
+    if hasattr(document, "_working_root"):
+        return execute(
+            document,
+            protected_parents,
+            strict_input_validation=strict_input_validation,
+        )
+    with document._working_tree() as working_root:
+        outcome = execute(
+            document,
+            protected_parents,
+            strict_input_validation=strict_input_validation,
+        )
+    document._publish_work_root(working_root)
+    return outcome
 
 
 def prune_interface_dependencies(
@@ -650,28 +659,41 @@ def prune_interface_dependencies(
 
     复用完整裁剪器但关闭非 NNI 接口删除，只修改给定成员对应的引用和业务容器。
     """
-    worker = _JunosPruner(
-        document,
-        set(),
-        strict_input_validation=strict_input_validation,
-    )
-    worker.result.removed_interfaces.update(
-        document.resolve_interface(name) for name in removed_interfaces
-    )
-    worker.clean(document.root)
-    validation = _validate_pruned_references(
-        document,
-        worker.removed,
-        worker.result.deferred_interface_references,
-        defer_unknown=True,
-        strict_input_validation=strict_input_validation,
-    )
-    worker.result.errors.extend(validation.errors)
-    worker.result.warnings.extend(validation.warnings)
-    worker.result.deferred_interface_references.update(
-        validation.deferred_interface_references
-    )
-    return merge_interface_results(
-        [("juniper.prune.member_dependencies", worker.result)],
-        InterfacePruningOutcome(),
-    )
+
+    def collect():
+        """在临时工作树上收集成员依赖裁剪结果。
+
+        延迟到调用点再读取当前根，使规则执行器和直接调用入口共享同一实现。
+        """
+        worker = _JunosPruner(
+            document,
+            set(),
+            strict_input_validation=strict_input_validation,
+        )
+        worker.result.removed_interfaces.update(
+            document.resolve_interface(name) for name in removed_interfaces
+        )
+        worker.clean(document.root)
+        validation = _validate_pruned_references(
+            document,
+            worker.removed,
+            worker.result.deferred_interface_references,
+            defer_unknown=True,
+            strict_input_validation=strict_input_validation,
+        )
+        worker.result.errors.extend(validation.errors)
+        worker.result.warnings.extend(validation.warnings)
+        worker.result.deferred_interface_references.update(
+            validation.deferred_interface_references
+        )
+        return merge_interface_results(
+            [("juniper.prune.member_dependencies", worker.result)],
+            InterfacePruningOutcome(),
+        )
+
+    if hasattr(document, "_working_root"):
+        return collect()
+    with document._working_tree() as working_root:
+        outcome = collect()
+    document._publish_work_root(working_root)
+    return outcome

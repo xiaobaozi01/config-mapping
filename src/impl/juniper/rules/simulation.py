@@ -11,7 +11,7 @@ from impl.common.outcomes import (
 )
 from impl.common.policies import SimulationAdaptationPolicy
 
-from ..document import JunosDocument, JunosNode
+from ..document import JunosDocument, _WorkNode
 
 
 def adapt_to_simulation(
@@ -98,7 +98,7 @@ def _clamp_bfd_timers(
         re.IGNORECASE,
     )
 
-    def walk(node: JunosNode, inside_bfd: bool = False) -> None:
+    def walk(node: _WorkNode, inside_bfd: bool = False) -> None:
         """递归处理 BFD 子树中的可调整叶子。
 
         BFD 标记只从祖先继承，遇到新的无关分支后不会错误修改其定时器。

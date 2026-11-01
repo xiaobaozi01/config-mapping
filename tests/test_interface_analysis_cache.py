@@ -4,16 +4,16 @@ from __future__ import annotations
 
 import copy
 import unittest
-from cisco_support import replace_header, delete_context, append_child
 from contextlib import ExitStack
 from unittest.mock import patch
 
+from cisco_support import append_child, delete_context, replace_header
+
 from impl.cisco import interfaces as cisco_interfaces
-from impl.cisco.document import CiscoDocument, CiscoContext
+from impl.cisco.document import CiscoDocument
 from impl.common.interface import InterfaceKind, InterfaceSpec
 from impl.juniper import interfaces as junos_interfaces
-from impl.juniper.document import JunosDocument, JunosNode
-
+from impl.juniper.document import JunosDocument
 
 CISCO = (
     "interface Gi0/0/0/1\n bundle id 10 mode active\n!\n"
@@ -38,8 +38,41 @@ def analyze(document):
     )
 
 
+def reverse_container(document, container):
+    """通过文本事务反转一个接口或 unit 下的语句顺序。"""
+    transaction = document.rewrite()
+    if isinstance(document, CiscoDocument):
+        payload = (
+            container.header
+            + "\n"
+            + "".join(node.text for node in reversed(container.nodes))
+        )
+    else:
+        payload = (
+            container.header
+            + " { "
+            + " ".join(node.text for node in reversed(container.nodes))
+            + " }"
+        )
+    transaction.replace_subtree(container, payload, "reverse statements")
+    transaction.commit()
+
+
+def move_into_inactive_child(document, container):
+    """把业务语句移动到 inactive 子块。"""
+    nested, business = container.nodes
+    transaction = document.rewrite()
+    transaction.replace_header(nested, "inactive: nested", "inactive target")
+    transaction.delete(business, "move source")
+    transaction.append_child(nested, business.text, "move target")
+    transaction.commit()
+
+
 class InterfaceAnalysisCacheTest(unittest.TestCase):
-    def test_deepcopied_document_rebuilds_analysis_without_affecting_original(self):
+
+    def test_deepcopied_document_rebuilds_analysis_without_affecting_original(
+        self,
+    ):
         for cls, module, text, source in [
             (CiscoDocument, cisco_interfaces, CISCO, "GigabitEthernet0/0/0/1"),
             (JunosDocument, junos_interfaces, JUNOS, "ge-0/0/1"),
@@ -48,7 +81,9 @@ class InterfaceAnalysisCacheTest(unittest.TestCase):
                 original = cls(text)
                 expected = analyze(original)
                 cloned = copy.deepcopy(original)
-                with patch.object(module, "interface_specs", wraps=module.interface_specs) as collect:
+                with patch.object(
+                    module, "interface_specs", wraps=module.interface_specs
+                ) as collect:
                     cloned.business_interface_names()
                     self.assertEqual(analyze(cloned), expected)
                     collect.assert_called_once_with(cloned)
@@ -67,12 +102,24 @@ class InterfaceAnalysisCacheTest(unittest.TestCase):
                 document = cls(text)
                 collect = module.business_interface_names
                 expected = collect(document)
-                with patch.object(module, "business_interface_names", side_effect=RuntimeError("failed")):
-                    with self.assertRaisesRegex(RuntimeError, "failed"):
-                        document.business_interface_names()
-                with patch.object(module, "business_interface_names", wraps=collect) as retry:
-                    self.assertEqual(document.business_interface_names(), expected)
-                    self.assertEqual(document.business_interface_names(), expected)
+                with (
+                    patch.object(
+                        module,
+                        "business_interface_names",
+                        side_effect=RuntimeError("failed"),
+                    ),
+                    self.assertRaisesRegex(RuntimeError, "failed"),
+                ):
+                    document.business_interface_names()
+                with patch.object(
+                    module, "business_interface_names", wraps=collect
+                ) as retry:
+                    self.assertEqual(
+                        document.business_interface_names(), expected
+                    )
+                    self.assertEqual(
+                        document.business_interface_names(), expected
+                    )
                     retry.assert_called_once_with(document)
 
     def test_repeated_queries_and_business_analysis_reuse_specs(self):
@@ -83,9 +130,17 @@ class InterfaceAnalysisCacheTest(unittest.TestCase):
             with self.subTest(vendor=cls.vendor):
                 document = cls(text)
                 with (
-                    patch.object(module, "interface_specs", wraps=module.interface_specs) as specs,
-                    patch.object(module, "bundle_members", wraps=module.bundle_members) as members,
-                    patch.object(module, "business_interface_names", wraps=module.business_interface_names) as business,
+                    patch.object(
+                        module, "interface_specs", wraps=module.interface_specs
+                    ) as specs,
+                    patch.object(
+                        module, "bundle_members", wraps=module.bundle_members
+                    ) as members,
+                    patch.object(
+                        module,
+                        "business_interface_names",
+                        wraps=module.business_interface_names,
+                    ) as business,
                 ):
                     expected = analyze(document)
                     self.assertEqual(analyze(document), expected)
@@ -115,10 +170,17 @@ class InterfaceAnalysisCacheTest(unittest.TestCase):
                 self.assertEqual(analyze(document), expected)
 
     def test_empty_results_are_cached(self):
-        for cls, module in [(CiscoDocument, cisco_interfaces), (JunosDocument, junos_interfaces)]:
+        for cls, module in [
+            (CiscoDocument, cisco_interfaces),
+            (JunosDocument, junos_interfaces),
+        ]:
             with self.subTest(vendor=cls.vendor):
                 document = cls("")
-                with patch.object(module, "business_interface_names", wraps=module.business_interface_names) as collect:
+                with patch.object(
+                    module,
+                    "business_interface_names",
+                    wraps=module.business_interface_names,
+                ) as collect:
                     self.assertEqual(document.business_interface_names(), set())
                     self.assertEqual(document.business_interface_names(), set())
                     collect.assert_called_once_with(document)
@@ -137,19 +199,36 @@ class InterfaceAnalysisCacheTest(unittest.TestCase):
         analyze(document)
         parent = document._interface_nodes()[0]
         replace_header(document, parent.nodes[0], "bundle id 20 mode active")
-        self.assertEqual(document.bundle_members(), {"GigabitEthernet0/0/0/1": "Bundle-Ether20"})
+        self.assertEqual(
+            document.bundle_members(),
+            {"GigabitEthernet0/0/0/1": "Bundle-Ether20"},
+        )
         sub = document._interface_nodes()[1]
-        replace_header(document, sub.nodes[0], "encapsulation dot1q 200 second-dot1q 30")
-        spec = next(spec for spec in document.interface_specs() if spec.unit == "100")
+        replace_header(
+            document, sub.nodes[0], "encapsulation dot1q 200 second-dot1q 30"
+        )
+        spec = next(
+            spec for spec in document.interface_specs() if spec.unit == "100"
+        )
         self.assertEqual((spec.vlan, spec.inner_vlan), (200, 30))
         sub = document._interface_nodes()[1]
         replace_header(document, sub, "interface Gi0/0/0/1.100")
-        self.assertNotIn("GigabitEthernet0/0/0/1.100", document.business_interface_names())
-        append_child(document, document._interface_nodes()[1], "ipv4 address 198.51.100.1/31")
-        self.assertIn("GigabitEthernet0/0/0/1.100", document.business_interface_names())
+        self.assertNotIn(
+            "GigabitEthernet0/0/0/1.100", document.business_interface_names()
+        )
+        append_child(
+            document,
+            document._interface_nodes()[1],
+            "ipv4 address 198.51.100.1/31",
+        )
+        self.assertIn(
+            "GigabitEthernet0/0/0/1.100", document.business_interface_names()
+        )
         sub = document._interface_nodes()[1]
         delete_context(document, sub.nodes[-1])
-        self.assertNotIn("GigabitEthernet0/0/0/1.100", document.business_interface_names())
+        self.assertNotIn(
+            "GigabitEthernet0/0/0/1.100", document.business_interface_names()
+        )
         document.remove_interface("Gi0/0/0/1")
         self.assertEqual(document.bundle_members(), {})
 
@@ -157,30 +236,50 @@ class InterfaceAnalysisCacheTest(unittest.TestCase):
         document = JunosDocument(JUNOS)
         analyze(document)
         parent = document._interface_nodes()[0]
-        options, unit = parent.children
-        options.children[0].header = "802.3ad ae20;"
+        options, unit = parent.nodes
+        replace_header(document, options.nodes[0], "802.3ad ae20;")
+        parent = document._interface_nodes()[0]
+        options, unit = parent.nodes
         self.assertEqual(document.bundle_members(), {"ge-0/0/1": "ae20"})
-        unit.children[0].header = "vlan-tags outer 200 inner 30;"
+        replace_header(document, unit.nodes[0], "vlan-tags outer 200 inner 30;")
         spec = document.interface_specs()[0]
         self.assertEqual((spec.vlan, spec.inner_vlan), (200, 30))
-        unit.header = "protect: unit 200"
+        unit = document._interface_nodes()[0].nodes[1]
+        replace_header(document, unit, "protect: unit 200")
         self.assertEqual(document.interface_specs()[0].name, "ge-0/0/1.200")
-        unit.children.pop()
+        unit = document._interface_nodes()[0].nodes[1]
+        delete_context(document, unit.nodes[-1])
         self.assertNotIn("ge-0/0/1.200", document.business_interface_names())
-        unit.children.append(JunosNode("family inet", []))
+        unit = document._interface_nodes()[0].nodes[1]
+        append_child(document, unit, "family inet {}")
         self.assertIn("ge-0/0/1.200", document.business_interface_names())
-        unit.children[-1].active = False
+        unit = document._interface_nodes()[0].nodes[1]
+        delete_context(document, unit.nodes[-1])
         self.assertNotIn("ge-0/0/1.200", document.business_interface_names())
-        parent.header = "inactive: ge-0/0/1"
+        parent = document._interface_nodes()[0]
+        replace_header(document, parent, "inactive: ge-0/0/1")
         self.assertEqual(document.bundle_members(), {})
-        self.assertEqual([spec.name for spec in document.interface_specs()], ["ae10.0"])
-        parent.header = "ge-0/0/1"
+        self.assertEqual(
+            [spec.name for spec in document.interface_specs()], ["ae10.0"]
+        )
+        parent = document._interfaces_block().nodes[0]
+        replace_header(document, parent, "ge-0/0/1")
         self.assertTrue(document.bundle_members())
 
     def test_external_reference_edits_invalidate_business_analysis(self):
         for cls, text, name, replacement in [
-            (CiscoDocument, "interface Gi0/0/0/1\n!\nrouter ospf 1\n interface GigabitEthernet0/0/0/1\n!\n", "GigabitEthernet0/0/0/1", "interface GigabitEthernet0/0/0/2"),
-            (JunosDocument, "interfaces { ge-0/0/1 { unit 0; } } protocols { ospf { interface ge-0/0/1.0; } }", "ge-0/0/1.0", "interface ge-0/0/2.0;"),
+            (
+                CiscoDocument,
+                "interface Gi0/0/0/1\n!\nrouter ospf 1\n interface GigabitEthernet0/0/0/1\n!\n",
+                "GigabitEthernet0/0/0/1",
+                "interface GigabitEthernet0/0/0/2",
+            ),
+            (
+                JunosDocument,
+                "interfaces { ge-0/0/1 { unit 0; } } protocols { ospf { interface ge-0/0/1.0; } }",
+                "ge-0/0/1.0",
+                "interface ge-0/0/2.0;",
+            ),
         ]:
             with self.subTest(vendor=cls.vendor):
                 document = cls(text)
@@ -191,17 +290,35 @@ class InterfaceAnalysisCacheTest(unittest.TestCase):
                     self.assertNotIn(name, document.business_interface_names())
                     continue
                 else:
-                    reference = document._top_block("protocols").children[0].children[0]
-                reference.active = False
+                    reference = (
+                        document._top_block("protocols").nodes[0].nodes[0]
+                    )
+                replace_header(
+                    document,
+                    reference,
+                    "inactive: " + reference.header,
+                )
                 self.assertNotIn(name, document.business_interface_names())
-                reference.active = True
+                reference = document._top_block("protocols").nodes[0].nodes[0]
+                replace_header(
+                    document,
+                    reference,
+                    reference.header.removeprefix("inactive: "),
+                )
                 self.assertIn(name, document.business_interface_names())
-                reference.header = replacement
+                reference = document._top_block("protocols").nodes[0].nodes[0]
+                replace_header(document, reference, replacement)
                 self.assertNotIn(name, document.business_interface_names())
 
     def test_rename_clone_and_remove_invalidate_all_queries(self):
         for cls, text, source, target, clone_name in [
-            (CiscoDocument, CISCO, "GigabitEthernet0/0/0/1", "GigabitEthernet0/0/0/2", "GigabitEthernet0/0/0/3"),
+            (
+                CiscoDocument,
+                CISCO,
+                "GigabitEthernet0/0/0/1",
+                "GigabitEthernet0/0/0/2",
+                "GigabitEthernet0/0/0/3",
+            ),
             (JunosDocument, JUNOS, "ge-0/0/1", "ge-0/0/2", "ge-0/0/3"),
         ]:
             with self.subTest(vendor=cls.vendor):
@@ -219,7 +336,12 @@ class InterfaceAnalysisCacheTest(unittest.TestCase):
                 specs, members, business = analyze(document)
                 self.assertNotIn(target, {spec.parent for spec in specs})
                 self.assertNotIn(target, members)
-                self.assertFalse(any(name == target or name.startswith(target + ".") for name in business))
+                self.assertFalse(
+                    any(
+                        name == target or name.startswith(target + ".")
+                        for name in business
+                    )
+                )
 
     def test_cleaning_rule_replacements_invalidate_queries(self):
         for cls, text in [(CiscoDocument, CISCO), (JunosDocument, JUNOS)]:
@@ -227,17 +349,37 @@ class InterfaceAnalysisCacheTest(unittest.TestCase):
                 document = cls(text)
                 analyze(document)
                 if cls is CiscoDocument:
-                    document.apply_cleaning_rule(("interface.*",), r"bundle\s+id\s+10", "replace", "bundle id 20")
+                    document.apply_cleaning_rule(
+                        ("interface.*",),
+                        r"bundle\s+id\s+10",
+                        "replace",
+                        "bundle id 20",
+                    )
                     expected = {"GigabitEthernet0/0/0/1": "Bundle-Ether20"}
                 else:
-                    document.apply_cleaning_rule(("interfaces", "ge-0/0/1", "ether-options"), r"802\.3ad\s+ae10", "replace", "802.3ad ae20")
+                    document.apply_cleaning_rule(
+                        ("interfaces", "ge-0/0/1", "ether-options"),
+                        r"802\.3ad\s+ae10",
+                        "replace",
+                        "802.3ad ae20",
+                    )
                     expected = {"ge-0/0/1": "ae20"}
                 self.assertEqual(document.bundle_members(), expected)
 
     def test_reference_rewrite_invalidates_business_query(self):
         for cls, text, source, target in [
-            (CiscoDocument, "interface Gi0/0/0/1\n!\ninterface Gi0/0/0/2\n!\nrouter ospf 1\n interface GigabitEthernet0/0/0/1\n!\n", "GigabitEthernet0/0/0/1", "GigabitEthernet0/0/0/2"),
-            (JunosDocument, "interfaces { ge-0/0/1 { unit 0; } ge-0/0/2 { unit 0; } } protocols { ospf { interface ge-0/0/1.0; } }", "ge-0/0/1.0", "ge-0/0/2.0"),
+            (
+                CiscoDocument,
+                "interface Gi0/0/0/1\n!\ninterface Gi0/0/0/2\n!\nrouter ospf 1\n interface GigabitEthernet0/0/0/1\n!\n",
+                "GigabitEthernet0/0/0/1",
+                "GigabitEthernet0/0/0/2",
+            ),
+            (
+                JunosDocument,
+                "interfaces { ge-0/0/1 { unit 0; } ge-0/0/2 { unit 0; } } protocols { ospf { interface ge-0/0/1.0; } }",
+                "ge-0/0/1.0",
+                "ge-0/0/2.0",
+            ),
         ]:
             with self.subTest(vendor=cls.vendor):
                 document = cls(text)
@@ -249,37 +391,54 @@ class InterfaceAnalysisCacheTest(unittest.TestCase):
         document = JunosDocument("interfaces { ge-0/0/1 { unit 0; } }")
         parent = document._interface_nodes()[0]
         self.assertEqual(document.interface_specs()[0].name, "ge-0/0/1.0")
-        parent.children = None
-        self.assertEqual(document.interface_specs(), [])
-        parent.children = []
+        delete_context(document, parent.nodes[0])
         self.assertEqual(document.interface_specs()[0].name, "ge-0/0/1")
 
-    def test_interface_kind_uses_cached_pure_lookup_without_module_dispatch(self):
+    def test_interface_kind_uses_cached_pure_lookup_without_module_dispatch(
+        self,
+    ):
         for cls, raw, canonical in [
             (CiscoDocument, " Gi 0/0/0/1 ", "GigabitEthernet0/0/0/1"),
             (JunosDocument, " ge-0/0/1 ", "ge-0/0/1"),
         ]:
             with self.subTest(vendor=cls.vendor):
                 document = cls("")
-                with patch.object(document, "_interfaces", side_effect=AssertionError("unexpected dispatch")):
-                    self.assertEqual(document.interface_kind(raw), InterfaceKind.PHYSICAL)
-                    self.assertEqual(document.interface_kind(canonical), InterfaceKind.PHYSICAL)
-                    self.assertEqual(document.interface_kind("future0"), InterfaceKind.UNKNOWN)
+                with patch.object(
+                    document,
+                    "_interfaces",
+                    side_effect=AssertionError("unexpected dispatch"),
+                ):
+                    self.assertEqual(
+                        document.interface_kind(raw), InterfaceKind.PHYSICAL
+                    )
+                    self.assertEqual(
+                        document.interface_kind(canonical),
+                        InterfaceKind.PHYSICAL,
+                    )
+                    self.assertEqual(
+                        document.interface_kind("future0"),
+                        InterfaceKind.UNKNOWN,
+                    )
 
 
 class InterfaceCacheDifferentialTest(unittest.TestCase):
+
     def assert_matches_uncached(self, document):
         """同时绕过整树缓存和字符串 LRU，避免内嵌查询仍命中缓存。"""
         actual = analyze(document)
         with ExitStack() as stack:
-            stack.enter_context(patch.object(
-                document._interface_analysis_cache,
-                "read",
-                side_effect=lambda *args: args[-1](args[-2]()),
-            ))
+            stack.enter_context(
+                patch.object(
+                    document._interface_analysis_cache,
+                    "read",
+                    side_effect=lambda *args: args[-1](args[-2]()),
+                )
+            )
             for name, parser in vars(document._parser).items():
                 if callable(parser) and hasattr(parser, "cache_info"):
-                    stack.enter_context(patch.object(document._parser, name, parser.__wrapped__))
+                    stack.enter_context(
+                        patch.object(document._parser, name, parser.__wrapped__)
+                    )
             self.assertEqual(actual, analyze(document))
         return actual
 
@@ -289,54 +448,80 @@ class InterfaceCacheDifferentialTest(unittest.TestCase):
         while pending:
             node = pending.pop()
             yield node
-            pending.extend(reversed(node.nodes if isinstance(node, CiscoContext) else (node.children or [])))
+            pending.extend(reversed(node.nodes))
 
     def test_statement_order_changes_vlan_priority(self):
         for cls, text in [
-            (CiscoDocument, "interface Gi0/0/0/1.1\n encapsulation dot1q 100\n encapsulation dot1q 200\n!\n"),
-            (JunosDocument, "interfaces { ge-0/0/1 { unit 1 { vlan-id 100; vlan-id 200; } } }"),
+            (
+                CiscoDocument,
+                "interface Gi0/0/0/1.1\n encapsulation dot1q 100\n encapsulation dot1q 200\n!\n",
+            ),
+            (
+                JunosDocument,
+                "interfaces { ge-0/0/1 { unit 1 { vlan-id 100; vlan-id 200; } } }",
+            ),
         ]:
             with self.subTest(vendor=cls.vendor):
                 document = cls(text)
-                self.assertEqual(self.assert_matches_uncached(document)[0][0].vlan, 100)
+                self.assertEqual(
+                    self.assert_matches_uncached(document)[0][0].vlan, 100
+                )
                 parent = document._interface_nodes()[0]
-                container = parent if cls is CiscoDocument else document._unit_nodes(parent)[0]
-                if cls is CiscoDocument:
-                    transaction = document.rewrite()
-                    payload = container.header + "\n" + "".join(node.text for node in reversed(container.nodes))
-                    transaction.replace_subtree(container, payload, "reverse statements")
-                    transaction.commit()
-                else:
-                    container.children.reverse()
-                self.assertEqual(self.assert_matches_uncached(document)[0][0].vlan, 200)
+                container = (
+                    parent
+                    if cls is CiscoDocument
+                    else document._unit_nodes(parent)[0]
+                )
+                reverse_container(document, container)
+                self.assertEqual(
+                    self.assert_matches_uncached(document)[0][0].vlan, 200
+                )
 
-    def test_same_preorder_headers_with_different_parentage_invalidate_business(self):
+    def test_same_preorder_headers_with_different_parentage_invalidate_business(
+        self,
+    ):
         for cls, text, name in [
-            (CiscoDocument, "interface Gi0/0/0/1\n nested\n ipv4 address 192.0.2.1/31\n!\n", "GigabitEthernet0/0/0/1"),
-            (JunosDocument, "interfaces { ge-0/0/1 { unit 1 { nested {} family inet; } } }", "ge-0/0/1.1"),
+            (
+                CiscoDocument,
+                "interface Gi0/0/0/1\n nested\n ipv4 address 192.0.2.1/31\n!\n",
+                "GigabitEthernet0/0/0/1",
+            ),
+            (
+                JunosDocument,
+                "interfaces { ge-0/0/1 { unit 1 { nested {} family inet; } } }",
+                "ge-0/0/1.1",
+            ),
         ]:
             with self.subTest(vendor=cls.vendor):
                 document = cls(text)
                 parent = document._interface_nodes()[0]
-                container = parent if cls is CiscoDocument else document._unit_nodes(parent)[0]
+                container = (
+                    parent
+                    if cls is CiscoDocument
+                    else document._unit_nodes(parent)[0]
+                )
                 if cls is CiscoDocument:
                     nested, business = container.nodes
                     transaction = document.rewrite()
                     transaction.delete(business, "move source")
-                    transaction.append_child(nested, business.text, "move target")
+                    transaction.append_child(
+                        nested, business.text, "move target"
+                    )
                     transaction.commit()
-                    self.assertIn(name, self.assert_matches_uncached(document)[2])
-                    delete_context(document, document._interface_nodes()[0].nodes[0])
-                    self.assertNotIn(name, self.assert_matches_uncached(document)[2])
+                    self.assertIn(
+                        name, self.assert_matches_uncached(document)[2]
+                    )
+                    delete_context(
+                        document, document._interface_nodes()[0].nodes[0]
+                    )
+                    self.assertNotIn(
+                        name, self.assert_matches_uncached(document)[2]
+                    )
                     continue
-                nested, business = container.children
-                nested.active = False
-                self.assertIn(name, self.assert_matches_uncached(document)[2])
-                headers = [node.header for node in self.all_nodes(document)]
-                nested.children.append(business)
-                container.children.remove(business)
-                self.assertEqual(headers, [node.header for node in self.all_nodes(document)])
-                self.assertNotIn(name, self.assert_matches_uncached(document)[2])
+                move_into_inactive_child(document, container)
+                self.assertNotIn(
+                    name, self.assert_matches_uncached(document)[2]
+                )
 
     def test_gateway_reference_changes_refresh_specs_and_business(self):
         for cls, text, old, new in [
@@ -346,14 +531,16 @@ class InterfaceCacheDifferentialTest(unittest.TestCase):
                 "interface BVI1000\n!\ninterface BVI2000\n!\nl2vpn\n bridge group B\n"
                 "  bridge-domain D\n   interface GigabitEthernet0/0/0/1.1\n"
                 "   routed interface BVI1000\n!\n",
-                "BVI1000", "BVI2000",
+                "BVI1000",
+                "BVI2000",
             ),
             (
                 JunosDocument,
                 "interfaces { ge-0/0/1 { unit 1 { vlan-id 100; family bridge; } }"
                 " irb { unit 1000; unit 2000; } }"
                 " bridge-domains { D { interface ge-0/0/1.1; routing-interface irb.1000; } }",
-                "irb.1000", "irb.2000",
+                "irb.1000",
+                "irb.2000",
             ),
         ]:
             with self.subTest(vendor=cls.vendor):
@@ -362,13 +549,17 @@ class InterfaceCacheDifferentialTest(unittest.TestCase):
                 self.assertIn(old, before[2])
                 self.assertNotIn(new, before[2])
                 reference = next(
-                    node for node in self.all_nodes(document)
-                    if node.header.startswith(("routed interface ", "routing-interface "))
+                    node
+                    for node in self.all_nodes(document)
+                    if node.header.startswith(
+                        ("routed interface ", "routing-interface ")
+                    )
                 )
-                if cls is CiscoDocument:
-                    replace_header(document, reference, reference.header.replace(old, new))
-                else:
-                    reference.header = reference.header.replace(old, new)
+                replace_header(
+                    document,
+                    reference,
+                    reference.header.replace(old, new),
+                )
                 after = self.assert_matches_uncached(document)
                 self.assertNotIn(old, after[2])
                 self.assertIn(new, after[2])
@@ -378,24 +569,25 @@ class InterfaceCacheDifferentialTest(unittest.TestCase):
                     self.assertEqual(specs[new].inner_vlan, 100)
 
     def test_comment_presence_changes_effective_business_subtree(self):
-        document = JunosDocument("interfaces { ge-0/0/1 { unit 1; } }")
-        parent = document._interface_nodes()[0]
-        subtree = JunosNode("", [JunosNode("family inet;")])
-        parent.children.append(subtree)
-        for comment, expected in [
-            (None, {"ge-0/0/1.1"}),
-            ("", set()),
-            ("# standalone", set()),
-            ("# different comment", set()),
-            (None, {"ge-0/0/1.1"}),
-        ]:
-            with self.subTest(comment=comment):
-                subtree.comment = comment
-                self.assertEqual(self.assert_matches_uncached(document)[2], expected)
+        sources = (
+            "interfaces { ge-0/0/1 { unit 1 { family inet; } } }",
+            "interfaces { ge-0/0/1 { unit 1 { # standalone\n family inet; } } }",
+            "interfaces { ge-0/0/1 { unit 1 { family inet; # trailing\n } } }",
+        )
+        for source in sources:
+            with self.subTest(source=source):
+                document = JunosDocument(source)
+                self.assertEqual(
+                    self.assert_matches_uncached(document)[2],
+                    {"ge-0/0/1.1"},
+                )
 
 
 class JunosActiveVlanIndexTest(unittest.TestCase):
-    def test_parent_scan_runs_once_and_duplicate_parents_and_units_keep_first(self):
+
+    def test_parent_scan_runs_once_and_duplicate_parents_and_units_keep_first(
+        self,
+    ):
         document = JunosDocument(
             "interfaces {"
             " ge-0/0/1 {"
@@ -407,11 +599,21 @@ class JunosActiveVlanIndexTest(unittest.TestCase):
             "}"
         )
         specs = [
-            InterfaceSpec(f"ge-0/0/1.{unit}", "ge-0/0/1", str(unit), 100 + unit, InterfaceKind.PHYSICAL)
+            InterfaceSpec(
+                f"ge-0/0/1.{unit}",
+                "ge-0/0/1",
+                str(unit),
+                100 + unit,
+                InterfaceKind.PHYSICAL,
+            )
             for unit in (1, 2)
         ]
-        with patch.object(document, "_interface_nodes", wraps=document._interface_nodes) as scan:
-            vlans, names = junos_interfaces._collect_active_vlans(document, {spec.name for spec in specs}, specs)
+        with patch.object(
+            document, "_interface_nodes", wraps=document._interface_nodes
+        ) as scan:
+            vlans, names = junos_interfaces._collect_active_vlans(
+                document, {spec.name for spec in specs}, specs
+            )
             scan.assert_called_once_with()
         self.assertEqual(vlans, {101, 102})
         self.assertEqual(names, {"BLUE"})

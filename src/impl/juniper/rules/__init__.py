@@ -8,7 +8,6 @@ from impl.common.outcomes import (
 from impl.common.policies import SimulationMode
 from impl.common.rules import (
     AdaptContext,
-    FunctionRule,
     PruneContext,
     SimulationContext,
     ValidationContext,
@@ -19,11 +18,12 @@ from impl.common.rules import (
 )
 
 from . import compatibility, pruning, simulation
+from .runtime import JunosVisitorRule
 
 PRUNE_RULES = (
-    FunctionRule(
+    JunosVisitorRule(
         "juniper.prune.non_nni",
-        lambda doc, ctx: pruning._JunosPruner(
+        document_action=lambda doc, ctx: pruning._JunosPruner(
             doc,
             ctx.protected_parents,
             strict_input_validation=ctx.strict_input_validation,
@@ -32,47 +32,63 @@ PRUNE_RULES = (
 )
 ADAPT_RULES = ()
 COMPATIBILITY_VALIDATION_RULES = (
-    FunctionRule(
+    JunosVisitorRule(
         "juniper.validate.reference_bindings",
-        compatibility.validate_reference_bindings,
+        document_action=compatibility.validate_reference_bindings,
+        readonly=True,
     ),
-    FunctionRule(
+    JunosVisitorRule(
         "juniper.validate.gateway_role",
-        compatibility.validate_gateway_role,
+        document_action=compatibility.validate_gateway_role,
+        readonly=True,
     ),
-    FunctionRule("juniper.validate.units", compatibility.validate_units),
+    JunosVisitorRule(
+        "juniper.validate.units",
+        document_action=compatibility.validate_units,
+        readonly=True,
+    ),
 )
 SOURCE_SEMANTIC_VALIDATION_RULES = (
-    FunctionRule(
+    JunosVisitorRule(
         "juniper.validate.gateway_role",
-        compatibility.validate_gateway_role,
+        document_action=compatibility.validate_gateway_role,
+        readonly=True,
     ),
-    FunctionRule("juniper.validate.units", compatibility.validate_units),
+    JunosVisitorRule(
+        "juniper.validate.units",
+        document_action=compatibility.validate_units,
+        readonly=True,
+    ),
 )
 VALIDATION_RULES = COMPATIBILITY_VALIDATION_RULES
 FINAL_INTEGRITY_VALIDATION_RULES = (
-    FunctionRule(
+    JunosVisitorRule(
         "juniper.validate.reference_bindings",
-        compatibility.validate_reference_bindings,
+        document_action=compatibility.validate_reference_bindings,
+        readonly=True,
     ),
 )
 SIMULATION_RULES = (
-    FunctionRule(
+    JunosVisitorRule(
         "juniper.simulate.empty_options",
-        simulation.remove_empty_interface_options,
-        lambda ctx: ctx.policy.mode != SimulationMode.OFF
-        and ctx.policy.remove_physical_interface_knobs,
+        document_action=simulation.remove_empty_interface_options,
+        condition=lambda ctx: (
+            ctx.policy.mode != SimulationMode.OFF
+            and ctx.policy.remove_physical_interface_knobs
+        ),
     ),
-    FunctionRule(
+    JunosVisitorRule(
         "juniper.simulate.enable_interfaces",
-        simulation.enable_data_interfaces,
-        lambda ctx: ctx.policy.mode != SimulationMode.OFF
-        and ctx.policy.ensure_data_interfaces_enabled,
+        document_action=simulation.enable_data_interfaces,
+        condition=lambda ctx: (
+            ctx.policy.mode != SimulationMode.OFF
+            and ctx.policy.ensure_data_interfaces_enabled
+        ),
     ),
-    FunctionRule(
+    JunosVisitorRule(
         "juniper.simulate.bfd",
-        simulation.clamp_bfd_timers,
-        lambda ctx: ctx.policy.mode == SimulationMode.STABLE,
+        document_action=simulation.clamp_bfd_timers,
+        condition=lambda ctx: ctx.policy.mode == SimulationMode.STABLE,
     ),
 )
 

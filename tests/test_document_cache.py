@@ -13,6 +13,7 @@ from impl.juniper import document as junos
 
 
 class DocumentCacheTest(unittest.TestCase):
+
     def test_deepcopied_documents_have_independent_empty_parse_caches(self):
         for cls, raw in [
             (cisco.CiscoDocument, " Gi 0/0/0/1 "),
@@ -29,29 +30,47 @@ class DocumentCacheTest(unittest.TestCase):
                         copied_parser = getattr(cloned._parser, name)
                         self.assertIsNot(copied_parser, parser)
                         self.assertEqual(copied_parser.cache_info().currsize, 0)
-                self.assertEqual(cloned.resolve_interface(raw), original.resolve_interface(raw))
-                self.assertEqual(cloned.interface_kind(raw), original.interface_kind(raw))
+                self.assertEqual(
+                    cloned.resolve_interface(raw),
+                    original.resolve_interface(raw),
+                )
+                self.assertEqual(
+                    cloned.interface_kind(raw), original.interface_kind(raw)
+                )
                 cloned._parser.interface_kind.cache_clear()
-                self.assertEqual(original._parser.interface_kind.cache_info().currsize, 1)
+                self.assertEqual(
+                    original._parser.interface_kind.cache_info().currsize, 1
+                )
 
     def test_deepcopy_does_not_keep_original_parse_caches_alive(self):
         for cls in (cisco.CiscoDocument, junos.JunosDocument):
             with self.subTest(vendor=cls.vendor):
                 original = cls("")
                 original.interface_kind("future0")
-                references = [weakref.ref(original), weakref.ref(original._parser)]
-                references.extend(weakref.ref(value) for value in vars(original._parser).values())
+                references = [
+                    weakref.ref(original),
+                    weakref.ref(original._parser),
+                ]
+                references.extend(
+                    weakref.ref(value)
+                    for value in vars(original._parser).values()
+                )
                 cloned = copy.deepcopy(original)
                 del original
                 gc.collect()
-                self.assertTrue(all(reference() is None for reference in references))
-                self.assertEqual(cloned.interface_kind("future0"), InterfaceKind.UNKNOWN)
+                self.assertTrue(
+                    all(reference() is None for reference in references)
+                )
+                self.assertEqual(
+                    cloned.interface_kind("future0"), InterfaceKind.UNKNOWN
+                )
 
     def test_module_parsers_do_not_hold_global_result_caches(self):
         for module in (cisco, junos):
             with self.subTest(module=module.__name__):
                 cached_globals = [
-                    name for name, value in vars(module).items()
+                    name
+                    for name, value in vars(module).items()
                     if callable(value)
                     and getattr(value, "__module__", None) == module.__name__
                     and hasattr(value, "cache_info")
@@ -71,19 +90,39 @@ class DocumentCacheTest(unittest.TestCase):
                         self.assertIsNot(parser, getattr(second._parser, name))
                 first.resolve_interface(raw)
                 first.interface_kind(raw)
-                self.assertEqual(first._parser.canonical_interface.cache_info().misses, 1)
-                self.assertEqual(first._parser.interface_kind.cache_info().misses, 1)
-                self.assertEqual(second._parser.canonical_interface.cache_info().currsize, 0)
-                self.assertEqual(second._parser.interface_kind.cache_info().currsize, 0)
+                self.assertEqual(
+                    first._parser.canonical_interface.cache_info().misses, 1
+                )
+                self.assertEqual(
+                    first._parser.interface_kind.cache_info().misses, 1
+                )
+                self.assertEqual(
+                    second._parser.canonical_interface.cache_info().currsize, 0
+                )
+                self.assertEqual(
+                    second._parser.interface_kind.cache_info().currsize, 0
+                )
                 second.interface_kind(raw)
-                self.assertEqual(second._parser.interface_kind.cache_info().misses, 1)
+                self.assertEqual(
+                    second._parser.interface_kind.cache_info().misses, 1
+                )
                 first._parser.interface_kind.cache_clear()
-                self.assertEqual(second._parser.interface_kind.cache_info().currsize, 1)
+                self.assertEqual(
+                    second._parser.interface_kind.cache_info().currsize, 1
+                )
 
-    def test_releasing_document_releases_caches_even_when_nodes_are_retained(self):
+    def test_releasing_document_releases_caches_even_when_nodes_are_retained(
+        self,
+    ):
         for cls, text in [
-            (cisco.CiscoDocument, "interface Gi0/0/0/1\n ipv4 address 192.0.2.1/31\n!\n"),
-            (junos.JunosDocument, "interfaces { ge-0/0/1 { unit 0 { family inet; } } }"),
+            (
+                cisco.CiscoDocument,
+                "interface Gi0/0/0/1\n ipv4 address 192.0.2.1/31\n!\n",
+            ),
+            (
+                junos.JunosDocument,
+                "interfaces { ge-0/0/1 { unit 0 { family inet; } } }",
+            ),
         ]:
             with self.subTest(vendor=cls.vendor):
                 document = cls(text)
@@ -97,35 +136,78 @@ class DocumentCacheTest(unittest.TestCase):
                     weakref.ref(document._interface_analysis_cache),
                 ]
                 references.extend(
-                    weakref.ref(value) for value in vars(document._parser).values()
+                    weakref.ref(value)
+                    for value in vars(document._parser).values()
                     if callable(value) and hasattr(value, "cache_info")
                 )
                 del document
                 gc.collect()
-                self.assertTrue(all(reference() is None for reference in references))
+                self.assertTrue(
+                    all(reference() is None for reference in references)
+                )
                 self.assertTrue(retained_node.header)
                 if cls is cisco.CiscoDocument:
                     self.assertTrue(retained_node.text)
                 else:
-                    self.assertIsNotNone(retained_node.clone())
+                    self.assertTrue(retained_node.text)
 
     def test_repeated_strings_hit_bounded_caches_including_non_matches(self):
         cisco_document = cisco.CiscoDocument("")
         junos_document = junos.JunosDocument("")
         cases = [
-            (cisco_document._parser.canonical_interface, " Gi 0/0/0/1 l2transport ", "GigabitEthernet0/0/0/1"),
+            (
+                cisco_document._parser.canonical_interface,
+                " Gi 0/0/0/1 l2transport ",
+                "GigabitEthernet0/0/0/1",
+            ),
             (cisco_document._parser.canonical_interface, "", ""),
-            (cisco_document._parser.interface_kind, " Gi 0/0/0/1 ", InterfaceKind.PHYSICAL),
-            (cisco_document._parser.interface_kind, "Future0", InterfaceKind.UNKNOWN),
-            (cisco_document._parser.interface_name, "interface Gi0/0/0/1", "GigabitEthernet0/0/0/1"),
+            (
+                cisco_document._parser.interface_kind,
+                " Gi 0/0/0/1 ",
+                InterfaceKind.PHYSICAL,
+            ),
+            (
+                cisco_document._parser.interface_kind,
+                "Future0",
+                InterfaceKind.UNKNOWN,
+            ),
+            (
+                cisco_document._parser.interface_name,
+                "interface Gi0/0/0/1",
+                "GigabitEthernet0/0/0/1",
+            ),
             (cisco_document._parser.interface_name, "hostname XR", None),
-            (cisco_document._parser.l2transport, "interface Gi0 l2transport", True),
-            (cisco_document._parser.l2transport, "interface Gi0 l2transport extra", False),
-            (junos_document._parser.canonical_interface, " ge-0/0/1 . 10 ", "ge-0/0/1.10"),
+            (
+                cisco_document._parser.l2transport,
+                "interface Gi0 l2transport",
+                True,
+            ),
+            (
+                cisco_document._parser.l2transport,
+                "interface Gi0 l2transport extra",
+                False,
+            ),
+            (
+                junos_document._parser.canonical_interface,
+                " ge-0/0/1 . 10 ",
+                "ge-0/0/1.10",
+            ),
             (junos_document._parser.canonical_interface, "", ""),
-            (junos_document._parser.interface_kind, " ge-0/0/1 ", InterfaceKind.PHYSICAL),
-            (junos_document._parser.interface_kind, "future0", InterfaceKind.UNKNOWN),
-            (junos_document._parser.header_prefixes, "protect: inactive: unit 10;", ("unit 10;", True)),
+            (
+                junos_document._parser.interface_kind,
+                " ge-0/0/1 ",
+                InterfaceKind.PHYSICAL,
+            ),
+            (
+                junos_document._parser.interface_kind,
+                "future0",
+                InterfaceKind.UNKNOWN,
+            ),
+            (
+                junos_document._parser.header_prefixes,
+                "protect: inactive: unit 10;",
+                ("unit 10;", True),
+            ),
             (junos_document._parser.header_prefixes, "", ("", False)),
             (junos_document._parser.is_unit, "protect: unit 001;", True),
             (junos_document._parser.is_unit, "unit 1; extra", False),
@@ -133,7 +215,11 @@ class DocumentCacheTest(unittest.TestCase):
             (junos_document._parser.vlan, "protect: vlan-id 0;", 0),
             (junos_document._parser.vlan, "vlan-tags outer 100 inner 20;", 100),
             (junos_document._parser.vlan, "vlan-id 100", None),
-            (junos_document._parser.inner_vlan, "vlan-tags outer 100 inner 0;", 0),
+            (
+                junos_document._parser.inner_vlan,
+                "vlan-tags outer 100 inner 0;",
+                0,
+            ),
             (junos_document._parser.inner_vlan, "vlan-id 100;", None),
         ]
         for parser, value, expected in cases:
@@ -151,9 +237,11 @@ class DocumentCacheTest(unittest.TestCase):
     def test_junos_prefix_consumers_share_one_cached_parse(self):
         header = " protect: inactive: protect: unit 10; "
         document = junos.JunosDocument("")
-        self.assertFalse(document._parser.is_effective(junos.JunosNode(header)))
+        self.assertFalse(document._parser.is_effective(junos._WorkNode(header)))
         self.assertEqual(document._parser.base_header(header), "unit 10;")
-        self.assertEqual(document._parser.output_header(header), "inactive: unit 10;")
+        self.assertEqual(
+            document._parser.output_header(header), "inactive: unit 10;"
+        )
         info = document._parser.header_prefixes.cache_info()
         self.assertEqual((info.misses, info.hits), (1, 2))
 
@@ -161,19 +249,31 @@ class DocumentCacheTest(unittest.TestCase):
         document = junos.JunosDocument("")
         for header, base, inactive, output in [
             (" protect: protect: unit 0; ", "unit 0;", False, "unit 0;"),
-            ("inactive: protect: inactive: unit 0;", "unit 0;", True, "inactive: unit 0;"),
+            (
+                "inactive: protect: inactive: unit 0;",
+                "unit 0;",
+                True,
+                "inactive: unit 0;",
+            ),
             ("protect:inactive:unit 0;", "unit 0;", True, "inactive: unit 0;"),
-            ("Inactive: unit 0;", "Inactive: unit 0;", False, "Inactive: unit 0;"),
+            (
+                "Inactive: unit 0;",
+                "Inactive: unit 0;",
+                False,
+                "Inactive: unit 0;",
+            ),
             ("inactive:", "", True, "inactive: "),
         ]:
             with self.subTest(header=header):
-                node = junos.JunosNode(header)
+                node = junos._WorkNode(header)
                 self.assertEqual(node.configured_inactive, inactive)
                 self.assertEqual(document._parser.base_header(header), base)
                 self.assertEqual(document._parser.output_header(header), output)
 
     def test_cisco_cached_mode_and_name_follow_rewrite_revisions(self):
-        document = cisco.CiscoDocument("interface preconfigure Gi0/0/0/1 l2transport\n")
+        document = cisco.CiscoDocument(
+            "interface preconfigure Gi0/0/0/1 l2transport\n"
+        )
         node = document.root.nodes[0]
         self.assertEqual(node.interface_name, "GigabitEthernet0/0/0/1")
         self.assertTrue(node.is_preconfigured_interface)
@@ -190,24 +290,32 @@ class DocumentCacheTest(unittest.TestCase):
 
     def test_cisco_interface_queries_follow_rewrite_after_warming(self):
         document = cisco.CiscoDocument("interface Gi0/0/0/1\n!\n")
-        self.assertEqual(document.interface_specs()[0].name, "GigabitEthernet0/0/0/1")
+        self.assertEqual(
+            document.interface_specs()[0].name, "GigabitEthernet0/0/0/1"
+        )
         transaction = document.rewrite()
-        transaction.append_child(document.root, "interface Loopback10\n", "test")
+        transaction.append_child(
+            document.root, "interface Loopback10\n", "test"
+        )
         transaction.commit()
         self.assertEqual(len(document.interface_specs()), 2)
         document.remove_interface("Gi0/0/0/1")
-        self.assertEqual([spec.name for spec in document.interface_specs()], ["Loopback10"])
+        self.assertEqual(
+            [spec.name for spec in document.interface_specs()], ["Loopback10"]
+        )
         document.remove_interface("Loopback10")
         self.assertEqual(document.interface_specs(), [])
 
     def test_junos_prefix_flags_follow_edits_active_state_and_comments(self):
         document = junos.JunosDocument("")
-        node = junos.JunosNode("protect: inactive: unit 10;", [])
+        node = junos._WorkNode("protect: inactive: unit 10;", [])
         self.assertFalse(node.effective)
         node.header = "protect: unit 10;"
         self.assertFalse(node.configured_inactive)
         self.assertTrue(node.effective)
-        self.assertEqual(document._parser.output_header(node.header), "unit 10;")
+        self.assertEqual(
+            document._parser.output_header(node.header), "unit 10;"
+        )
         node.active = False
         self.assertFalse(node.effective)
         node.active = True
@@ -218,8 +326,8 @@ class DocumentCacheTest(unittest.TestCase):
 
     def test_junos_unit_queries_follow_header_state_and_children_edits(self):
         document = junos.JunosDocument("")
-        unit = junos.JunosNode("unit 001;")
-        interface = junos.JunosNode("ge-0/0/1", [unit])
+        unit = junos._WorkNode("unit 001;")
+        interface = junos._WorkNode("ge-0/0/1", [unit])
         self.assertEqual(document._unit_nodes(interface), [unit])
         self.assertEqual(document._unit_number(unit), "001")
         unit.header = "protect: unit 20"
@@ -233,7 +341,7 @@ class DocumentCacheTest(unittest.TestCase):
         unit.active = True
         unit.header = "description unit 20;"
         self.assertEqual(document._unit_nodes(interface), [])
-        added = junos.JunosNode("unit 30", [])
+        added = junos._WorkNode("unit 30", [])
         interface.children.append(added)
         self.assertEqual(document._unit_nodes(interface), [added])
         interface.children.remove(added)
@@ -241,9 +349,9 @@ class DocumentCacheTest(unittest.TestCase):
 
     def test_junos_vlan_queries_follow_header_state_and_children_edits(self):
         document = junos.JunosDocument("")
-        first = junos.JunosNode("vlan-id 100;")
-        tags = junos.JunosNode("protect: vlan-tags outer 200 inner 20;")
-        unit = junos.JunosNode("unit 10", [first, tags])
+        first = junos._WorkNode("vlan-id 100;")
+        tags = junos._WorkNode("protect: vlan-tags outer 200 inner 20;")
+        unit = junos._WorkNode("unit 10", [first, tags])
 
         def check(outer, inner):
             self.assertEqual(document._find_vlan(unit), outer)

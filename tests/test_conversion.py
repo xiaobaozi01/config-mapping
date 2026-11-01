@@ -14,7 +14,6 @@ from openpyxl import load_workbook
 from adaptation.service import convert
 from impl.common.errors import InvariantViolation
 
-
 FIXTURES = Path(__file__).parent / "fixtures"
 
 
@@ -55,7 +54,9 @@ class ConversionTest(unittest.TestCase):
             output = root / "output"
             context = convert(topology, config_dir, output)
             self.assertFalse(context.has_errors, context.errors)
-            converted = (output / "configs" / "R1.cfg").read_text(encoding="utf-8")
+            converted = (output / "configs" / "R1.cfg").read_text(
+                encoding="utf-8"
+            )
             self.assertNotIn("interface preconfigure", converted)
             self.assertNotIn("interface PTP", converted)
             self.assertNotIn("banner exec", converted)
@@ -63,22 +64,31 @@ class ConversionTest(unittest.TestCase):
             self.assertNotIn("description RESERVED", converted)
             self.assertIn("ptp\n clock", converted)
             self.assertNotIn("ipv4 address 198.51.100.1/31", converted)
-            self.assertFalse(any(
-                item.source_interface in {
-                    "GigabitEthernet0/0/0/5",
-                    "GigabitEthernet0/0/0/6",
-                }
-                for item in context.devices["R1"].mappings
-            ))
-            self.assertFalse(any(
-                "PTP0/RP0/CPU0/0 类型无法识别" in warning
-                for warning in context.devices["R1"].warnings
-            ))
-            self.assertFalse(any(
-                "FutureBanner0" in warning
-                for warning in context.devices["R1"].warnings
-            ))
-            report = json.loads((output / "report.json").read_text(encoding="utf-8"))
+            self.assertFalse(
+                any(
+                    item.source_interface
+                    in {
+                        "GigabitEthernet0/0/0/5",
+                        "GigabitEthernet0/0/0/6",
+                    }
+                    for item in context.devices["R1"].mappings
+                )
+            )
+            self.assertFalse(
+                any(
+                    "PTP0/RP0/CPU0/0 类型无法识别" in warning
+                    for warning in context.devices["R1"].warnings
+                )
+            )
+            self.assertFalse(
+                any(
+                    "FutureBanner0" in warning
+                    for warning in context.devices["R1"].warnings
+                )
+            )
+            report = json.loads(
+                (output / "report.json").read_text(encoding="utf-8")
+            )
             preconfigured_event = next(
                 event
                 for event in report["events"]
@@ -88,11 +98,13 @@ class ConversionTest(unittest.TestCase):
                 preconfigured_event["removed_by_type"],
                 {"preconfigured-interface": 2},
             )
-            self.assertTrue(any(
-                event["kind"] == "cleaning-rule"
-                and event["rule_id"] == "cisco.remove.ptp.interface"
-                for event in report["events"]
-            ))
+            self.assertTrue(
+                any(
+                    event["kind"] == "cleaning-rule"
+                    and event["rule_id"] == "cisco.remove.ptp.interface"
+                    for event in report["events"]
+                )
+            )
             banner_event = next(
                 event
                 for event in report["events"]
@@ -101,7 +113,9 @@ class ConversionTest(unittest.TestCase):
             self.assertEqual(banner_event["point"], "pre_analysis")
             self.assertEqual(banner_event["removed_by_type"], {"banner": 1})
             self.assertEqual(
-                report["summary"]["cleaning_rule_hits_by_category"]["ptp-interface"],
+                report["summary"]["cleaning_rule_hits_by_category"][
+                    "ptp-interface"
+                ],
                 1,
             )
 
@@ -111,10 +125,21 @@ class ConversionTest(unittest.TestCase):
             output = Path(directory) / "output"
             context = convert(topology, config_dir, output)
             self.assertFalse(context.has_errors)
-            self.assertNotIn("GigabitEthernet0/0/0/5", context.devices["R1"].profile.nni_interfaces)
-            self.assertNotIn("GigabitEthernet0/0/0/6", context.devices["R1"].profile.nni_interfaces)
-            self.assertNotIn("GigabitEthernet0/0/0/7", context.devices["R1"].profile.nni_interfaces)
-            converted = (output / "configs" / "R1.cfg").read_text(encoding="utf-8")
+            self.assertNotIn(
+                "GigabitEthernet0/0/0/5",
+                context.devices["R1"].profile.nni_interfaces,
+            )
+            self.assertNotIn(
+                "GigabitEthernet0/0/0/6",
+                context.devices["R1"].profile.nni_interfaces,
+            )
+            self.assertNotIn(
+                "GigabitEthernet0/0/0/7",
+                context.devices["R1"].profile.nni_interfaces,
+            )
+            converted = (output / "configs" / "R1.cfg").read_text(
+                encoding="utf-8"
+            )
             self.assertIn("interface Bundle-Ether10", converted)
             self.assertNotIn("old-user", converted)
             self.assertNotIn("tacacs-server", converted)
@@ -135,14 +160,22 @@ class ConversionTest(unittest.TestCase):
             self.assertNotIn("second-dot1q 2", converted)
             self.assertNotIn("UNUSED-BARE-PORT", converted)
             self.assertIn("interface Loopback0", converted)
-            self.assertLess(converted.index("username root"), converted.index("end"))
+            self.assertLess(
+                converted.index("username root"), converted.index("end")
+            )
 
             adapted = load_workbook(output / "topology-adapted.xlsx")
             adapted_links = adapted["链接表"]
             self.assertEqual(adapted_links.max_row, 2)
-            self.assertEqual(adapted_links.cell(2, 2).value, "GigabitEthernet0/0/0/0")
-            self.assertEqual(adapted["设备列表"].cell(2, 3).value, "configs/R1.cfg")
-            report = json.loads((output / "report.json").read_text(encoding="utf-8"))
+            self.assertEqual(
+                adapted_links.cell(2, 2).value, "GigabitEthernet0/0/0/0"
+            )
+            self.assertEqual(
+                adapted["设备列表"].cell(2, 3).value, "configs/R1.cfg"
+            )
+            report = json.loads(
+                (output / "report.json").read_text(encoding="utf-8")
+            )
             self.assertEqual(report["status"], "success")
             self.assertEqual(report["summary"]["skipped_links"], 1)
             authentication = next(
@@ -151,16 +184,24 @@ class ConversionTest(unittest.TestCase):
                 if event.get("rule_id") == "cisco.replace.authentication"
             )
             self.assertEqual(authentication["point"], "post_rewrite")
-            self.assertEqual(authentication["added_by_type"], {"lab-account": 1})
+            self.assertEqual(
+                authentication["added_by_type"], {"lab-account": 1}
+            )
             self.assertEqual(authentication["removed_by_type"]["taskgroup"], 1)
             self.assertEqual(authentication["removed_by_type"]["usergroup"], 1)
-            self.assertEqual(authentication["removed_by_type"]["line-auth-reference"], 5)
+            self.assertEqual(
+                authentication["removed_by_type"]["line-auth-reference"], 5
+            )
             adjustment = next(
-                event for event in report["events"] if event["kind"] == "simulation-adaptation"
+                event
+                for event in report["events"]
+                if event["kind"] == "simulation-adaptation"
             )
             self.assertEqual(adjustment["mode"], "stable")
             self.assertEqual(adjustment["image"], "xrv9000")
-            self.assertIn("GigabitEthernet0/0/0/0", adjustment["target_interfaces"])
+            self.assertIn(
+                "GigabitEthernet0/0/0/0", adjustment["target_interfaces"]
+            )
 
     def test_unknown_and_virtual_interfaces_are_preserved_but_not_mapped(self):
         """未识别及已知虚拟接口保留原配置，且未知类型生成审计告警。"""
@@ -187,7 +228,9 @@ class ConversionTest(unittest.TestCase):
             context = convert(topology, config_dir, output)
 
             self.assertFalse(context.has_errors)
-            converted = (output / "configs" / "R1.cfg").read_text(encoding="utf-8")
+            converted = (output / "configs" / "R1.cfg").read_text(
+                encoding="utf-8"
+            )
             self.assertIn("interface Tunnel-ip100", converted)
             self.assertIn("interface FutureVirtual0", converted)
             self.assertTrue(
@@ -203,7 +246,8 @@ class ConversionTest(unittest.TestCase):
                 )
             )
             mapped_sources = {
-                mapping.source_interface for mapping in context.devices["R1"].mappings
+                mapping.source_interface
+                for mapping in context.devices["R1"].mappings
             }
             self.assertNotIn("Tunnel-ip100", mapped_sources)
             self.assertNotIn("FutureVirtual0", mapped_sources)
@@ -248,10 +292,18 @@ class ConversionTest(unittest.TestCase):
             output = Path(directory) / "output"
             context = convert(topology, config_dir, output)
             self.assertFalse(context.has_errors)
-            self.assertNotIn("ge-0/0/5", context.devices["J1"].profile.nni_interfaces)
-            self.assertNotIn("ge-0/0/6", context.devices["J1"].profile.nni_interfaces)
-            self.assertNotIn("ge-0/0/7", context.devices["J1"].profile.nni_interfaces)
-            converted = (output / "configs" / "J1.cfg").read_text(encoding="utf-8")
+            self.assertNotIn(
+                "ge-0/0/5", context.devices["J1"].profile.nni_interfaces
+            )
+            self.assertNotIn(
+                "ge-0/0/6", context.devices["J1"].profile.nni_interfaces
+            )
+            self.assertNotIn(
+                "ge-0/0/7", context.devices["J1"].profile.nni_interfaces
+            )
+            converted = (output / "configs" / "J1.cfg").read_text(
+                encoding="utf-8"
+            )
             self.assertIn("ae0", converted)
             self.assertNotIn("old-user", converted)
             self.assertNotIn("radius-server", converted)
@@ -277,7 +329,10 @@ class ConversionTest(unittest.TestCase):
             ),
         }
         for case, (units, numbers) in cases.items():
-            with self.subTest(case=case), tempfile.TemporaryDirectory() as directory:
+            with (
+                self.subTest(case=case),
+                tempfile.TemporaryDirectory() as directory,
+            ):
                 root = Path(directory)
                 config_dir = root / "configs"
                 shutil.copytree(source_config_dir, config_dir)
@@ -323,12 +378,16 @@ class ConversionTest(unittest.TestCase):
                 for number in numbers:
                     self.assertNotIn(f"VPWS_{number}", converted)
                 self.assertIn("interface ae0.0;", converted)
-                self.assertFalse(any(
-                    mapping.target_interface and mapping.role != "NNI"
-                    for mapping in context.devices["J1"].mappings
-                ))
+                self.assertFalse(
+                    any(
+                        mapping.target_interface and mapping.role != "NNI"
+                        for mapping in context.devices["J1"].mappings
+                    )
+                )
 
-    def test_junos_inactive_children_follow_interface_migration_and_removal(self):
+    def test_junos_inactive_children_follow_interface_migration_and_removal(
+        self,
+    ):
         topology, source_config_dir = conversion_fixture("junos_bundle")
         with tempfile.TemporaryDirectory() as directory:
             root = Path(directory)
@@ -349,7 +408,9 @@ class ConversionTest(unittest.TestCase):
             output = root / "output"
             context = convert(topology, config_dir, output)
             self.assertFalse(context.has_errors, context.errors)
-            converted = (output / "configs" / "J1.cfg").read_text(encoding="utf-8")
+            converted = (output / "configs" / "J1.cfg").read_text(
+                encoding="utf-8"
+            )
             self.assertIn("inactive: description KEEP-WITH-NNI;", converted)
             self.assertNotIn("DROP-WITH-BARE", converted)
             self.assertIn("ae0", converted)
@@ -371,7 +432,9 @@ class ConversionTest(unittest.TestCase):
             self.assertIn("  interface Bundle-Ether10", cisco)
             self.assertIn("  interface GigabitEthernet0/0/0/1", cisco)
 
-            juniper = (output / "configs" / "J1.cfg").read_text(encoding="utf-8")
+            juniper = (output / "configs" / "J1.cfg").read_text(
+                encoding="utf-8"
+            )
             self.assertIn("ae20", juniper)
             self.assertIn("ge-0/0/0", juniper)
             self.assertIn("address 10.0.0.2/30;", juniper)
@@ -407,7 +470,9 @@ class ConversionTest(unittest.TestCase):
                     for item in mappings
                 )
             )
-            report = json.loads((output / "report.json").read_text(encoding="utf-8"))
+            report = json.loads(
+                (output / "report.json").read_text(encoding="utf-8")
+            )
             self.assertEqual(report["status"], "success")
             self.assertEqual(report["summary"]["active_links"], 2)
             self.assertEqual(report["summary"]["skipped_links"], 1)
@@ -430,7 +495,9 @@ class ConversionTest(unittest.TestCase):
             self.assertNotIn("GigabitEthernet0/0/0/2", cisco)
             self.assertNotIn("GigabitEthernet0/0/0/3", cisco)
 
-            juniper = (output / "configs" / "J1.cfg").read_text(encoding="utf-8")
+            juniper = (output / "configs" / "J1.cfg").read_text(
+                encoding="utf-8"
+            )
             self.assertIn("ge-0/0/0", juniper)
             self.assertIn("address 10.0.0.2/30;", juniper)
             self.assertIn("ge-0/0/1", juniper)
@@ -469,7 +536,9 @@ class ConversionTest(unittest.TestCase):
                 any(item["device"] in {"HW1", "HW2"} for item in mappings)
             )
 
-            report = json.loads((output / "report.json").read_text(encoding="utf-8"))
+            report = json.loads(
+                (output / "report.json").read_text(encoding="utf-8")
+            )
             self.assertEqual(report["status"], "success")
             self.assertEqual(report["summary"]["active_links"], 4)
             self.assertEqual(report["summary"]["skipped_links"], 0)
@@ -500,7 +569,9 @@ class ConversionTest(unittest.TestCase):
             output = Path(directory) / "output"
             context = convert(temporary_topology, config_dir, output)
             self.assertTrue(context.has_errors)
-            report = json.loads((output / "report.json").read_text(encoding="utf-8"))
+            report = json.loads(
+                (output / "report.json").read_text(encoding="utf-8")
+            )
             self.assertEqual(report["status"], "failed")
             self.assertTrue(
                 any(
@@ -509,7 +580,9 @@ class ConversionTest(unittest.TestCase):
                 )
             )
 
-    def test_external_peer_multiple_bundle_links_cannot_be_compressed_without_peer_config(self):
+    def test_external_peer_multiple_bundle_links_cannot_be_compressed_without_peer_config(
+        self,
+    ):
         topology, config_dir = conversion_fixture("iosxr_bundle")
         with tempfile.TemporaryDirectory() as directory:
             temporary_topology = Path(directory) / "topology.xlsx"
@@ -524,10 +597,18 @@ class ConversionTest(unittest.TestCase):
             self.assertTrue(context.has_errors)
             self.assertEqual(set(context.devices), {"R1"})
             self.assertFalse((output / "configs").exists())
-            self.assertTrue(any("外部对端" in error for error in context.errors))
-            self.assertIn("interface Bundle-Ether10", context.devices["R1"].document.render())
             self.assertTrue(
-                all("is_mlag_clone" not in mapping.to_dict() for mapping in context.mappings)
+                any("外部对端" in error for error in context.errors)
+            )
+            self.assertIn(
+                "interface Bundle-Ether10",
+                context.devices["R1"].document.render(),
+            )
+            self.assertTrue(
+                all(
+                    "is_mlag_clone" not in mapping.to_dict()
+                    for mapping in context.mappings
+                )
             )
 
     def test_iosxr_cross_peer_bundle_requires_explicit_mlag_support(self):
@@ -539,12 +620,20 @@ class ConversionTest(unittest.TestCase):
             self.assertTrue(context.has_errors)
             self.assertFalse((output / "configs").exists())
             self.assertFalse((output / "topology-adapted.xlsx").exists())
-            self.assertIn("interface Bundle-Ether10.100", context.devices["A"].document.render())
+            self.assertIn(
+                "interface Bundle-Ether10.100",
+                context.devices["A"].document.render(),
+            )
             self.assertTrue(
-                all("is_mlag_clone" not in mapping.to_dict() for mapping in context.mappings)
+                all(
+                    "is_mlag_clone" not in mapping.to_dict()
+                    for mapping in context.mappings
+                )
             )
 
-    def test_junos_l3_mlag_is_rejected_before_duplicate_addresses_are_generated(self):
+    def test_junos_l3_mlag_is_rejected_before_duplicate_addresses_are_generated(
+        self,
+    ):
         """ae0.0 的同一三层地址不能复制到两个独立物理口。"""
         topology, config_dir = conversion_fixture("junos_mlag")
         with tempfile.TemporaryDirectory() as directory:
@@ -554,15 +643,33 @@ class ConversionTest(unittest.TestCase):
             self.assertFalse((output / "configs").exists())
             self.assertFalse((output / "topology-adapted.xlsx").exists())
             self.assertIn("ae0", context.devices["JA"].document.render())
-            self.assertIn("address 10.0.0.1/30;", context.devices["JA"].document.render())
-            report = json.loads((output / "report.json").read_text(encoding="utf-8"))
-            self.assertEqual(report["status"], "failed")
-            self.assertTrue(any("ae0" in error and "设备 JA" in error for error in report["errors"]))
-            self.assertTrue(
-                all("is_mlag_clone" not in mapping.to_dict() for mapping in context.mappings)
+            self.assertIn(
+                "address 10.0.0.1/30;", context.devices["JA"].document.render()
             )
-            mappings = json.loads((output / "interface-mapping.json").read_text(encoding="utf-8"))
-            removed_irb = next(item for item in mappings if item["source_interface"] == "irb.400")
+            report = json.loads(
+                (output / "report.json").read_text(encoding="utf-8")
+            )
+            self.assertEqual(report["status"], "failed")
+            self.assertTrue(
+                any(
+                    "ae0" in error and "设备 JA" in error
+                    for error in report["errors"]
+                )
+            )
+            self.assertTrue(
+                all(
+                    "is_mlag_clone" not in mapping.to_dict()
+                    for mapping in context.mappings
+                )
+            )
+            mappings = json.loads(
+                (output / "interface-mapping.json").read_text(encoding="utf-8")
+            )
+            removed_irb = next(
+                item
+                for item in mappings
+                if item["source_interface"] == "irb.400"
+            )
             self.assertEqual(removed_irb["role"], "NON_NNI")
             self.assertEqual(removed_irb["action"], "remove")
             self.assertIsNone(removed_irb["target_interface"])
@@ -573,17 +680,27 @@ class ConversionTest(unittest.TestCase):
             output = Path(directory) / "output"
             context = convert(topology, config_dir, output)
             self.assertFalse(context.has_errors)
-            converted = (output / "configs" / "R1.cfg").read_text(encoding="utf-8")
+            converted = (output / "configs" / "R1.cfg").read_text(
+                encoding="utf-8"
+            )
             self.assertIn("interface GigabitEthernet0/0/0/0", converted)
             self.assertIn("ipv4 address 10.0.0.1 255.255.255.252", converted)
             self.assertNotIn("192.0.2.1", converted)
             self.assertNotIn("198.51.100.1", converted)
             self.assertNotIn("second-dot1q", converted)
             self.assertNotIn("interface GigabitEthernet0/0/0/5", converted)
-            self.assertFalse(any(mapping.role == "UNI" for mapping in context.mappings))
-            report = json.loads((output / "report.json").read_text(encoding="utf-8"))
-            self.assertGreaterEqual(report["summary"]["group_conflict_count"], 1)
-            self.assertEqual(report["group_conflicts"][0]["winner_source"], "explicit")
+            self.assertFalse(
+                any(mapping.role == "UNI" for mapping in context.mappings)
+            )
+            report = json.loads(
+                (output / "report.json").read_text(encoding="utf-8")
+            )
+            self.assertGreaterEqual(
+                report["summary"]["group_conflict_count"], 1
+            )
+            self.assertEqual(
+                report["group_conflicts"][0]["winner_source"], "explicit"
+            )
 
     def test_business_on_reserved_interfaces_is_removed_without_target(self):
         topology, source_config_dir = conversion_fixture("iosxr_bundle")
@@ -605,31 +722,48 @@ class ConversionTest(unittest.TestCase):
             output = root / "output"
             context = convert(topology, config_dir, output)
             self.assertFalse(context.has_errors, context.errors)
-            converted = (output / "configs" / "R1.cfg").read_text(encoding="utf-8")
+            converted = (output / "configs" / "R1.cfg").read_text(
+                encoding="utf-8"
+            )
             self.assertNotIn("interface GigabitEthernet0/0/0/6\n", converted)
             self.assertNotIn("interface GigabitEthernet0/0/0/7\n", converted)
             self.assertNotIn("203.0.113.1", converted)
             self.assertNotIn("203.0.114.1", converted)
             for number in (6, 7):
-                self.assertTrue(any(
-                    mapping.source_interface == f"GigabitEthernet0/0/0/{number}"
-                    and mapping.role == "NON_NNI"
-                    and mapping.action == "remove"
-                    and mapping.target_interface is None
-                    for mapping in context.devices["R1"].mappings
-                ))
-                self.assertFalse(any(
-                    mapping.target_interface
-                    and mapping.target_interface.startswith(f"GigabitEthernet0/0/0/{number}")
-                    for mapping in context.devices["R1"].mappings
-                ))
-            report = json.loads((output / "report.json").read_text(encoding="utf-8"))
-            adaptation = next(
-                event for event in report["events"]
-                if event["kind"] == "simulation-adaptation" and event["device"] == "R1"
+                self.assertTrue(
+                    any(
+                        mapping.source_interface
+                        == f"GigabitEthernet0/0/0/{number}"
+                        and mapping.role == "NON_NNI"
+                        and mapping.action == "remove"
+                        and mapping.target_interface is None
+                        for mapping in context.devices["R1"].mappings
+                    )
+                )
+                self.assertFalse(
+                    any(
+                        mapping.target_interface
+                        and mapping.target_interface.startswith(
+                            f"GigabitEthernet0/0/0/{number}"
+                        )
+                        for mapping in context.devices["R1"].mappings
+                    )
+                )
+            report = json.loads(
+                (output / "report.json").read_text(encoding="utf-8")
             )
-            self.assertNotIn("GigabitEthernet0/0/0/6", adaptation["target_interfaces"])
-            self.assertNotIn("GigabitEthernet0/0/0/7", adaptation["target_interfaces"])
+            adaptation = next(
+                event
+                for event in report["events"]
+                if event["kind"] == "simulation-adaptation"
+                and event["device"] == "R1"
+            )
+            self.assertNotIn(
+                "GigabitEthernet0/0/0/6", adaptation["target_interfaces"]
+            )
+            self.assertNotIn(
+                "GigabitEthernet0/0/0/7", adaptation["target_interfaces"]
+            )
 
     def test_nni_capacity_excludes_three_reserved_interfaces(self):
         topology, config_dir = conversion_fixture("iosxr_mlag")
@@ -644,12 +778,16 @@ class ConversionTest(unittest.TestCase):
                 "      - GigabitEthernet0/0/0/7\n",
                 encoding="utf-8",
             )
-            context = convert(topology, config_dir, root / "output", profile_path)
+            context = convert(
+                topology, config_dir, root / "output", profile_path
+            )
             self.assertTrue(context.has_errors)
-            self.assertTrue(any(
-                "NNI 数量超过可用物理接口数 1" in error
-                for error in context.errors
-            ))
+            self.assertTrue(
+                any(
+                    "NNI 数量超过可用物理接口数 1" in error
+                    for error in context.errors
+                )
+            )
 
     def test_unresolved_applied_group_fails_conversion_before_mapping(self):
         topology, config_dir = conversion_fixture("junos_unresolved")
@@ -658,32 +796,41 @@ class ConversionTest(unittest.TestCase):
             context = convert(topology, config_dir, output)
             self.assertTrue(context.has_errors)
             self.assertFalse((output / "configs").exists())
-            report = json.loads((output / "report.json").read_text(encoding="utf-8"))
+            report = json.loads(
+                (output / "report.json").read_text(encoding="utf-8")
+            )
             self.assertEqual(report["status"], "failed")
-            self.assertTrue(any("group" in message for message in report["errors"]))
+            self.assertTrue(
+                any("group" in message for message in report["errors"])
+            )
 
     def test_internal_invariant_failure_writes_report_then_reraises(self):
         """内部编程错误不被吞掉，但 CLI 仍能获得可诊断的失败报告。"""
         topology, config_dir = conversion_fixture("iosxr_bundle")
 
         class BrokenPipeline:
+
             def execute(self, context) -> None:
                 raise InvariantViolation("测试内部不变量")
 
         with tempfile.TemporaryDirectory() as directory:
             output = Path(directory) / "output"
-            with patch(
-                "adaptation.service.build_default_pipeline",
-                return_value=BrokenPipeline(),
-            ):
-                with self.assertRaisesRegex(
+            with (
+                patch(
+                    "adaptation.service.build_default_pipeline",
+                    return_value=BrokenPipeline(),
+                ),
+                self.assertRaisesRegex(
                     InvariantViolation,
                     "测试内部不变量",
-                ):
-                    convert(topology, config_dir, output)
+                ),
+            ):
+                convert(topology, config_dir, output)
 
             self.assertFalse((output / "configs").exists())
-            report = json.loads((output / "report.json").read_text(encoding="utf-8"))
+            report = json.loads(
+                (output / "report.json").read_text(encoding="utf-8")
+            )
             self.assertEqual(report["status"], "failed")
             self.assertTrue(
                 any(
@@ -693,7 +840,8 @@ class ConversionTest(unittest.TestCase):
                 )
             )
             event = next(
-                item for item in report["events"]
+                item
+                for item in report["events"]
                 if item["kind"] == "internal-error"
             )
             self.assertEqual(event["phase"], "核心转换流水线")
@@ -704,26 +852,37 @@ class ConversionTest(unittest.TestCase):
         topology, config_dir = conversion_fixture("junos_bundle")
 
         class CorruptingPipeline:
+
             def execute(self, context) -> None:
-                context.devices["J1"].document.root.children = None
+                document = context.devices["J1"].document
+
+                def fail_render():
+                    raise InvariantViolation("Junos 文档根节点损坏")
+
+                document.render = fail_render
 
         with tempfile.TemporaryDirectory() as directory:
             output = Path(directory) / "output"
-            with patch(
-                "adaptation.service.build_default_pipeline",
-                return_value=CorruptingPipeline(),
-            ):
-                with self.assertRaisesRegex(
+            with (
+                patch(
+                    "adaptation.service.build_default_pipeline",
+                    return_value=CorruptingPipeline(),
+                ),
+                self.assertRaisesRegex(
                     InvariantViolation,
                     "Junos 文档根节点",
-                ):
-                    convert(topology, config_dir, output)
+                ),
+            ):
+                convert(topology, config_dir, output)
 
             self.assertFalse((output / "configs").exists())
-            report = json.loads((output / "report.json").read_text(encoding="utf-8"))
+            report = json.loads(
+                (output / "report.json").read_text(encoding="utf-8")
+            )
             self.assertEqual(report["status"], "failed")
             event = next(
-                item for item in report["events"]
+                item
+                for item in report["events"]
                 if item["kind"] == "internal-error"
             )
             self.assertEqual(event["phase"], "输出结果")

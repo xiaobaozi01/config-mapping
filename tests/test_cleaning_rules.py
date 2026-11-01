@@ -8,7 +8,6 @@ from adaptation.cleaning_rules import (
     AuthenticationCleaningRule,
     CiscoBannerCleaningRule,
     CleaningPoint,
-    CleaningRuleError,
     CleaningRulesHandler,
 )
 from impl.cisco.document import CiscoDocument
@@ -17,11 +16,14 @@ from impl.juniper.document import JunosDocument
 
 
 class CleaningPathTest(unittest.TestCase):
+
     def test_empty_star_and_double_star_depth_semantics(self):
         self.assertTrue(matches_cleaning_path((), ()))
         self.assertFalse(matches_cleaning_path(("router ospf 1",), ()))
         self.assertTrue(matches_cleaning_path(("interfaces",), ("*",)))
-        self.assertFalse(matches_cleaning_path(("interfaces", "ge-0/0/0"), ("*",)))
+        self.assertFalse(
+            matches_cleaning_path(("interfaces", "ge-0/0/0"), ("*",))
+        )
         self.assertTrue(matches_cleaning_path((), ("**",)))
         self.assertTrue(
             matches_cleaning_path(
@@ -74,29 +76,62 @@ class CleaningPathTest(unittest.TestCase):
 
 
 class CleaningRuleLoadingTest(unittest.TestCase):
+
     def test_default_rules_are_split_by_target_vendor(self):
         (cisco_path, cisco_vendor), (juniper_path, juniper_vendor) = (
             CleaningRulesHandler._RULE_SOURCES
         )
         self.assertEqual(cisco_vendor.value, "cisco_iosxr")
         self.assertEqual(juniper_vendor.value, "juniper_junos")
-        self.assertEqual(cisco_path.parts[-4:], ("rules", "cisco", "xrv9000", "cleaning.yaml"))
-        self.assertEqual(juniper_path.parts[-4:], ("rules", "juniper", "vmx", "cleaning.yaml"))
+        self.assertEqual(
+            cisco_path.parts[-4:],
+            ("rules", "cisco", "xrv9000", "cleaning.yaml"),
+        )
+        self.assertEqual(
+            juniper_path.parts[-4:],
+            ("rules", "juniper", "vmx", "cleaning.yaml"),
+        )
         rules = CleaningRulesHandler._configured_rules()
         self.assertTrue(
-            all(rule.vendor == "cisco_iosxr" for rule in rules if rule.rule_id.startswith("cisco."))
+            all(
+                rule.vendor == "cisco_iosxr"
+                for rule in rules
+                if rule.rule_id.startswith("cisco.")
+            )
         )
         self.assertTrue(
-            all(rule.vendor == "juniper_junos" for rule in rules if rule.rule_id.startswith("juniper."))
+            all(
+                rule.vendor == "juniper_junos"
+                for rule in rules
+                if rule.rule_id.startswith("juniper.")
+            )
         )
 
     def test_default_rules_include_all_categories(self):
         """YAML 规则包含类型约束和可选清洗两大类；所有规则都默认启用。"""
         rules = CleaningRulesHandler._configured_rules()
-        self.assertTrue(next(rule for rule in rules if rule.rule_id == "cisco.remove.ptp.interface").enable)
-        self.assertTrue(next(rule for rule in rules if rule.rule_id == "cisco.remove.interface.link.discovery").enable)
-        self.assertTrue(next(rule for rule in rules if rule.rule_id == "cisco.remove.pki").enable)
-        self.assertIn("juniper.remove.hardware", {rule.rule_id for rule in rules})
+        self.assertTrue(
+            next(
+                rule
+                for rule in rules
+                if rule.rule_id == "cisco.remove.ptp.interface"
+            ).enable
+        )
+        self.assertTrue(
+            next(
+                rule
+                for rule in rules
+                if rule.rule_id == "cisco.remove.interface.link.discovery"
+            ).enable
+        )
+        self.assertTrue(
+            next(
+                rule for rule in rules if rule.rule_id == "cisco.remove.pki"
+            ).enable
+        )
+        self.assertIn(
+            "juniper.remove.hardware", {rule.rule_id for rule in rules}
+        )
 
     def test_vendor_prefix_is_added_to_local_id_with_supported_separators(self):
         rule = CleaningRulesHandler._parse_rule(
@@ -131,6 +166,7 @@ class CleaningRuleLoadingTest(unittest.TestCase):
 
 
 class ProgrammaticCleaningRuleTest(unittest.TestCase):
+
     def test_banner_rule_deactivates_complete_ranges(self):
         document = CiscoDocument(
             "banner exec ^\n"

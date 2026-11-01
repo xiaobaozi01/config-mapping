@@ -482,10 +482,10 @@ interfaces {
 }
 ```
 
-进入原逐行解析器之前，预处理器会在引号和注释之外按 `{`、`}`、`;` 将单行块
-展开成标准多行文本，之后仍由原有栈逻辑解析成树。因此多行写法和
-`interfaces { ge-0/0/0 { unit 0; } }` 这类单行嵌套写法使用相同语义；字符串或
-注释内部的大括号和分号不会被当成结构符号。
+Junos 源码直接交给生成的 `JunosLexer` 和 `JunosParser`。Lexer 整体消费双引号、
+单引号、行注释和块注释，Parser 只识别嵌套 `{}`、叶子 `;`、空块和可选 `};`。
+因此多行写法与 `interfaces { ge-0/0/0 { unit 0; } }` 使用相同语义；字符串或注释
+内部的大括号、分号和 `#` 不会被当成结构符号。
 
 解析结果如下：
 
@@ -497,15 +497,20 @@ interfaces
             └── address 10.0.0.1/30
 ```
 
-节点包含：
+Context 包含：
 
 - `header`：当前语句。
-- `children`：大括号中的子节点。
-- `active`：是否输出。
-- `origin`：显式配置或来源 Group。
-- `rank`：Group 继承优先级。
+- `nodes`：大括号中的直接语句或注释。
+- `path`、`text`、`indent`：只读路径和源码范围。
+- `configured_inactive`、`effective`：停用状态和业务有效性。
+- `snapshot`：所属不可变解析快照。
 
 配置大括号不平衡时直接报错。
+
+所有修改通过 `JunosRewriteTransaction` 收集并在提交时重新解析；未修改区域保持
+原字节，旧 Context 在发布后失效。`render()` 只创建临时输出视图，处理空块策略和
+`protect:`，不修改源码快照。Group、裁剪和模拟算法可使用一次遍历内的临时工作树，
+但最终仍只通过一个候选文本事务发布。具体机制见 [Junos ANTLR4 说明](antlr-juniper.md)。
 
 `inactive:` 和 `protect:` 前缀在名称、路径及 identity 比较时被去除。两者的
 生效状态不同：`inactive:` 节点及其完整子树不参与求值，父节点保留时仍以停用状态

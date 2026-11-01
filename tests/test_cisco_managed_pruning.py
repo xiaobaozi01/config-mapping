@@ -5,8 +5,8 @@ from dataclasses import replace
 from unittest.mock import patch
 
 from impl.cisco import rules
-from impl.cisco.document import CiscoDocument
 from impl.cisco.antlr.parsing import ConfigurationParseError
+from impl.cisco.document import CiscoDocument
 from impl.cisco.rules import pruning
 from impl.cisco.rules.support import CiscoVisitorRule
 from impl.common.outcomes import InterfacePruningOutcome
@@ -31,7 +31,9 @@ BINDING_SOURCE = "router ospf 1\n interface Gi0/0/0/2\n  cost 99\n"
 
 def prune_cases():
     full = PruneContext(frozenset({"Gi0/0/0/0"}))
-    members = PruneContext(frozenset(), frozenset({REMOVED}), remove_non_nni=False)
+    members = PruneContext(
+        frozenset(), frozenset({REMOVED}), remove_non_nni=False
+    )
     return (
         (pruning.NON_NNI_RULE, FULL_SOURCE, full),
         (pruning.MEMBER_SOURCES_RULE, MEMBER_SOURCE, members),
@@ -41,7 +43,10 @@ def prune_cases():
 
 
 class ManagedPruningFailureTest(unittest.TestCase):
-    def test_each_real_prune_rule_rolls_back_mapper_failure_and_clears_staged_results(self):
+
+    def test_each_real_prune_rule_rolls_back_mapper_failure_and_clears_staged_results(
+        self,
+    ):
         for rule, source, context in prune_cases():
             with self.subTest(rule=rule.rule_id):
                 document = CiscoDocument(source)
@@ -55,28 +60,52 @@ class ManagedPruningFailureTest(unittest.TestCase):
                     self.assertTrue(session.result.changes)
                     raise RuntimeError("mapping failed")
 
-                failing = replace(rule, outcome_factory=lambda: staged, result_mapper=reject)
+                failing = replace(
+                    rule, outcome_factory=lambda: staged, result_mapper=reject
+                )
                 with self.assertRaisesRegex(RuntimeError, "mapping failed"):
                     failing.apply(document, context)
                 self.assertIs(document.snapshot, snapshot)
                 self.assertEqual(document.revision, 0)
-                self.assertEqual((staged.changes, staged.removed_interfaces, staged.removed_addresses), ([], set(), set()))
+                self.assertEqual(
+                    (
+                        staged.changes,
+                        staged.removed_interfaces,
+                        staged.removed_addresses,
+                    ),
+                    ([], set(), set()),
+                )
 
-    def test_each_real_prune_rule_discards_results_if_candidate_reparse_fails(self):
+    def test_each_real_prune_rule_discards_results_if_candidate_reparse_fails(
+        self,
+    ):
         for rule, source, context in prune_cases():
             with self.subTest(rule=rule.rule_id):
                 document = CiscoDocument(source)
                 snapshot = document.snapshot
                 staged = InterfacePruningOutcome()
                 registered = replace(rule, outcome_factory=lambda: staged)
-                with patch("impl.cisco.antlr.rewriting.CiscoSnapshot", side_effect=ConfigurationParseError("invalid")):
+                with patch(
+                    "impl.cisco.antlr.rewriting.CiscoSnapshot",
+                    side_effect=ConfigurationParseError("invalid"),
+                ):
                     with self.assertRaises(ConfigurationParseError):
                         registered.apply(document, context)
                 self.assertIs(document.snapshot, snapshot)
-                self.assertEqual((staged.changes, staged.removed_interfaces, staged.removed_addresses), ([], set(), set()))
+                self.assertEqual(
+                    (
+                        staged.changes,
+                        staged.removed_interfaces,
+                        staged.removed_addresses,
+                    ),
+                    ([], set(), set()),
+                )
 
     def test_bgp_ambiguity_keeps_input_but_does_not_block_other_pruning(self):
-        source = FULL_SOURCE + "router bgp 65001\n neighbor 192.0.2.3\n  use neighbor-group MISSING\n"
+        source = (
+            FULL_SOURCE
+            + "router bgp 65001\n neighbor 192.0.2.3\n  use neighbor-group MISSING\n"
+        )
         document = CiscoDocument(source)
         snapshot = document.snapshot
         result = document.prune_non_nni({"Gi0/0/0/0"})
@@ -117,8 +146,12 @@ class ManagedPruningFailureTest(unittest.TestCase):
         self.assertFalse(validation.errors)
 
     def test_unknown_binding_is_preserved_with_warning(self):
-        document = CiscoDocument(BINDING_SOURCE + "custom-service FOO\n bind-interface Gi0/0/0/2\n")
-        result = pruning.INTERFACE_BINDINGS_RULE.apply(document, PruneContext(frozenset(), frozenset({REMOVED})))
+        document = CiscoDocument(
+            BINDING_SOURCE + "custom-service FOO\n bind-interface Gi0/0/0/2\n"
+        )
+        result = pruning.INTERFACE_BINDINGS_RULE.apply(
+            document, PruneContext(frozenset(), frozenset({REMOVED}))
+        )
         self.assertFalse(result.errors)
         self.assertTrue(result.warnings)
         self.assertTrue(result.changes)
@@ -134,6 +167,7 @@ class ManagedPruningFailureTest(unittest.TestCase):
 
 
 class ManagedPruningResultTest(unittest.TestCase):
+
     def test_deletion_triggers_share_interface_dependency_cascade(self):
         full = CiscoDocument(FULL_SOURCE)
         member = CiscoDocument(MEMBER_SOURCE)
@@ -154,59 +188,101 @@ class ManagedPruningResultTest(unittest.TestCase):
         self.assertEqual(cascade.call_count, 2)
         self.assertEqual(cascade.return_value.run.call_count, 2)
 
-    def test_full_prune_keeps_business_reports_and_does_not_share_device_state(self):
+    def test_full_prune_keeps_business_reports_and_does_not_share_device_state(
+        self,
+    ):
         first, second = CiscoDocument(FULL_SOURCE), CiscoDocument(FULL_SOURCE)
         lost = first.prune_non_nni({"Gi0/0/0/0"})
         retained = second.prune_non_nni({"Gi0/0/0/2"})
         self.assertEqual(lost.removed_interfaces, {REMOVED})
         self.assertEqual(lost.removed_addresses, {"192.0.2.1"})
         self.assertEqual(len(lost.changes), 2)
-        self.assertTrue(all(change["action"] == "remove" for change in lost.changes))
-        self.assertTrue(all(change["rule_id"] == "cisco.prune.non_nni" for change in lost.changes))
-        self.assertEqual(retained.removed_interfaces, {"GigabitEthernet0/0/0/0"})
+        self.assertTrue(
+            all(change["action"] == "remove" for change in lost.changes)
+        )
+        self.assertTrue(
+            all(
+                change["rule_id"] == "cisco.prune.non_nni"
+                for change in lost.changes
+            )
+        )
+        self.assertEqual(
+            retained.removed_interfaces, {"GigabitEthernet0/0/0/0"}
+        )
         self.assertEqual(retained.removed_addresses, set())
         self.assertIn("neighbor 192.0.2.2", second.source)
         self.assertEqual(first.prune_non_nni({"Gi0/0/0/0"}).changes, [])
         self.assertEqual(second.prune_non_nni({"Gi0/0/0/2"}).changes, [])
 
-    def test_later_managed_rules_receive_removed_sets_and_committed_snapshot(self):
+    def test_later_managed_rules_receive_removed_sets_and_committed_snapshot(
+        self,
+    ):
         document = CiscoDocument(FULL_SOURCE + TRACK_SOURCE + BINDING_SOURCE)
         original = document.snapshot
         observed = []
 
         def observe(context):
-            observed.append((context.removed_interfaces, context.removed_addresses, document.snapshot))
+            observed.append(
+                (
+                    context.removed_interfaces,
+                    context.removed_addresses,
+                    document.snapshot,
+                )
+            )
             return True
 
         track = replace(pruning.TRACK_DEPENDENCIES_RULE, condition=observe)
-        registered = (pruning.NON_NNI_RULE, track, pruning.INTERFACE_BINDINGS_RULE)
+        registered = (
+            pruning.NON_NNI_RULE,
+            track,
+            pruning.INTERFACE_BINDINGS_RULE,
+        )
         with patch.object(rules, "PRUNE_RULES", registered):
             result = document.prune_non_nni({"Gi0/0/0/0"})
         self.assertFalse(result.errors)
-        self.assertEqual(observed[0][:2], (frozenset({REMOVED}), frozenset({"192.0.2.1"})))
+        self.assertEqual(
+            observed[0][:2], (frozenset({REMOVED}), frozenset({"192.0.2.1"}))
+        )
         self.assertIsNot(observed[0][2], original)
         self.assertNotIn("track LOST", document.source)
         self.assertNotIn("cost 99", document.source)
-        self.assertEqual({item["rule_id"] for item in result.changes}, {rule.rule_id for rule in registered})
+        self.assertEqual(
+            {item["rule_id"] for item in result.changes},
+            {rule.rule_id for rule in registered},
+        )
 
-    def test_ancestor_delete_preserves_covered_child_business_event_without_overlap(self):
+    def test_ancestor_delete_preserves_covered_child_business_event_without_overlap(
+        self,
+    ):
         class NestedVisitor(pruning.PruningVisitor):
+
             def visitConfiguration(self, root):
                 parent = root.nodes[0]
-                self.record(parent.nodes[0], (parent.header, parent.nodes[0].header), "child", {REMOVED})
+                self.record(
+                    parent.nodes[0],
+                    (parent.header, parent.nodes[0].header),
+                    "child",
+                    {REMOVED},
+                )
                 self.record(parent, (parent.header,), "parent", {REMOVED})
 
         document = CiscoDocument(BINDING_SOURCE)
         rule = CiscoVisitorRule(
-            "cisco.prune.nested", NestedVisitor,
-            outcome_factory=InterfacePruningOutcome, result_mapper=pruning.pruning_result,
+            "cisco.prune.nested",
+            NestedVisitor,
+            outcome_factory=InterfacePruningOutcome,
+            result_mapper=pruning.pruning_result,
         )
         with patch.object(rules, "PRUNE_RULES", (rule,)):
             result = document.prune_non_nni(set())
         self.assertEqual(document.source, "")
         self.assertEqual(document.revision, 1)
-        self.assertEqual([event["reason"] for event in result.changes], ["child", "parent"])
-        self.assertTrue(all(event["rule_id"] == rule.rule_id for event in result.changes))
+        self.assertEqual(
+            [event["reason"] for event in result.changes], ["child", "parent"]
+        )
+        self.assertTrue(
+            all(event["rule_id"] == rule.rule_id for event in result.changes)
+        )
 
 
 if __name__ == "__main__":

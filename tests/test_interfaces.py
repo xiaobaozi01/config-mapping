@@ -19,6 +19,7 @@ def interface_config(name: str) -> str:
 
 
 class InterfaceReferenceScanTest(unittest.TestCase):
+
     def test_overlapping_names_keep_original_reference_boundaries(self):
         names = {"ge-0/0/1", "ge-0/0/1:0", "ge-0/0/1.20", "ge-0/0/2"}
         text = "interface ge-0/0/1:0; interface ge-0/0/1.20; xge-0/0/2"
@@ -30,6 +31,7 @@ class InterfaceReferenceScanTest(unittest.TestCase):
 
 
 class CiscoInterfaceBusinessTest(unittest.TestCase):
+
     def test_preconfigure_name_is_physical_name_and_mode_is_explicit(self):
         document = CiscoDocument(
             "interface preconfigure HundredGigE 0/3/0/2\n"
@@ -38,7 +40,9 @@ class CiscoInterfaceBusinessTest(unittest.TestCase):
         block = document.root.nodes[0]
         self.assertTrue(block.is_preconfigured_interface)
         self.assertEqual(block.interface_name, "HundredGigE0/3/0/2")
-        self.assertEqual(document.interface_kind(block.interface_name), "physical")
+        self.assertEqual(
+            document.interface_kind(block.interface_name), "physical"
+        )
 
     def test_ptp_cleanup_only_deactivates_ptp_interface_blocks(self):
         document = CiscoDocument(
@@ -52,7 +56,8 @@ class CiscoInterfaceBusinessTest(unittest.TestCase):
         ptp_block = document.root.nodes[2]
         self.assertEqual(document.interface_kind("PTP0/RP0/CPU0/0"), "virtual")
         rule = next(
-            item for item in CleaningRulesHandler._configured_rules()
+            item
+            for item in CleaningRulesHandler._configured_rules()
             if item.rule_id == "cisco.remove.ptp.interface"
         )
         hits = document.apply_cleaning_rule(
@@ -67,12 +72,16 @@ class CiscoInterfaceBusinessTest(unittest.TestCase):
         self.assertNotIn("PTP0/RP0/CPU0/0", rendered)
         self.assertIn("ptp\n clock", rendered)
         self.assertIn("profile timing", rendered)
-        self.assertIn("synchronous-ethernet prefer-interface ptp-receiver", rendered)
+        self.assertIn(
+            "synchronous-ethernet prefer-interface ptp-receiver", rendered
+        )
         self.assertIn("ipv4 address 198.51.100.1/31", rendered)
 
     def test_unknown_l2_attachment_does_not_activate_gateway(self):
         """未知接口即使带二层业务，也不能间接将 BVI 判定为有效业务。"""
-        document = CiscoDocument(interface_config("cisco_unknown_l2_attachment.cfg"))
+        document = CiscoDocument(
+            interface_config("cisco_unknown_l2_attachment.cfg")
+        )
 
         business = document.business_interface_names()
         self.assertNotIn("FutureVirtual0.500", business)
@@ -80,7 +89,9 @@ class CiscoInterfaceBusinessTest(unittest.TestCase):
 
     def test_bvi_number_is_not_used_as_vlan(self):
         """BVI 编号不参与 VLAN 推断，业务标签只能来自显式广播域关系。"""
-        document = CiscoDocument(interface_config("cisco_bvi_vlan_inference.cfg"))
+        document = CiscoDocument(
+            interface_config("cisco_bvi_vlan_inference.cfg")
+        )
 
         specs = {spec.name: spec for spec in document.interface_specs()}
         self.assertIsNone(specs["BVI300"].vlan)
@@ -107,15 +118,14 @@ class CiscoInterfaceBusinessTest(unittest.TestCase):
             "!\n"
         )
 
-        self.assertFalse(
-            plain.interface_has_business("GigabitEthernet0/0/0/0")
-        )
+        self.assertFalse(plain.interface_has_business("GigabitEthernet0/0/0/0"))
         self.assertTrue(
             addressed.interface_has_business("GigabitEthernet0/0/0/0")
         )
 
 
 class JunosInterfaceClassificationTest(unittest.TestCase):
+
     def test_nni_rename_keeps_media_mtu_on_parent(self):
         document = JunosDocument(
             "interfaces {"
@@ -126,17 +136,23 @@ class JunosInterfaceClassificationTest(unittest.TestCase):
         target = document._interface_nodes()[0]
         self.assertEqual(document._interface_name(target), "ge-0/0/0")
         self.assertEqual(
-            [child.header for child in target.children or [] if child.header.startswith("mtu ")],
+            [
+                child.header
+                for child in target.nodes
+                if child.header.startswith("mtu ")
+            ],
             ["mtu 9192;"],
         )
         for unit in document._unit_nodes(target):
-            self.assertFalse(any(
-                child.header.startswith("mtu ") for child in unit.children or []
-            ))
+            self.assertFalse(
+                any(child.header.startswith("mtu ") for child in unit.nodes)
+            )
 
     def test_junos_virtual_and_unknown_interface_classification(self):
         """Junos 虚拟前缀与未知前缀不会落入 physical。"""
-        document = JunosDocument(interface_config("junos_virtual_unknown_classification.cfg"))
+        document = JunosDocument(
+            interface_config("junos_virtual_unknown_classification.cfg")
+        )
         kinds = {spec.parent: spec.kind for spec in document.interface_specs()}
         self.assertEqual(kinds["ge-0/0/0"], "physical")
         self.assertEqual(kinds["gr-0/0/0"], "virtual")
@@ -146,7 +162,9 @@ class JunosInterfaceClassificationTest(unittest.TestCase):
         self.assertNotIn("future0.0", business)
 
     def test_junos_inactive_interfaces_and_units_are_not_discovered(self):
-        document = JunosDocument(interface_config("junos_inactive_interfaces_units.cfg"))
+        document = JunosDocument(
+            interface_config("junos_inactive_interfaces_units.cfg")
+        )
         specs = document.interface_specs()
 
         self.assertEqual([spec.name for spec in specs], ["ge-0/0/1.300"])

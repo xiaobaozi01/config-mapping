@@ -2,7 +2,7 @@
 
 将 IOS XR 和 Junos 大括号配置转换为适用于 GNS3 XRv9000/vMX 的配置。第一次接触项目请从 [新人导读](docs/onboarding-guide.md) 开始；需求基线见 [docs/requirements.md](docs/requirements.md)，完整转换过程见 [docs/processing-flow.md](docs/processing-flow.md)，新增 group 语义规则见 [语义 identity 规则编写指南](docs/semantic-rule-authoring.md)。裁剪、适配、模拟与校验的扩展方式见 [配置处理规则指南](docs/configuration-rule-authoring.md)。
 
-Cisco 配置底层使用 [ANTLR4 解析与原子文本重写](docs/antlr-cisco.md)。裁剪、接口适配、兼容校验、最终校验和模拟适配代码规则统一通过 `CiscoVisitorRule` 声明范围和条件，Visitor 编写匹配或跨对象分析，执行器统一管理事务、失败恢复及结果；四类可运行模板位于 `impl/cisco/rules/examples.py`，交给内网大模型补充业务规则时可使用[规则编写提示词](docs/rule-templates/internal-model-prompt.md)。简单清洗继续使用现有 YAML。
+Cisco 使用 [ANTLR4 解析与原子文本重写](docs/antlr-cisco.md)，Juniper 使用独立的 [Junos ANTLR4 解析与重写](docs/antlr-juniper.md)。两家厂商的源码与解析快照都是唯一配置状态；业务规则通过只读 Context 查询，并由 Visitor 会话和文本事务统一提交。Cisco 可运行模板位于 `impl/cisco/rules/examples.py`，规则编写入口见[配置处理规则指南](docs/configuration-rule-authoring.md)，简单清洗继续使用现有 YAML。
 
 拓扑预检后会展开常见的 IOS XR `group/apply-group` 和 Junos `groups/apply-groups` 配置，使继承的接口及认证配置进入后续转换。已应用 group 无法静态求值时转换失败，不输出可能不完整的设备配置。
 
@@ -10,8 +10,8 @@ group 展开是事务式的，并遵循显式配置、嵌套层级和 group 列�
 
 ## 代码边界
 
-- `impl/cisco/`：IOS XR AST、解析/渲染、Group、接口、清洗、模拟适配及 XRv9000 规则。
-- `impl/juniper/`：Junos AST、解析/渲染、Group、接口、清洗、模拟适配及 vMX 规则。
+- `impl/cisco/`：IOS XR ANTLR Context、事务、Group、接口、清洗、模拟适配及 XRv9000 规则。
+- `impl/juniper/`：Junos ANTLR Context、事务、Group、接口、清洗、模拟适配及 vMX 规则。
 - `impl/common/`：两家厂商共享的接口类型、操作结果、策略、不变量和语义 identity 引擎。
 - `impl/common/contracts.py`：Cisco 与 Juniper 显式实现的稳定厂商能力协议，厂商 AST 不向流程层泄漏。
 - `adaptation/topology.py`：Excel 拓扑读取、预检和输出。

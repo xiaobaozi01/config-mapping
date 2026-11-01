@@ -7,7 +7,6 @@ from pathlib import Path
 
 from impl.cisco.document import CiscoDocument
 
-
 FIXTURES = Path(__file__).parent / "fixtures" / "group_configs"
 
 
@@ -34,7 +33,9 @@ class CiscoGroupExpansionTest(unittest.TestCase):
         document = CiscoDocument(source)
         outcome = document.expand_groups(["GigabitEthernet0/0/0/5"])
         self.assertFalse(outcome.success)
-        self.assertTrue(any("TELEMETRY" in warning for warning in outcome.warnings))
+        self.assertTrue(
+            any("TELEMETRY" in warning for warning in outcome.warnings)
+        )
         self.assertEqual(document.render(), source)
 
     def test_iosxr_expands_non_interface_group(self):
@@ -59,7 +60,12 @@ class CiscoGroupExpansionTest(unittest.TestCase):
         self.assertIn("ipv4 access-group GROUP-IN ingress", rendered)
         self.assertIn("ipv4 access-group EXPLICIT-OUT egress", rendered)
         self.assertGreaterEqual(len(outcome.conflicts), 3)
-        self.assertTrue(all(item["winner_source"] == "explicit" for item in outcome.conflicts))
+        self.assertTrue(
+            all(
+                item["winner_source"] == "explicit"
+                for item in outcome.conflicts
+            )
+        )
 
     def test_iosxr_first_group_in_list_wins(self):
         document = CiscoDocument(group_config("iosxr_group_order.cfg"))
@@ -86,7 +92,9 @@ class CiscoGroupExpansionTest(unittest.TestCase):
         cisco = CiscoDocument(source)
         cisco_outcome = cisco.expand_groups([])
         self.assertFalse(cisco_outcome.success)
-        self.assertTrue(any("MISSING" in item for item in cisco_outcome.warnings))
+        self.assertTrue(
+            any("MISSING" in item for item in cisco_outcome.warnings)
+        )
         self.assertEqual(cisco.render(), source)
 
 

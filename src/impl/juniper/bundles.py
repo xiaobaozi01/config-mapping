@@ -11,7 +11,7 @@ def _walk(document, node):
 
     只暴露仍然生效的节点，使聚合分析不会读取已逻辑删除的绑定或业务语句。
     """
-    for child in node.children or []:
+    for child in node.nodes:
         if document._parser.is_effective(child):
             yield child
             yield from _walk(document, child)
@@ -54,13 +54,13 @@ def _aggregate_lacp_mode(document, aggregate) -> BundleMode | None:
 
     active 与 passive 同时出现说明配置不可判定，因此返回未知而不是任选一种模式。
     """
-    for options in aggregate.children or []:
+    for options in aggregate.nodes:
         if (
             document._parser.is_effective(options)
             and document._parser.base_header(options.header)
             == "aggregated-ether-options"
         ):
-            for lacp in options.children or []:
+            for lacp in options.nodes:
                 if (
                     document._parser.is_effective(lacp)
                     and document._parser.base_header(lacp.header).rstrip(";")
@@ -68,7 +68,7 @@ def _aggregate_lacp_mode(document, aggregate) -> BundleMode | None:
                 ):
                     values = {
                         document._parser.base_header(child.header).rstrip(";")
-                        for child in lacp.children or []
+                        for child in lacp.nodes
                         if document._parser.is_effective(child)
                     }
                     if {"active", "passive"} <= values:

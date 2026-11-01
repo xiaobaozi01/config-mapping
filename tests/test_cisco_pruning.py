@@ -1,10 +1,9 @@
 """核心路由实验按源身份裁剪 Cisco 接入配置的语义回归。"""
 
-from pathlib import Path
 import unittest
+from pathlib import Path
 
 from impl.cisco.document import CiscoDocument
-
 
 FIXTURES = Path(__file__).parent / "fixtures" / "core_pruning"
 
@@ -14,6 +13,7 @@ def document(name):
 
 
 class CiscoPruningTest(unittest.TestCase):
+
     def test_mixed_bridge_domain_keeps_original_bvi_and_nni(self):
         doc = document("iosxr_mixed.cfg")
         result = doc.prune_non_nni({"Gi0/0/0/0"})
@@ -30,7 +30,9 @@ class CiscoPruningTest(unittest.TestCase):
         self.assertNotIn("0/0/0/2", output)
         self.assertIn("vrf SHARED", output)
         self.assertIn("65000:1", output)
-        self.assertFalse(doc.validate_interfaces(set(), result.removed_interfaces).errors)
+        self.assertFalse(
+            doc.validate_interfaces(set(), result.removed_interfaces).errors
+        )
 
     def test_bgp_source_dependencies_remove_whole_sessions_and_templates(self):
         doc = document("iosxr_mixed.cfg")
@@ -62,7 +64,9 @@ class CiscoPruningTest(unittest.TestCase):
         self.assertIn("198.51.100.0/24 Bundle-Ether10 10.0.0.2", output)
         self.assertIn("interface Bundle-Ether10", output)
 
-    def test_unknown_dependency_fails_with_path_and_alias_resolved_interface(self):
+    def test_unknown_dependency_fails_with_path_and_alias_resolved_interface(
+        self,
+    ):
         doc = document("iosxr_unknown.cfg")
         result = doc.prune_non_nni({"GigabitEthernet0/0/0/0"})
         self.assertFalse(result.errors)
@@ -97,13 +101,21 @@ class CiscoPruningTest(unittest.TestCase):
         )
         self.assertFalse(validation.errors)
 
-    def test_deleted_source_name_reused_as_nni_target_has_no_stale_configuration(self):
+    def test_deleted_source_name_reused_as_nni_target_has_no_stale_configuration(
+        self,
+    ):
         doc = document("iosxr_collision.cfg")
         result = doc.prune_non_nni({"GigabitEthernet0/0/0/7"})
         self.assertFalse(result.errors)
         doc.rename_interface_tree("Gi0/0/0/7", "Gi0/0/0/0")
-        doc.replace_references({"GigabitEthernet0/0/0/7": ["GigabitEthernet0/0/0/0"]})
-        self.assertFalse(doc.validate_interfaces({"GigabitEthernet0/0/0/0"}, result.removed_interfaces).errors)
+        doc.replace_references(
+            {"GigabitEthernet0/0/0/7": ["GigabitEthernet0/0/0/0"]}
+        )
+        self.assertFalse(
+            doc.validate_interfaces(
+                {"GigabitEthernet0/0/0/0"}, result.removed_interfaces
+            ).errors
+        )
         output = doc.render()
         self.assertIn("REAL-NNI", output)
         self.assertIn("cost 10", output)
@@ -112,23 +124,38 @@ class CiscoPruningTest(unittest.TestCase):
         self.assertNotIn("192.0.2.1", output)
         self.assertNotIn("Gi 0/0/0/7", output)
 
-    def test_service_bindings_removed_without_treating_domain_names_as_references(self):
+    def test_service_bindings_removed_without_treating_domain_names_as_references(
+        self,
+    ):
         doc = document("iosxr_service_dependencies.cfg")
         outcome = doc.prune_non_nni({"Gi0/0/0/0"})
         self.assertFalse(outcome.errors, outcome.errors)
         output = doc.render()
-        for removed in ["REMOVED-RELAY", "monitor-session REMOVED", "interface Bundle-Ether609"]:
+        for removed in [
+            "REMOVED-RELAY",
+            "monitor-session REMOVED",
+            "interface Bundle-Ether609",
+        ]:
             self.assertNotIn(removed, output)
-        for retained in ["RETAINED-RELAY", "monitor-session RETAINED", "bridge group BVI100",
-                         "bridge-domain BVI100", "allow SSH"]:
+        for retained in [
+            "RETAINED-RELAY",
+            "monitor-session RETAINED",
+            "bridge group BVI100",
+            "bridge-domain BVI100",
+            "allow SSH",
+        ]:
             self.assertIn(retained, output)
-        self.assertFalse(doc.validate_interfaces(set(), outcome.removed_interfaces).errors)
+        self.assertFalse(
+            doc.validate_interfaces(set(), outcome.removed_interfaces).errors
+        )
 
     def test_tunnel_is_preserved_but_unreferenced_line_track_is_removed(self):
         doc = document("iosxr_ambiguous_objects.cfg")
         outcome = doc.prune_non_nni({"Gi0/0/0/0"})
         self.assertFalse(outcome.errors, outcome.errors)
-        self.assertTrue(any("tunnel source" in warning for warning in outcome.warnings))
+        self.assertTrue(
+            any("tunnel source" in warning for warning in outcome.warnings)
+        )
         validation = doc.validate_interfaces(
             set(),
             outcome.removed_interfaces,
@@ -152,7 +179,9 @@ class CiscoPruningTest(unittest.TestCase):
         )
         outcome = doc.prune_non_nni(set())
         self.assertFalse(outcome.errors)
-        self.assertTrue(any("track LOST" in warning for warning in outcome.warnings))
+        self.assertTrue(
+            any("track LOST" in warning for warning in outcome.warnings)
+        )
         self.assertEqual(doc.render().count("track LOST"), 2)
         validation = doc.validate_interfaces(
             set(),
@@ -163,15 +192,13 @@ class CiscoPruningTest(unittest.TestCase):
 
     def test_unmarked_removed_interface_reference_still_fails_validation(self):
         doc = CiscoDocument(
-            "custom-service FOO\n"
-            " bind-interface GigabitEthernet0/0/0/2\n"
+            "custom-service FOO\n" " bind-interface GigabitEthernet0/0/0/2\n"
         )
         outcome = doc.validate_interfaces(
             set(),
             {"GigabitEthernet0/0/0/2"},
         )
         self.assertTrue(outcome.errors)
-
 
 
 if __name__ == "__main__":

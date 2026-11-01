@@ -12,15 +12,15 @@ from impl.common.outcomes import (
 )
 
 if TYPE_CHECKING:
-    from ..document import JunosDocument, JunosNode
+    from ..document import JunosDocument, _WorkNode
 
 
-def _walk(document: JunosDocument, node: JunosNode, path: tuple[str, ...] = ()):
+def _walk(document: JunosDocument, node: _WorkNode, path: tuple[str, ...] = ()):
     """递归遍历活动节点并保留厂商语法路径。
 
     报告需要定位到原始层级，因此这里不把路径转换成跨厂商名称。
     """
-    for child in node.children or []:
+    for child in node.nodes:
         if not document._parser.is_effective(child):
             continue
         header = document._parser.base_header(child.header).rstrip(";")
@@ -170,7 +170,10 @@ def validate_units(document, context, *, strict_input_validation=None):
     }
     for parent in document._interface_nodes():
         parent_name = document._interface_name(parent)
-        if targeted_parents and interface_parent(parent_name) not in targeted_parents:
+        if (
+            targeted_parents
+            and interface_parent(parent_name) not in targeted_parents
+        ):
             continue
         seen = set()
         for unit in document._unit_nodes(parent):
@@ -190,7 +193,7 @@ def validate_units(document, context, *, strict_input_validation=None):
                 document._parser.base_header(child.header)
                 .rstrip(";")
                 .removeprefix("family ")
-                for child in unit.children or []
+                for child in unit.nodes
                 if document._parser.is_effective(child)
                 and document._parser.base_header(child.header).startswith(
                     "family "

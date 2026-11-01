@@ -9,7 +9,7 @@ from dataclasses import dataclass
 from pathlib import Path
 
 ROOT = Path(__file__).resolve().parents[1]
-GENERATED_PATH = "impl/cisco/antlr/generated"
+GENERATED_PATH = "/antlr/generated/"
 LABEL_PATTERN = re.compile(r"(?:做什么|为什么|流程)\s*[:：]")
 SECTION_PATTERN = re.compile(
     r"(?m)^\s*(?:Args|Arguments|Returns|Raises|Yields|Attributes)\s*:"
@@ -18,7 +18,10 @@ SECTION_PATTERN = re.compile(
 
 @dataclass(frozen=True, slots=True)
 class Violation:
-    """一条 docstring 规范违规记录。"""
+    """保存一条 docstring 规范违规记录。
+
+    稳定记录路径、行号、成员名和类型，便于门禁输出可定位且可重复比较。
+    """
 
     path: str
     line: int
@@ -27,16 +30,26 @@ class Violation:
 
 
 def _member_name(node, parents):
-    """构造包含类名和嵌套作用域的稳定成员名称。"""
+    """构造包含类名和嵌套作用域的稳定成员名称。
+
+    仅使用成员名会在嵌套函数中产生歧义，完整作用域可让定位结果保持唯一。
+    """
     scope = [parent.name for parent in parents if hasattr(parent, "name")]
     return ".".join([*scope, node.name])
 
 
 def _iter_members(tree):
-    """递归遍历类、函数和嵌套函数。"""
+    """递归遍历类、函数和嵌套函数。
+
+    文档规范覆盖所有手写成员，统一迭代可避免遗漏构造器、属性和私有函数。
+    """
     parents = []
 
     def visit(node):
+        """递归产出当前语法树中的成员及其父级作用域。
+
+        维护动态父级栈既保持声明顺序，也能为嵌套函数生成完整稳定名称。
+        """
         for child in ast.iter_child_nodes(node):
             if isinstance(
                 child, (ast.ClassDef, ast.FunctionDef, ast.AsyncFunctionDef)
@@ -50,8 +63,12 @@ def _iter_members(tree):
 
 
 def check_file(path: Path) -> list[Violation]:
-    """返回单个 Python 文件中的全部 docstring 违规。"""
-    if GENERATED_PATH in path.as_posix():
+    """返回单个 Python 文件中的全部 docstring 违规。
+
+    生成代码由 ANTLR 一致性检查覆盖，手写代码则要求自然语言两段说明。
+    """
+    normalized = f"{path.as_posix().rstrip('/')}/"
+    if GENERATED_PATH in normalized:
         return []
     source = path.read_text(encoding="utf-8")
     tree = ast.parse(source, filename=str(path))
@@ -83,7 +100,10 @@ def check_file(path: Path) -> list[Violation]:
 
 
 def check_paths(paths):
-    """扫描文件和目录，并汇总全部违规。"""
+    """扫描文件和目录，并汇总全部违规。
+
+    同时接受单文件和目录，可让本地定位与全量门禁复用同一检查函数。
+    """
     violations = []
     for path in paths:
         if path.is_file() and path.suffix == ".py":
@@ -95,7 +115,10 @@ def check_paths(paths):
 
 
 def main(arguments=None):
-    """运行全量 docstring 检查并返回进程退出状态。"""
+    """运行全量 docstring 检查并返回进程退出状态。
+
+    默认扫描源码树，显式路径用于验证本次变更或排查单个模块。
+    """
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("paths", nargs="*")
     args = parser.parse_args(arguments)

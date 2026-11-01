@@ -2,7 +2,10 @@
 
 配置处理分为四个执行时机：裁剪在接口迁移前执行，接口适配在清洗后执行，模拟适配随后执行，最终校验最后执行。流程顺序保持固定。
 
-Cisco 的裁剪、接口适配、兼容校验、最终校验和模拟适配代码规则统一使用 `CiscoVisitorRule`：注册项声明范围和执行策略，Visitor 编写匹配及业务动作，会话与执行器管理文本事务和结果。底层机制见 [ANTLR4 说明](antlr-cisco.md)。完整可运行模板见
+Cisco 和 Juniper 的裁剪、接口适配、兼容校验、最终校验和模拟适配代码规则分别使用
+`CiscoVisitorRule` 与 `JunosVisitorRule`：注册项声明范围和执行策略，Visitor 编写
+匹配及业务动作，会话与执行器管理文本事务和结果。底层机制分别见
+[Cisco ANTLR4 说明](antlr-cisco.md) 和 [Junos ANTLR4 说明](antlr-juniper.md)。Cisco 完整可运行模板见
 [`rules/examples.py`](../src/impl/cisco/rules/examples.py)，
 内网大模型可直接使用[编写提示词](rule-templates/internal-model-prompt.md)。
 
@@ -88,7 +91,10 @@ TARGET_MTU_RULE = CiscoVisitorRule(
 )
 ```
 
-这是新增实验约束的例子，不是默认的设备能力限制。接口适配使用同样的注册方式加入 `ADAPT_RULES`；省略 `readonly=True`，通过 `self.session.edits` 声明修改。接口 Outcome 默认从成功提交的实际编辑生成，不手工追加计划动作。Junos 保持原有 `FunctionRule` 协议。
+这是新增实验约束的例子，不是默认的设备能力限制。接口适配使用同样的注册方式加入
+`ADAPT_RULES`；省略 `readonly=True`，通过 `self.session.edits` 声明修改。接口
+Outcome 默认从成功提交的实际编辑生成，不手工追加计划动作。Junos 使用相同的
+Visitor 会话生命周期，入口位于 `impl.juniper.rules.support`。
 
 每个阶段使用自己的上下文：`PruneContext` 提供保护父口，以及前序规则已删除的接口和地址集合；`remove_non_nni` 区分完整裁剪与仅处理已删除成员依赖，`AdaptContext` 提供目标接口，`ValidationContext` 还提供已删除接口。裁剪执行器按注册顺序合并每条规则的删除结果，为下一条规则创建新上下文快照；其他阶段不需要传递删除状态。上下文使用 frozen dataclass 和 frozenset；规则不依赖应用层的 `ConversionContext`。
 
@@ -155,7 +161,10 @@ Visitor 不调用 `document.rewrite()`、`commit()` 或其他 Document 修改方
 
 这些规则复用业务基类 `PruningVisitor`：`record(node, path, reason, references)` 暂存删除事件，`finish()` 过滤已被祖先删除覆盖的后代动作，并通过 `session.edits` 声明实际删除。提交成功后 `pruning_result` 映射为已有的 `remove` 事件，保留路径、原因及来源接口；祖先覆盖的后代业务事件也保持原报告语义，因此业务事件数量可与底层操作数量不同。失败时不报告这些事件或删除集合。现有 `prune_*` 函数仅作为委托规则对象执行的兼容入口。
 
-Cisco 五类内置注册集合全部登记 `CiscoVisitorRule` 常量；新增 Cisco 规则遵循同一方式。共享协议保留 `FunctionRule` 以兼容 Juniper 和既有扩展。低层 `document.rewrite()` 仅供 Document 与解析、清洗等基础设施使用，规则及其分析器不自行管理事务。
+Cisco 与 Juniper 五类内置注册集合分别登记 `CiscoVisitorRule` 和
+`JunosVisitorRule`。共享协议仍保留 `FunctionRule`，用于调用方已有的简单扩展，
+但默认内置规则不再依赖它。低层 `document.rewrite()` 仅供 Document、解析、清洗和
+托管规则执行器等基础设施使用，规则及其分析器不自行提交事务。
 
 未修改源码保留原空白、注释与换行；只格式化新增或移动片段。render 另行应用现有空块策略，不发布新修订。完整操作、冲突边界和生成代码维护方式见 [ANTLR4 说明](antlr-cisco.md)。
 

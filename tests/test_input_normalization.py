@@ -15,11 +15,11 @@ from adaptation.models import Vendor
 from adaptation.service import convert
 from impl.juniper.document import JunosDocument
 
-
 FIXTURES = Path(__file__).parent / "fixtures"
 
 
 class InputNormalizationTest(unittest.TestCase):
+
     def test_junos_capture_removes_leading_and_multiline_trailing_noise(self):
         source = (
             "<AG-DPKLD-01>show configuration\n"
@@ -39,7 +39,10 @@ class InputNormalizationTest(unittest.TestCase):
             "version 24.4R1-S2.9;\nsystem { host-name AG-DPKLD-01; }\n",
         )
         self.assertEqual(
-            [(item.rule_id, item.start_line, item.end_line) for item in result.removed],
+            [
+                (item.rule_id, item.start_line, item.end_line)
+                for item in result.removed
+            ],
             [
                 ("juniper.command_echo", 1, 1),
                 ("juniper.last_commit", 2, 2),
@@ -50,7 +53,9 @@ class InputNormalizationTest(unittest.TestCase):
             ],
         )
         self.assertEqual(JunosDocument(result.text).hostname(), "AG-DPKLD-01")
-        self.assertEqual(normalize_input(Vendor.JUNIPER_JUNOS, result.text).text, result.text)
+        self.assertEqual(
+            normalize_input(Vendor.JUNIPER_JUNOS, result.text).text, result.text
+        )
 
     def test_normal_configurations_are_unchanged(self):
         for vendor, source in (
@@ -69,23 +74,32 @@ class InputNormalizationTest(unittest.TestCase):
 
         self.assertEqual(result.text, "system { host-name J1; }\n")
         self.assertEqual(
-            [(item.rule_id, item.start_line, item.end_line) for item in result.removed],
+            [
+                (item.rule_id, item.start_line, item.end_line)
+                for item in result.removed
+            ],
             [("juniper.master_tail_inline", 2, 2)],
         )
 
     def test_known_pattern_inside_configuration_is_left_untouched(self):
-        source = "system { host-name J1; }\n{\n master\n}\nprotocols { ospf; }\n"
+        source = (
+            "system { host-name J1; }\n{\n master\n}\nprotocols { ospf; }\n"
+        )
         result = normalize_input(Vendor.JUNIPER_JUNOS, source)
         self.assertEqual(result.text, source)
         self.assertEqual(result.removed, ())
 
     def test_normalization_may_return_empty_or_whitespace_only_text(self):
         self.assertEqual(
-            normalize_input(Vendor.JUNIPER_JUNOS, "<J1>show configuration\n").text,
+            normalize_input(
+                Vendor.JUNIPER_JUNOS, "<J1>show configuration\n"
+            ).text,
             "",
         )
         self.assertEqual(
-            normalize_input(Vendor.JUNIPER_JUNOS, "<J1>show configuration\n\n").text,
+            normalize_input(
+                Vendor.JUNIPER_JUNOS, "<J1>show configuration\n\n"
+            ).text,
             "\n",
         )
 
@@ -107,7 +121,9 @@ class InputNormalizationTest(unittest.TestCase):
                 "      - '^CAPTURE HEADER$'\n",
                 encoding="utf-8",
             )
-            with patch.dict(input_normalization._RULE_PATHS, {Vendor.CISCO_IOSXR: path}):
+            with patch.dict(
+                input_normalization._RULE_PATHS, {Vendor.CISCO_IOSXR: path}
+            ):
                 result = normalize_input(
                     Vendor.CISCO_IOSXR,
                     "CAPTURE HEADER\nhostname R1\nend\nCAPTURE START\nCAPTURE END\n",
@@ -137,15 +153,33 @@ class InputNormalizationTest(unittest.TestCase):
             context = convert(root / "topology.xlsx", config_dir, output)
 
             self.assertFalse(context.has_errors, context.errors)
-            rendered = (output / "configs" / "J1.cfg").read_text(encoding="utf-8")
+            rendered = (output / "configs" / "J1.cfg").read_text(
+                encoding="utf-8"
+            )
             self.assertNotIn("master", rendered)
             self.assertNotIn("show configuration", rendered)
-            report = json.loads((output / "report.json").read_text(encoding="utf-8"))
-            events = [item for item in report["events"] if item["kind"] == "input-normalization"]
-            self.assertEqual({item["rule_id"] for item in events}, {
-                "juniper.command_echo", "juniper.last_commit", "juniper.master_tail", "juniper.cli_prompt"
-            })
-            master_event = next(item for item in events if item["rule_id"] == "juniper.master_tail")
+            report = json.loads(
+                (output / "report.json").read_text(encoding="utf-8")
+            )
+            events = [
+                item
+                for item in report["events"]
+                if item["kind"] == "input-normalization"
+            ]
+            self.assertEqual(
+                {item["rule_id"] for item in events},
+                {
+                    "juniper.command_echo",
+                    "juniper.last_commit",
+                    "juniper.master_tail",
+                    "juniper.cli_prompt",
+                },
+            )
+            master_event = next(
+                item
+                for item in events
+                if item["rule_id"] == "juniper.master_tail"
+            )
             self.assertEqual(master_event["removed_lines"], 3)
             self.assertNotIn("secret operator", json.dumps(report))
 

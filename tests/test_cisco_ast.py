@@ -2,13 +2,13 @@
 
 from __future__ import annotations
 
-from cisco_support import replace_header, delete_context
 import unittest
 from pathlib import Path
 
-from adaptation.cleaning_rules import CleaningRulesHandler
-from impl.cisco.document import CiscoDocument, CiscoContext
+from cisco_support import delete_context, replace_header
 
+from adaptation.cleaning_rules import CleaningRulesHandler
+from impl.cisco.document import CiscoContext, CiscoDocument
 
 FIXTURES = Path(__file__).parent / "fixtures" / "cisco_ast"
 
@@ -22,7 +22,9 @@ class CiscoAstTest(unittest.TestCase):
     """覆盖多级缩进和 ``!`` 边界组成的树结构。"""
 
     def test_interface_name_reflects_header_edits(self):
-        document = CiscoDocument("interface GigabitEthernet0/0/0/1\n description old\n!\n")
+        document = CiscoDocument(
+            "interface GigabitEthernet0/0/0/1\n description old\n!\n"
+        )
         interface = document.root.nodes[0]
 
         self.assertEqual(interface.interface_name, "GigabitEthernet0/0/0/1")
@@ -55,7 +57,9 @@ class CiscoAstTest(unittest.TestCase):
 
     def test_empty_interface_receives_inherited_group_configuration(self):
         """空接口仍是配置块，应能接收根层 group 的继承配置。"""
-        document = CiscoDocument(cisco_config("empty_interface_inherits_group.cfg"))
+        document = CiscoDocument(
+            cisco_config("empty_interface_inherits_group.cfg")
+        )
         interface = next(
             node
             for node in document.root.nodes
@@ -125,7 +129,9 @@ class CiscoAstTest(unittest.TestCase):
         )
         document = CiscoDocument(source)
 
-        self.assertEqual(document.root.nodes[2].comment, "!! GigabitEthernet0/0/0/1")
+        self.assertEqual(
+            document.root.nodes[2].comment, "!! GigabitEthernet0/0/0/1"
+        )
         self.assertEqual(document.business_interface_names(), set())
         self.assertEqual(
             document.apply_cleaning_rule((), "^!!", "delete", None),
@@ -143,7 +149,9 @@ class CiscoAstTest(unittest.TestCase):
             "interface GigabitEthernet0/0/0/1\n ! nested note\n!\nend\n"
         )
 
-        self.assertTrue(document.expand_groups(["GigabitEthernet0/0/0/1"]).success)
+        self.assertTrue(
+            document.expand_groups(["GigabitEthernet0/0/0/1"]).success
+        )
         rendered = document.render()
         self.assertIn("!! top note\n", rendered)
         self.assertIn(" ! nested note\n", rendered)
@@ -184,7 +192,9 @@ class CiscoAstTest(unittest.TestCase):
 
     def test_reference_replacement_preserves_nested_subtrees(self):
         """深层接口引用一对多展开时，每个副本都应保留原节点的 children。"""
-        document = CiscoDocument(cisco_config("reference_replacement_nested.cfg"))
+        document = CiscoDocument(
+            cisco_config("reference_replacement_nested.cfg")
+        )
 
         document.replace_references(
             {
