@@ -213,7 +213,7 @@ class ConfiguredCleaningRule:
 class CiscoBannerCleaningRule:
     """在业务分析前停用完整的 exec/login banner 节点区间。
 
-    ANTLR 把 banner 正文解析为不透明区间；一次删除完整 Context，避免正文中的
+    手写 Parser 把 banner 正文解析为不透明节点；一次删除完整 Context，避免正文中的
     interface 等文本干扰后续配置分析。未闭合 banner 在文档构造时直接拒绝。
     """
 
@@ -245,13 +245,13 @@ class CiscoBannerCleaningRule:
         if not isinstance(document, CiscoDocument):
             raise TypeError("Cisco banner 规则只能应用于 CiscoDocument")
 
-        transaction = document.rewrite()
+        transaction = document.edit()
         removed = 0
         for context in document.root.nodes:
             if self._START_PATTERN.match(context.header):
                 transaction.delete(context, "删除生产 banner")
                 removed += 1
-        transaction.commit()
+        transaction.apply()
 
         return CleaningResult(
             changed=removed,
@@ -385,9 +385,7 @@ class CleaningRulesHandler:
             for rule in applicable
             if isinstance(rule, ConfiguredCleaningRule)
         ]
-        configured.sort(
-            key=lambda rule: rule.action != CleaningAction.DELETE
-        )
+        configured.sort(key=lambda rule: rule.action != CleaningAction.DELETE)
         if not configured:
             return True
         counts = device.document.apply_cleaning_rules(

@@ -7,7 +7,10 @@ from enum import StrEnum
 
 
 class SimulationChangeAction(StrEnum):
-    """定义模拟适配结果的增删改分类。"""
+    """定义模拟适配结果的增删改分类。
+
+    稳定枚举值同时用于结果统计和报告序列化，避免各厂商使用不同的动作名称。
+    """
 
     ADDED = "added"
     REPLACED = "replaced"

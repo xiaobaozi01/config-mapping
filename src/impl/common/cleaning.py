@@ -10,7 +10,10 @@ from functools import cache
 
 
 class CleaningAction(StrEnum):
-    """定义声明式与代码清洗规则使用的动作。"""
+    """定义声明式与代码清洗规则使用的动作。
+
+    删除和替换可通过配置声明，转换动作则保留给需要跨节点组合修改的代码规则。
+    """
 
     DELETE = "delete"
     REPLACE = "replace"
@@ -151,9 +154,7 @@ class _CleaningPhase:
         return operations
 
 
-_CLEANING_BACKREFERENCE = re.compile(
-    r"""\\(?:[1-9]|g<|k<)|\(\?P=|\(\?\("""
-)
+_CLEANING_BACKREFERENCE = re.compile(r"""\\(?:[1-9]|g<|k<)|\(\?P=|\(\?\(""")
 
 
 def _combine_cleaning_prefilter(

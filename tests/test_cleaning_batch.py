@@ -2,7 +2,6 @@
 
 from __future__ import annotations
 
-import copy
 import gc
 import itertools
 import random
@@ -22,12 +21,13 @@ from adaptation.cleaning_rules import (
     ConfiguredCleaningRule,
 )
 from adaptation.models import ConversionContext, Vendor
-from impl.cisco.document import CiscoContext, CiscoDocument
+from impl.cisco.document import CiscoDocument, CiscoNode
 from impl.common.cleaning import (
     CleaningOperation,
     compile_cleaning_rules,
     matches_cleaning_path,
 )
+from impl.common.config_ast.model import tree_signature
 from impl.juniper.document import JunosDocument
 
 
@@ -43,7 +43,7 @@ def reference_clean(document, operations):
             return node.header.strip()
         return JunosDocument._base_header(node.header).rstrip(";").strip()
 
-    with document._working_tree() as working_root:
+    with document.edit().bulk() as working_root:
         for action in ("delete", "replace"):
 
             def visit(node, ancestors):
@@ -73,51 +73,41 @@ def reference_clean(document, operations):
             if any(operation.action == action for operation in operations):
                 for node in working_root.nodes:
                     visit(node, ())
-    document._publish_work_root(working_root)
+    document.tree_changed()
     return counts
 
 
 def reference_cisco_clean(document, operations):
-    """独立字符切片 oracle：不使用实际批量执行器或 TokenStreamRewriter。"""
-    from impl.cisco.antlr.parsing import CiscoSnapshot
-
+    """Independently apply matching rules directly to a copied AST."""
     counts = [0] * len(operations)
     for action in ("delete", "replace"):
-        edits = []
 
-        def visit(node, ancestors):
-            if node.is_formatting:
-                return
-            header = node.header
-            for index, operation in enumerate(operations):
-                if operation.action != action or not matches_cleaning_path(
-                    ancestors, operation.path
-                ):
+        def visit(parent, ancestors):
+            for node in tuple(parent.children):
+                if node.is_formatting:
                     continue
-                pattern = re.compile(operation.match, re.I)
-                if not pattern.search(header):
-                    continue
-                counts[index] += 1
-                start = node.start.start
-                if action == "delete":
-                    edits.append((start, node.stop.stop + 1, ""))
-                    return
-                header = pattern.sub(operation.value or "", header)
-                raw = node.raw_header
-                prefix = raw[: len(raw) - len(raw.lstrip())]
-                edits.append((start, start + len(raw), prefix + header))
-                break
-            for child in node.nodes:
-                visit(child, (*ancestors, header))
+                for index, operation in enumerate(operations):
+                    if operation.action != action or not matches_cleaning_path(
+                        ancestors, operation.path
+                    ):
+                        continue
+                    pattern = re.compile(operation.match, re.I)
+                    if not pattern.search(node.header):
+                        continue
+                    counts[index] += 1
+                    if action == "delete":
+                        parent.children.remove(node)
+                        node.parent = None
+                    else:
+                        node.header = pattern.sub(
+                            operation.value or "", node.header
+                        )
+                    break
+                if node.parent is parent:
+                    visit(node, (*ancestors, node.header))
 
-        for node in document.root.nodes:
-            visit(node, ())
-        if action == "delete":
-            _reference_separator_edits(document.root.nodes, edits)
-        text = document.source
-        for start, stop, replacement in sorted(edits, reverse=True):
-            text = text[:start] + replacement + text[stop:]
-        document._publish(CiscoSnapshot(text, document.revision + 1))
+        visit(document.root, ())
+    document.tree_changed()
     return counts
 
 
@@ -142,24 +132,6 @@ def randomized_cleaning_operations(native, randomizer):
         )
         for _ in range(12)
     ]
-
-
-def _reference_separator_edits(siblings, edits):
-    removed = {start for start, stop, value in edits if not value}
-    extras = []
-    for index, node in enumerate(siblings):
-        if node.start.start in removed and 0 < index < len(siblings) - 1:
-            previous, following = siblings[index - 1], siblings[index + 1]
-            if (
-                previous.header == following.header == "!"
-                and previous.indent == following.indent
-            ):
-                extras.append(
-                    (following.start.start, following.stop.stop + 1, "")
-                )
-        if node.start.start not in removed:
-            _reference_separator_edits(node.nodes, edits)
-    edits.extend(extras)
 
 
 class CleaningBatchTest(unittest.TestCase):
@@ -264,7 +236,7 @@ class CleaningBatchTest(unittest.TestCase):
                     document = cls(source)
                     parser = weakref.ref(document._parser)
                     with patch(
-                        f"{module}.compile_cleaning_rules",
+                        f"{module.rsplit('.', 1)[0]}.configuration_cleaning.compile_cleaning_rules",
                         side_effect=track_compilation,
                     ):
                         self.assertEqual(
@@ -318,9 +290,9 @@ class CleaningBatchTest(unittest.TestCase):
         )
         self.assertEqual(junos.apply_cleaning_rules(operations), [2])
         self.assertEqual(junos.root.nodes[0].header, "inactive: old")
-        self.assertEqual(junos.root.nodes[0].nodes[0].header, "old;")
+        self.assertEqual(junos.root.nodes[0].nodes[0].header, "old")
         self.assertEqual(junos.root.nodes[1].header, "new")
-        self.assertEqual(junos.root.nodes[1].nodes[0].header, "new;")
+        self.assertEqual(junos.root.nodes[1].nodes[0].header, "new")
         self.assertIn("# old comment", junos.render())
 
     def test_invalid_batch_is_rejected_before_mutating_the_tree(self):
@@ -328,11 +300,7 @@ class CleaningBatchTest(unittest.TestCase):
             for action in ("warn", "mask", "unknown"):
                 with self.subTest(vendor=cls.vendor, action=action):
                     document = cls(source)
-                    before = (
-                        document.snapshot
-                        if isinstance(document, CiscoDocument)
-                        else copy.deepcopy(document.root)
-                    )
+                    before = tree_signature(document.root)
                     with self.assertRaisesRegex(ValueError, "不支持的清洗动作"):
                         document.apply_cleaning_rules(
                             [
@@ -341,9 +309,7 @@ class CleaningBatchTest(unittest.TestCase):
                             ]
                         )
                     self.assertEqual(
-                        document.snapshot
-                        if isinstance(document, CiscoDocument)
-                        else document.root,
+                        tree_signature(document.root),
                         before,
                     )
             document = cls(source)
@@ -367,11 +333,7 @@ class CleaningBatchTest(unittest.TestCase):
                         vendor=cls.vendor, template=template, pattern=pattern
                     ):
                         document = cls(source)
-                        before = (
-                            document.snapshot
-                            if isinstance(document, CiscoDocument)
-                            else copy.deepcopy(document.root)
-                        )
+                        before = tree_signature(document.root)
                         with self.assertRaisesRegex(
                             ValueError, "第 2 条.*无效替换模板"
                         ):
@@ -384,9 +346,7 @@ class CleaningBatchTest(unittest.TestCase):
                                 ]
                             )
                         self.assertEqual(
-                            document.snapshot
-                            if isinstance(document, CiscoDocument)
-                            else document.root,
+                            tree_signature(document.root),
                             before,
                         )
 
@@ -397,11 +357,7 @@ class CleaningBatchTest(unittest.TestCase):
         ]:
             with self.subTest(vendor=cls.vendor):
                 document = cls(source)
-                before = (
-                    document.snapshot
-                    if isinstance(document, CiscoDocument)
-                    else copy.deepcopy(document.root)
-                )
+                before = tree_signature(document.root)
                 with self.assertRaisesRegex(ValueError, "value 必须是字符串"):
                     document.apply_cleaning_rules(
                         [
@@ -410,9 +366,7 @@ class CleaningBatchTest(unittest.TestCase):
                         ]
                     )
                 self.assertEqual(
-                    document.snapshot
-                    if isinstance(document, CiscoDocument)
-                    else document.root,
+                    tree_signature(document.root),
                     before,
                 )
 
@@ -444,7 +398,7 @@ class CleaningBatchTest(unittest.TestCase):
     def test_single_rule_compatibility_and_empty_replacement(self):
         for cls, source, expected in [
             (CiscoDocument, "old-value\n", "-value"),
-            (JunosDocument, "old-value;", "-value;"),
+            (JunosDocument, "old-value;", "-value"),
         ]:
             with self.subTest(vendor=cls.vendor):
                 document = cls(source)
@@ -456,7 +410,7 @@ class CleaningBatchTest(unittest.TestCase):
     def test_single_rule_preserves_legacy_none_as_empty_replacement(self):
         for cls, source, expected in [
             (CiscoDocument, "old-value\n", "-value"),
-            (JunosDocument, "old-value;", "-value;"),
+            (JunosDocument, "old-value;", "-value"),
         ]:
             with self.subTest(vendor=cls.vendor):
                 document = cls(source)
@@ -473,9 +427,9 @@ class CleaningBatchTest(unittest.TestCase):
         ]
         cisco = CiscoDocument("\n".join(f"node-{index}" for index in range(20)))
         visited = []
-        original = CiscoContext.is_formatting.fget
+        original = CiscoNode.is_formatting.fget
         with patch.object(
-            CiscoContext,
+            CiscoNode,
             "is_formatting",
             property(lambda node: visited.append(node) or original(node)),
         ):
@@ -702,11 +656,7 @@ class CleaningBatchHandlerTest(unittest.TestCase):
         self,
     ):
         document = CiscoDocument("OLD\nA\n")
-        before = (
-            document.snapshot
-            if isinstance(document, CiscoDocument)
-            else copy.deepcopy(document.root)
-        )
+        before = tree_signature(document.root)
         handler = CleaningRulesHandler(CleaningPoint.POST_REWRITE)
         handler._rules = [
             self.rule("delete", "delete", "^OLD$"),
@@ -716,9 +666,7 @@ class CleaningBatchHandlerTest(unittest.TestCase):
         with self.assertRaisesRegex(ValueError, "无效替换模板"):
             handler.process(context)
         self.assertEqual(
-            document.snapshot
-            if isinstance(document, CiscoDocument)
-            else document.root,
+            tree_signature(document.root),
             before,
         )
         self.assertEqual(context.events, [])

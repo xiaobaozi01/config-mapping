@@ -37,7 +37,7 @@ class DemoDependencyVisitor(CiscoRuleVisitor):
             for name in session.context.removed_interfaces
         }
 
-    def visitNode(self, node):
+    def visit_node(self, node):
         """检查描述行是否引用已删除接口并登记删除。
 
         仅识别固定示例前缀，避免误伤普通描述文本。
@@ -52,7 +52,7 @@ class DemoDependencyVisitor(CiscoRuleVisitor):
                     node, "示例依赖的接口已删除", source_interface=source
                 )
                 return None
-        return self.visitChildren(node)
+        return self.visit_children(node)
 
 
 class DemoDescriptionVisitor(CiscoRuleVisitor):
@@ -61,7 +61,7 @@ class DemoDescriptionVisitor(CiscoRuleVisitor):
     多条描述无法确定唯一目标时只报错，示例展示了规则的事务回滚行为。
     """
 
-    def visitNode(self, block):
+    def visit_node(self, block):
         """处理一个接口块中的示例描述命令。
 
         只在旧描述唯一存在时替换，防止覆盖其他业务描述。
@@ -97,7 +97,7 @@ class DemoEnableVisitor(CiscoRuleVisitor):
     该行为模拟稳定模式下的接口启用，不影响接口之外的主体配置。
     """
 
-    def visitNode(self, block):
+    def visit_node(self, block):
         """替换接口块中的直接 shutdown 子命令。
 
         只处理当前接口块的一级命令，避免误改嵌套协议配置。
@@ -120,7 +120,7 @@ class DemoValidationVisitor(CiscoRuleVisitor):
     只读 Visitor 展示校验规则可以报告错误而不能申请编辑。
     """
 
-    def visitNode(self, node):
+    def visit_node(self, node):
         """检查节点是否包含示例非法描述。
 
         命中时写入结构化错误并继续遍历，使一次运行可以报告全部问题。
@@ -129,7 +129,7 @@ class DemoValidationVisitor(CiscoRuleVisitor):
             self.session.result.errors.append(
                 f"示例非法描述位于 {' / '.join(node.path)}"
             )
-        return self.visitChildren(node)
+        return self.visit_children(node)
 
 
 def demo_enable_condition(context):

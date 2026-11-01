@@ -521,7 +521,7 @@ interface GigabitEthernet0/0/0/0
 !
 ```
 
-Cisco 使用 ANTLR4 生成的 Context：`CiscoDocument.root` 是完整配置的解析根，通过 `root.nodes` 和 `context.nodes` 查询语义子节点。源码和解析快照是唯一当前状态，规则通过文本重写事务修改，重新解析成功后才发布；不再直接修改节点字段。Document 保留 Facade 方法，具体算法位于 `impl/cisco/`。开发方式见 [ANTLR4 说明](antlr-cisco.md)。
+`CiscoDocument.root` 是可变 `CiscoNode` 树，通过 `nodes` 查询子节点。Visitor 收集修改，Editor 统一应用；规则失败时恢复树副本。Writer 根据当前树输出，采用每层一个空格。Document 继续提供业务门面，详见[手写 AST 指南](config-ast.md)。
 
 ### 11.3 Junos 文档模型
 
@@ -539,11 +539,7 @@ interfaces {
 }
 ```
 
-`JunosDocument.root` 是 ANTLR4 生成的只读 `ConfigurationContext`。业务代码通过
-`root.nodes`、`context.nodes`、`header`、`path` 和 `text` 查询配置，修改统一通过
-`document.rewrite()` 事务完成。`JunosVisitorRule` 负责规则范围和一次提交，
-`JunosDocument` 保留与 Cisco 对齐的 Facade 能力。具体算法位于 `impl/juniper/`，
-机制说明见 [Junos ANTLR4 文档](antlr-juniper.md)。
+`JunosDocument.root` 是可变 `JuniperNode` 树。手写扫描器识别引号、注释和结构标点，命令头不含结构分号和大括号。规则直接处理这棵树，不再转换临时节点模型；Writer 每层缩进四个空格，最终输出应用既有空块策略。详见[手写 AST 指南](config-ast.md)。
 
 ### 11.4 新增厂商时应遵循的边界
 

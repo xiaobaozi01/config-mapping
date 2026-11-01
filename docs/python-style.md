@@ -7,8 +7,6 @@ project exceptions recorded below.
 ## Scope
 
 - Apply the rules to handwritten Python code under `src/`.
-- Exclude `src/impl/cisco/antlr/generated/` because those files are generated
-  from the ANTLR grammars.
 - Apply the same formatting and lint rules to Python tests and repository
   scripts where the checks reference them.
 
@@ -67,7 +65,7 @@ Project-specific exceptions:
 
 - `RUF001`, `RUF002`, and `RUF003` are ignored because Chinese comments,
   messages, and documentation are intentional.
-- ANTLR callback methods keep their framework-required camelCase names.
+- AST traversal callbacks use snake_case like other handwritten methods.
 - `UNKNOWN` and the existing `InvariantViolation` public name are retained for
   domain and API compatibility.
 

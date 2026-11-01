@@ -138,7 +138,7 @@ class CiscoTrackingTest(unittest.TestCase):
                 document = load_document()
                 node = top_node(document, "track LOST-LINK")
                 if duplicate:
-                    insert_before(document, document.root.nodes[0], node.text)
+                    insert_before(document, document.root.nodes[0], document.writer.subtree(node))
                 else:
                     replace_header(
                         document, node.nodes[0], "type unsupported-state"

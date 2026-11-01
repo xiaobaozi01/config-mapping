@@ -8,7 +8,6 @@ version = "0.1.0"
 description = "Adapt IOS XR and Junos configurations for GNS3 XRv9000 and vMX images"
 requires-python = ">=3.11"
 dependencies = [
-  "antlr4-python3-runtime==4.13.2",
   "openpyxl>=3.1,<4",
   "PyYAML>=6,<7",
 ]
@@ -23,10 +22,6 @@ dev = [
 [tool.setuptools.packages.find]
 where = ["src"]
 
-[tool.setuptools.package-data]
-"impl.cisco" = ["antlr/*.g4"]
-"impl.juniper" = ["antlr/*.g4"]
-
 [tool.pytest.ini_options]
 pythonpath = ["src", "."]
 testpaths = ["tests"]
@@ -34,15 +29,10 @@ testpaths = ["tests"]
 [tool.pyink]
 line-length = 80
 target-version = ["py311"]
-extend-exclude = "src/impl/(cisco|juniper)/antlr/generated"
 
 [tool.ruff]
 line-length = 80
 target-version = "py311"
-extend-exclude = [
-  "src/impl/cisco/antlr/generated",
-  "src/impl/juniper/antlr/generated",
-]
 
 [tool.ruff.lint]
 select = [
@@ -65,9 +55,5 @@ ignore = ["RUF001", "RUF002", "RUF003", "N818"]
 max-complexity = 10
 
 [tool.ruff.lint.per-file-ignores]
-"src/impl/cisco/antlr/parsing.py" = ["N802"]
-"src/impl/juniper/antlr/parsing.py" = ["N802"]
-"src/impl/cisco/rules/*.py" = ["N802"]
-"src/impl/juniper/rules/*.py" = ["N802"]
 "tests/**/*.py" = ["B023", "C901", "N802", "RUF059", "SIM117"]
 "benchmarks/cleaning_rules.py" = ["B023", "C901"]

@@ -6,24 +6,24 @@ def nodes(document):
 
 
 def replace_header(document, context, header):
-    transaction = document.rewrite()
+    transaction = document.edit()
     transaction.replace_header(context, header, "test setup")
-    transaction.commit()
+    transaction.apply()
 
 
 def delete_context(document, context):
-    transaction = document.rewrite()
+    transaction = document.edit()
     transaction.delete(context, "test setup")
-    transaction.commit()
+    transaction.apply()
 
 
 def insert_before(document, context, text):
-    transaction = document.rewrite()
+    transaction = document.edit()
     transaction.insert_before(context, text, "test setup")
-    transaction.commit()
+    transaction.apply()
 
 
 def append_child(document, context, text):
-    transaction = document.rewrite()
+    transaction = document.edit()
     transaction.append_child(context, text, "test setup")
-    transaction.commit()
+    transaction.apply()

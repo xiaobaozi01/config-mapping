@@ -9,10 +9,12 @@ from impl.common.interface import referenced_interface_names
 from impl.common.outcomes import InterfaceAdaptationOutcome
 
 if TYPE_CHECKING:
-    from .document import JunosDocument, _WorkNode
+    from .document import JuniperNode, JunosDocument
 
 
-def _walk(document: JunosDocument, node: _WorkNode, path: tuple[str, ...] = ()):
+def _walk(
+    document: JunosDocument, node: JuniperNode, path: tuple[str, ...] = ()
+):
     """递归遍历有效配置节点及其相对路径。
 
     路径与节点同时返回，使约束错误能够说明具体地址或引用所在的配置层级。

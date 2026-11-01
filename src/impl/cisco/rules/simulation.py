@@ -1,4 +1,4 @@
-"""模拟规则声明动作与统计类别，生命周期由 ANTLR 规则执行器管理。"""
+"""模拟规则声明动作与统计类别，生命周期由 AST 规则执行器管理。"""
 
 import re
 
@@ -50,12 +50,12 @@ class EnableInterfacesVisitor(CiscoRuleVisitor):
     该行为只在已映射接口上执行，防止模拟环境误开启管理口或未参与迁移的接口。
     """
 
-    def visitNode(self, node):
+    def visit_node(self, node):
         """处理单个接口块中的启停配置。
 
         顶层接口缺少显式启用语句时追加 no shutdown，子命令中的 shutdown 则整段删除。
         """
-        if node.parentCtx is self.session.document.root:
+        if node.parent is self.session.document.root:
             if interface_unit(node.interface_name) is None and not any(
                 _NO_SHUTDOWN.fullmatch(child.header) for child in node.walk()
             ):
@@ -74,7 +74,7 @@ class EnableInterfacesVisitor(CiscoRuleVisitor):
                 count=count,
             )
             return None
-        return self.visitChildren(node)
+        return self.visit_children(node)
 
 
 class BfdTimersVisitor(CiscoRuleVisitor):
@@ -83,12 +83,12 @@ class BfdTimersVisitor(CiscoRuleVisitor):
     只上修小于阈值的已有参数，不新增 BFD 或降低已经较高的配置。
     """
 
-    def visitNode(self, node):
+    def visit_node(self, node):
         """检查接口子树下的 BFD interval 和 multiplier 命令。
 
         对每个匹配语句单独记录类别，使报告能区分两类门限调整。
         """
-        if node.parentCtx is not self.session.document.root:
+        if node.parent is not self.session.document.root:
             policy = self.session.context.policy
             for pattern, minimum, category in (
                 (
@@ -108,7 +108,7 @@ class BfdTimersVisitor(CiscoRuleVisitor):
                     self.session.edits.replace_header(
                         node, updated, "调整 BFD 定时器", category=category
                     )
-        return self.visitChildren(node)
+        return self.visit_children(node)
 
 
 ENABLE_INTERFACES_RULE = CiscoVisitorRule(

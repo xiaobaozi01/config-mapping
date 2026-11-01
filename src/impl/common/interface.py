@@ -22,7 +22,10 @@ class InterfaceKind(StrEnum):
 
 
 class BundleMode(StrEnum):
-    """定义聚合成员绑定的协商模式。"""
+    """定义聚合成员绑定的协商模式。
+
+    未知模式用于缺少配置或绑定冲突的情况，避免迁移阶段乐观假设链路可以工作。
+    """
 
     ON = "on"
     ACTIVE = "active"

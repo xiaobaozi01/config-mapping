@@ -53,7 +53,7 @@ def adapt_bundle(document, name):
             f"聚合 {name} 未配置显式 MAC；XRv9000 7.11.1 需实机核验 "
             "Bundle MAC 与聚合 up 状态，不自动生成 MAC 或修改全局 LACP MAC"
         )
-    transaction = document.rewrite()
+    transaction = document.edit()
     for node in block.nodes:
         if not node.active:
             continue
@@ -82,5 +82,5 @@ def adapt_bundle(document, name):
                     "reason": "删除不适用于模拟成员带宽的生产聚合门限",
                 }
             )
-    transaction.commit()
+    transaction.apply()
     return result

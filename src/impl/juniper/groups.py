@@ -24,8 +24,8 @@ from impl.common.semantic_identity import (
 )
 
 from .document import (
+    JuniperNode,
     JunosDocument,
-    _WorkNode,
     canonical_junos_interface,
 )
 from .identity import resolve_junos_identity
@@ -62,8 +62,8 @@ class _ExpansionState:
     状态集中传递可避免递归方法反复构造索引，并让失败回滚看到同一份求值记录。
     """
 
-    groups_container: _WorkNode
-    group_definitions: dict[str, _WorkNode]
+    groups_container: JuniperNode
+    group_definitions: dict[str, JuniperNode]
     group_dependencies: dict[str, list[str]]
     outcome: GroupExpansionOutcome
     washing_policy: WashingPolicy
@@ -78,13 +78,13 @@ class _PreparedExpansion:
     预处理标记区分原配置是否变化，使无实际展开的调用不必替换文档根节点。
     """
 
-    working_root: _WorkNode
+    working_root: JuniperNode
     state: _ExpansionState
     preprocessing_changed: bool
     pruned_group_names: tuple[str, ...]
 
 
-_ResolvedStatement = tuple[_WorkNode, SemanticDecision]
+_ResolvedStatement = tuple[JuniperNode, SemanticDecision]
 
 
 class JunosGroupExpander:
@@ -100,9 +100,9 @@ class JunosGroupExpander:
         """
         self._document = document
         self._base_header = document._parser.base_header
-        self._working_root = document._work_root()
+        self._working_root = document.root
 
-    def _iter_source_nodes(self) -> Iterable[_WorkNode]:
+    def _iter_source_nodes(self) -> Iterable[JuniperNode]:
         """深度优先迭代原配置中的全部节点。
 
         该入口只服务展开前的字符串筛选，因此不会复制或修改原树。
@@ -115,7 +115,7 @@ class JunosGroupExpander:
                 stack.extend(node.children)
 
     @property
-    def root(self) -> _WorkNode:
+    def root(self) -> JuniperNode:
         """读取底层文档当前的 Junos 根节点。
 
         每次读取最新根节点，确保事务只对调用时的配置修订生效。
@@ -123,13 +123,13 @@ class JunosGroupExpander:
         return self._working_root
 
     @root.setter
-    def root(self, root_node: _WorkNode) -> None:
+    def root(self, root_node: JuniperNode) -> None:
         """用成功展开的工作树替换底层文档根节点。
 
         赋值是唯一提交点，未完成全部校验前不会暴露部分物化结果。
         """
-        self._document._publish_work_root(root_node)
-        self._working_root = self._document._work_root()
+        self._document.edit().replace_root(root_node)
+        self._working_root = self._document.root
 
     @staticmethod
     def _base_header(header: str) -> str:
@@ -235,7 +235,7 @@ class JunosGroupExpander:
         """
         base = cls._base_header(statement)
         match = re.match(
-            rf"({re.escape(control_keyword)})\s+(.+?)\s*;\s*$",
+            rf"({re.escape(control_keyword)})\s+(.+?)\s*;?\s*$",
             base,
         )
         if not match:
@@ -266,16 +266,16 @@ class JunosGroupExpander:
 
     def _payload_nodes_at_path(
         self,
-        group_definition: _WorkNode,
+        group_definition: JuniperNode,
         target_path: list[str],
-    ) -> list[_WorkNode]:
+    ) -> list[JuniperNode]:
         """定位某个 group 在目标配置路径上提供的直接子配置。
 
         每一级只保留有效且匹配的块节点，并按选择器具体程度排序后合并其
         子节点作为下一层候选；任一级无匹配时返回空列表。
         """
         require_invariant(
-            group_definition.children is not None,
+            group_definition.is_block,
             "Junos group 定义必须是包含子节点的块节点",
         )
         candidate_nodes = group_definition.children
@@ -306,8 +306,8 @@ class JunosGroupExpander:
         target_path: list[str],
         identity_key: str,
         rule_id: str | None,
-        winner_node: _WorkNode,
-        loser_node: _WorkNode,
+        winner_node: JuniperNode,
+        loser_node: JuniperNode,
     ) -> None:
         """把一次不同值的语义覆盖追加到展开报告。
 
@@ -333,8 +333,8 @@ class JunosGroupExpander:
 
     def _merge_inherited_children(
         self,
-        target_node: _WorkNode,
-        inherited_children: list[_WorkNode],
+        target_node: JuniperNode,
+        inherited_children: list[JuniperNode],
         group_name: str,
         precedence: tuple[int, ...],
         target_path: list[str],
@@ -346,7 +346,7 @@ class JunosGroupExpander:
         不同类型需要不同冲突规则，集中分发可保证同一 payload 不会走错合并路径。
         """
         require_invariant(
-            target_node.children is not None,
+            target_node.is_block,
             "Junos group 合并目标必须是块节点",
         )
         for inherited_node in inherited_children:
@@ -370,7 +370,7 @@ class JunosGroupExpander:
                 washing_policy,
             )
 
-    def _is_mergeable_group_child(self, inherited_node: _WorkNode) -> bool:
+    def _is_mergeable_group_child(self, inherited_node: JuniperNode) -> bool:
         """判断 group 子节点是否应作为业务配置参与合并。
 
         无效节点不应物化；apply/except 属于继承控制语句，
@@ -388,8 +388,8 @@ class JunosGroupExpander:
 
     def _merge_inherited_block(
         self,
-        target_node: _WorkNode,
-        inherited_node: _WorkNode,
+        target_node: JuniperNode,
+        inherited_node: JuniperNode,
         group_name: str,
         precedence: tuple[int, ...],
     ) -> None:
@@ -399,7 +399,7 @@ class JunosGroupExpander:
         再由后续递归合并其子配置。
         """
         require_invariant(
-            target_node.children is not None,
+            target_node.is_block,
             "Junos group 块合并目标必须是块节点",
         )
         matched = False
@@ -416,13 +416,14 @@ class JunosGroupExpander:
             if not child.is_block and has_payload:
                 child.header = child.header.rstrip().rstrip(";").rstrip()
                 child.children = []
+                child.kind = "block"
                 child.declared_in_source = True
 
         # 通配选择器只匹配已有具体节点，不生成 ``<ge-*>`` 块。
         if matched or "<" in inherited_node.header:
             return
         target_node.children.append(
-            _WorkNode(
+            JuniperNode(
                 inherited_node.header,
                 [],
                 origin=f"group:{group_name}",
@@ -433,8 +434,8 @@ class JunosGroupExpander:
 
     def _merge_inherited_statement(
         self,
-        target_node: _WorkNode,
-        inherited_node: _WorkNode,
+        target_node: JuniperNode,
+        inherited_node: JuniperNode,
         group_name: str,
         precedence: tuple[int, ...],
         target_path: list[str],
@@ -447,7 +448,7 @@ class JunosGroupExpander:
         语义归一化，再统一处理显式配置、group 优先级和未知语义策略。
         """
         require_invariant(
-            target_node.children is not None,
+            target_node.is_block,
             "Junos group 语句合并目标必须是块节点",
         )
         (
@@ -485,8 +486,8 @@ class JunosGroupExpander:
 
     def _prepare_merge(
         self,
-        target_node: _WorkNode,
-        inherited_node: _WorkNode,
+        target_node: JuniperNode,
+        inherited_node: JuniperNode,
         group_name: str,
         precedence: tuple[int, ...],
         target_path: list[str],
@@ -494,8 +495,8 @@ class JunosGroupExpander:
     ) -> tuple[
         SemanticDecision,
         list[_ResolvedStatement],
-        _WorkNode | None,
-        _WorkNode,
+        JuniperNode | None,
+        JuniperNode,
     ]:
         """解析继承语句的 identity、现有槽位决策和待合并副本。
 
@@ -518,7 +519,7 @@ class JunosGroupExpander:
             ),
             None,
         )
-        inherited_statement = _WorkNode(
+        inherited_statement = JuniperNode(
             inherited_node.header,
             origin=f"group:{group_name}",
             rank=precedence,
@@ -528,7 +529,7 @@ class JunosGroupExpander:
 
     def _resolve_target_statements(
         self,
-        target_node: _WorkNode,
+        target_node: JuniperNode,
         target_path: list[str],
     ) -> list[_ResolvedStatement]:
         """解析目标节点中所有有效叶子语句的语义 identity。
@@ -537,7 +538,7 @@ class JunosGroupExpander:
         可以让合并方法只关心 identity 匹配和优先级。
         """
         require_invariant(
-            target_node.children is not None,
+            target_node.is_block,
             "Junos identity 解析目标必须是块节点",
         )
         return [
@@ -556,7 +557,7 @@ class JunosGroupExpander:
         self,
         identity_decision: SemanticDecision,
         existing_statement_decisions: list[_ResolvedStatement],
-        inherited_statement: _WorkNode,
+        inherited_statement: JuniperNode,
         target_path: list[str],
         outcome: GroupExpansionOutcome,
         washing_policy: WashingPolicy,
@@ -596,8 +597,8 @@ class JunosGroupExpander:
     @staticmethod
     def _ambiguity_record(
         identity_decision: SemanticDecision,
-        existing_statement: _WorkNode,
-        inherited_statement: _WorkNode,
+        existing_statement: JuniperNode,
+        inherited_statement: JuniperNode,
         target_path: list[str],
     ) -> dict[str, str]:
         """构造未知语句族冲突的可审计明细。
@@ -621,8 +622,8 @@ class JunosGroupExpander:
 
     def _merge_statement_by_precedence(
         self,
-        existing_statement: _WorkNode,
-        inherited_statement: _WorkNode,
+        existing_statement: JuniperNode,
+        inherited_statement: JuniperNode,
         identity_decision: SemanticDecision,
         target_path: list[str],
         outcome: GroupExpansionOutcome,
@@ -752,7 +753,7 @@ class JunosGroupExpander:
         # 事务边界：本方法以后的所有变更都只发生在 working_root 上。
         working_root = copy.deepcopy(self.root)
         require_invariant(
-            working_root.children is not None,
+            working_root.is_block,
             "Junos 工作树根节点必须可包含子节点",
         )
         pruned_group_names = self._prune_excluded_groups(
@@ -793,7 +794,7 @@ class JunosGroupExpander:
 
     def _prune_excluded_groups(
         self,
-        root_node: _WorkNode,
+        root_node: JuniperNode,
         excluded_names: set[str],
     ) -> set[str]:
         """从工作树中移除指定 group 定义及其控制引用。
@@ -812,7 +813,7 @@ class JunosGroupExpander:
 
     def _prune_excluded_definitions(
         self,
-        root_node: _WorkNode,
+        root_node: JuniperNode,
         excluded_names: set[str],
     ) -> set[str]:
         """停用被排除的 group 定义并清理空容器。
@@ -834,7 +835,7 @@ class JunosGroupExpander:
 
     def _prune_group_references(
         self,
-        node: _WorkNode,
+        node: JuniperNode,
         excluded_names: set[str],
         pruned_names: set[str],
     ) -> None:
@@ -868,7 +869,7 @@ class JunosGroupExpander:
 
     def _validate_root_exclusions(
         self,
-        working_root: _WorkNode,
+        working_root: JuniperNode,
         state: _ExpansionState,
     ) -> bool:
         """校验 group 定义之外的所有活动 except 引用。
@@ -928,7 +929,7 @@ class JunosGroupExpander:
 
     def _commit_expansion(
         self,
-        working_root: _WorkNode,
+        working_root: JuniperNode,
         state: _ExpansionState,
     ) -> GroupExpansionOutcome:
         """隐藏已物化的 group，原子提交工作树并生成成功事件。
@@ -944,7 +945,7 @@ class JunosGroupExpander:
         )
         return state.outcome
 
-    def _group_containers(self, root_node: _WorkNode) -> list[_WorkNode]:
+    def _group_containers(self, root_node: JuniperNode) -> list[JuniperNode]:
         """返回根节点下全部有效的顶层 ``groups`` 容器。
 
         规范的 Junos 输出通常只有一个容器，但手写或拼接配置可能重复
@@ -960,8 +961,8 @@ class JunosGroupExpander:
 
     def _normalize_group_containers(
         self,
-        root_node: _WorkNode,
-    ) -> tuple[_WorkNode, dict[str, _WorkNode], bool]:
+        root_node: JuniperNode,
+    ) -> tuple[JuniperNode, dict[str, JuniperNode], bool]:
         """把多个 groups 容器及重复的同名定义合并为规范单容器。
 
         后续遍历需要一个明确的跳过边界，而依赖索引必须包含所有定义。
@@ -969,12 +970,12 @@ class JunosGroupExpander:
         同名定义的子节点按原始出现顺序合并，以符合配置片段的合并输入场景。
         """
         require_invariant(
-            root_node.children is not None,
+            root_node.is_block,
             "Junos group 规范化的根节点必须可包含子节点",
         )
         group_containers = self._group_containers(root_node)
         if not group_containers:
-            return _WorkNode("groups", []), {}, False
+            return JuniperNode("groups", []), {}, False
 
         canonical_container, group_definitions, definitions_changed = (
             self._merge_group_definitions(group_containers)
@@ -990,8 +991,8 @@ class JunosGroupExpander:
 
     def _merge_group_definitions(
         self,
-        group_containers: list[_WorkNode],
-    ) -> tuple[_WorkNode, dict[str, _WorkNode], bool]:
+        group_containers: list[JuniperNode],
+    ) -> tuple[JuniperNode, dict[str, JuniperNode], bool]:
         """建立 group 索引，并把重复的同名定义合并到首个定义。
 
         手写或拼接配置可能分段声明同名 group，后续依赖和 payload
@@ -999,11 +1000,11 @@ class JunosGroupExpander:
         """
         canonical_container = group_containers[0]
         require_invariant(
-            canonical_container.children is not None,
+            canonical_container.is_block,
             "Junos groups 容器必须是块节点",
         )
-        normalized_children: list[_WorkNode] = []
-        group_definitions: dict[str, _WorkNode] = {}
+        normalized_children: list[JuniperNode] = []
+        group_definitions: dict[str, JuniperNode] = {}
         definitions_changed = False
 
         for group_container in group_containers:
@@ -1018,7 +1019,7 @@ class JunosGroupExpander:
                     normalized_children.append(definition)
                     continue
                 require_invariant(
-                    existing_definition.children is not None,
+                    existing_definition.is_block,
                     f"Junos group {name} 定义必须是块节点",
                 )
                 existing_definition.children.extend(definition.children or [])
@@ -1029,8 +1030,8 @@ class JunosGroupExpander:
 
     @staticmethod
     def _remove_extra_group_containers(
-        root_node: _WorkNode,
-        group_containers: list[_WorkNode],
+        root_node: JuniperNode,
+        group_containers: list[JuniperNode],
     ) -> None:
         """从根节点移除已合并到规范容器的其余 groups 块。
 
@@ -1038,7 +1039,7 @@ class JunosGroupExpander:
         会让跳过判定、引用索引和最终隐藏行为变得不一致。
         """
         require_invariant(
-            root_node.children is not None,
+            root_node.is_block,
             "Junos group 容器清理的根节点必须可包含子节点",
         )
         extra_container_ids = {
@@ -1052,7 +1053,7 @@ class JunosGroupExpander:
 
     def _add_known_interfaces(
         self,
-        working_root: _WorkNode,
+        working_root: JuniperNode,
         known_interfaces: Iterable[str],
     ) -> None:
         """把拓扑已知但配置未声明的接口加入工作树。
@@ -1061,7 +1062,7 @@ class JunosGroupExpander:
         校验之后，避免仅清理 inactive group 时把 synthetic 接口意外写入配置。
         """
         require_invariant(
-            working_root.children is not None,
+            working_root.is_block,
             "Junos 工作树根节点必须可包含子节点",
         )
 
@@ -1077,10 +1078,10 @@ class JunosGroupExpander:
             None,
         )
         if interfaces_container is None:
-            interfaces_container = _WorkNode("interfaces", [])
+            interfaces_container = JuniperNode("interfaces", [])
             working_root.children.append(interfaces_container)
         require_invariant(
-            interfaces_container.children is not None,
+            interfaces_container.is_block,
             "Junos interfaces 节点必须是块节点",
         )
         existing_interface_names = {
@@ -1095,11 +1096,11 @@ class JunosGroupExpander:
             if canonical_name in existing_interface_names:
                 continue
             interfaces_container.children.append(
-                _WorkNode(canonical_name, [], origin="synthetic")
+                JuniperNode(canonical_name, [], origin="synthetic")
             )
             existing_interface_names.add(canonical_name)
 
-    def _group_dependencies(self, group: _WorkNode) -> list[str]:
+    def _group_dependencies(self, group: JuniperNode) -> list[str]:
         """递归收集一个 group 定义内声明的 apply-groups 依赖。
 
         结果按首次出现顺序去重，仅遍历有效节点；它描述定义中的直接引用，
@@ -1107,12 +1108,12 @@ class JunosGroupExpander:
         """
         dependency_names: list[str] = []
 
-        def collect(node: _WorkNode) -> None:
+        def collect(node: JuniperNode) -> None:
             """收集节点子树中的直接 apply-groups 名称。
 
             按首次出现顺序去重，使依赖闭包和告警顺序保持稳定。
             """
-            if node.children is None:
+            if not node.is_block:
                 for name in self._parse_group_names(
                     node.header,
                     "apply-groups",
@@ -1127,7 +1128,7 @@ class JunosGroupExpander:
         collect(group)
         return dependency_names
 
-    def _group_exclusions(self, node: _WorkNode) -> list[str]:
+    def _group_exclusions(self, node: JuniperNode) -> list[str]:
         """递归收集指定子树内有效的 ``apply-groups-except`` 引用。
 
         except 只是取消某条继承关系，并不会引入 group 内容，所以
@@ -1136,13 +1137,13 @@ class JunosGroupExpander:
         """
         excluded_group_names: list[str] = []
 
-        def collect(current: _WorkNode) -> None:
+        def collect(current: JuniperNode) -> None:
             """收集当前子树中的有效 except 名称。
 
             保留首次出现顺序，避免重复告警并维持与源配置一致的诊断顺序。
             """
             # 控制语句是叶子节点；统一交给解析器处理列表和带引号名称。
-            if current.children is None:
+            if not current.is_block:
                 for name in self._parse_group_names(
                     current.header,
                     "apply-groups-except",
@@ -1161,8 +1162,8 @@ class JunosGroupExpander:
 
     def _root_group_exclusions(
         self,
-        root: _WorkNode,
-        container: _WorkNode,
+        root: JuniperNode,
+        container: JuniperNode,
     ) -> list[str]:
         """收集主配置树中、group 定义之外的有效 except 引用。
 
@@ -1174,7 +1175,7 @@ class JunosGroupExpander:
         """
         excluded_group_names: list[str] = []
 
-        def collect(node: _WorkNode) -> None:
+        def collect(node: JuniperNode) -> None:
             """收集模板定义之外的根级 except 名称。
 
             跳过 groups 容器，使未使用模板中的陈旧引用只在模板被选中后校验。
@@ -1182,7 +1183,7 @@ class JunosGroupExpander:
             # group 定义由 _group_exclusions 在依赖闭包确定后按需检查。
             if node is container:
                 return
-            if node.children is None:
+            if not node.is_block:
                 for name in self._parse_group_names(
                     node.header,
                     "apply-groups-except",
@@ -1200,7 +1201,7 @@ class JunosGroupExpander:
     @staticmethod
     def _validate_group_exclusions(
         excluded_group_names: Iterable[str],
-        group_definitions: dict[str, _WorkNode],
+        group_definitions: dict[str, JuniperNode],
         outcome: GroupExpansionOutcome,
     ) -> bool:
         """检查每个 except 名称是否有对应定义并记录缺失告警。
@@ -1220,8 +1221,8 @@ class JunosGroupExpander:
 
     def _collect_root_group_names(
         self,
-        working_root: _WorkNode,
-        groups_container: _WorkNode,
+        working_root: JuniperNode,
+        groups_container: JuniperNode,
     ) -> set[str]:
         """收集 group 定义之外的全部活动根引用。
 
@@ -1229,12 +1230,12 @@ class JunosGroupExpander:
         """
         root_group_names: set[str] = set()
 
-        def walk(node: _WorkNode) -> None:
+        def walk(node: JuniperNode) -> None:
             """深度遍历主配置并累积根级 apply-groups 名称。
 
             只在块节点继续向下，叶子控制语句解析后即可结束当前分支。
             """
-            if node.children is None or node is groups_container:
+            if not node.is_block or node is groups_container:
                 return
             for child in node.children:
                 if not child.effective:
@@ -1505,7 +1506,7 @@ class JunosGroupExpander:
 
     def _expand_current_node(
         self,
-        target_node: _WorkNode,
+        target_node: JuniperNode,
         target_path: list[str],
         inherited_applications: list[_GroupApplication],
         inherited_excluded_group_names: set[str],
@@ -1554,7 +1555,7 @@ class JunosGroupExpander:
 
     def _merge_effective_groups(
         self,
-        target_node: _WorkNode,
+        target_node: JuniperNode,
         target_path: list[str],
         applications: list[_GroupApplication],
         state: _ExpansionState,
@@ -1582,7 +1583,7 @@ class JunosGroupExpander:
 
     def _walk_expansion_tree(
         self,
-        target_node: _WorkNode,
+        target_node: JuniperNode,
         target_path: list[str],
         inherited_applications: list[_GroupApplication],
         inherited_excluded_group_names: set[str],
@@ -1594,10 +1595,7 @@ class JunosGroupExpander:
         出的引用集与排除集作为子节点的继承输入；而合并会向 target_node.children 追加
         新块，只有用索引循环才能在遍历过程中一并处理本轮物化出的块。
         """
-        if (
-            target_node.children is None
-            or target_node is state.groups_container
-        ):
+        if not target_node.is_block or target_node is state.groups_container:
             return
         child_applications, child_excluded_group_names = (
             self._expand_current_node(
@@ -1628,7 +1626,7 @@ class JunosGroupExpander:
 
     def _read_local_group_controls(
         self,
-        target_node: _WorkNode,
+        target_node: JuniperNode,
         inherited_excluded_group_names: set[str],
         reachable_group_names: set[str],
     ) -> tuple[list[str], set[str]]:
@@ -1638,7 +1636,7 @@ class JunosGroupExpander:
         except 同时作用于本地引用和从祖先继承的引用。工作树保持不变。
         """
         require_invariant(
-            target_node.children is not None,
+            target_node.is_block,
             "Junos group 控制语句只能从块节点读取",
         )
         locally_applied_group_names: list[str] = []
@@ -1666,7 +1664,7 @@ class JunosGroupExpander:
 
     def _rewrite_group_controls(
         self,
-        target_node: _WorkNode,
+        target_node: JuniperNode,
         handled_group_names: set[str],
     ) -> None:
         """从当前节点的控制语句中移除本次已经物化的 group 名称。
@@ -1675,10 +1673,10 @@ class JunosGroupExpander:
         语句。普通配置节点和配置块不受影响。
         """
         require_invariant(
-            target_node.children is not None,
+            target_node.is_block,
             "Junos group 控制语句只能在块节点中改写",
         )
-        retained_children: list[_WorkNode] = []
+        retained_children: list[JuniperNode] = []
         for child in target_node.children:
             rewritten_header: str | None = child.header
             if child.effective and not child.is_block:

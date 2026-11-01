@@ -11,7 +11,7 @@ from impl.common.outcomes import (
 )
 from impl.common.policies import SimulationAdaptationPolicy
 
-from ..document import JunosDocument, _WorkNode
+from ..document import JuniperNode, JunosDocument
 
 
 def adapt_to_simulation(
@@ -60,7 +60,7 @@ def _enable_data_interfaces(document, target_parents, outcome):
     for interface in document._interface_nodes():
         if (
             document._interface_name(interface) not in target_parents
-            or interface.children is None
+            or not interface.is_block
         ):
             continue
         retained = []
@@ -90,15 +90,15 @@ def _clamp_bfd_timers(
     bfd_interval_pattern = re.compile(
         r"^(?P<key>minimum-interval|minimum-receive-interval|"
         r"transmit-interval)\s+"
-        r"(?P<value>\d+)\s*;$",
+        r"(?P<value>\d+)\s*$",
         re.IGNORECASE,
     )
     bfd_multiplier_pattern = re.compile(
-        r"^(?P<key>multiplier)\s+(?P<value>\d+)\s*;$",
+        r"^(?P<key>multiplier)\s+(?P<value>\d+)\s*$",
         re.IGNORECASE,
     )
 
-    def walk(node: _WorkNode, inside_bfd: bool = False) -> None:
+    def walk(node: JuniperNode, inside_bfd: bool = False) -> None:
         """递归处理 BFD 子树中的可调整叶子。
 
         BFD 标记只从祖先继承，遇到新的无关分支后不会错误修改其定时器。
@@ -107,7 +107,7 @@ def _clamp_bfd_timers(
             return
         base = parser.base_header(node.header)
         current_bfd = inside_bfd or base.rstrip(";") == "bfd-liveness-detection"
-        if current_bfd and node.children is None:
+        if current_bfd and not node.is_block:
             for pattern, minimum, category in (
                 (
                     bfd_interval_pattern,
@@ -146,7 +146,7 @@ def remove_empty_interface_options(document, context):
     for interface in document._interface_nodes():
         if (
             document._interface_name(interface) not in parents
-            or interface.children is None
+            or not interface.is_block
         ):
             continue
         interface.children = [

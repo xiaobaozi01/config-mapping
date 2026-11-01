@@ -88,8 +88,6 @@ def check_file(path, *, changed_only=False):
 
     生成代码由生成一致性测试负责，手写代码则按有效物理行和复杂度独立检查。
     """
-    if "/antlr/generated/" in f"{path.as_posix()}/":
-        return []
     source = path.read_text(encoding="utf-8")
     lines = source.splitlines()
     comments = {

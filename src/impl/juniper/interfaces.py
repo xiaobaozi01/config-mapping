@@ -14,14 +14,14 @@ from impl.common.interface import (
 )
 
 from .document import (
+    JuniperNode,
     JunosDocument,
-    _WorkNode,
 )
 
 MAX_VLAN_ID = 4094
 
 
-def _walk(document: JunosDocument, node: _WorkNode):
+def _walk(document: JunosDocument, node: JuniperNode):
     """遍历成员接口下的有效节点。
 
     只暴露生效节点，避免读取 inactive 绑定或业务配置。
@@ -93,7 +93,7 @@ def bundle_members(document: JunosDocument) -> dict[str, str]:
         parent = document._interface_name(node)
         if document.interface_kind(parent) != InterfaceKind.PHYSICAL:
             continue
-        rendered = document._render_effective_node(node, 0)
+        rendered = document.writer.effective(node, document._parser)
         match = re.search(r"\b802\.3ad\s+(ae\d+)\s*;", rendered)
         if match:
             result[parent] = match.group(1)
@@ -225,7 +225,7 @@ def _collect_interface_business(
         parent = document._interface_name(node)
         units = document._unit_nodes(node)
         if not units:
-            rendered = document._render_effective_node(node, 0)
+            rendered = document.writer.effective(node, document._parser)
             if document.interface_kind(
                 parent
             ) in mappable_kinds and business_pattern.search(rendered):
@@ -235,12 +235,12 @@ def _collect_interface_business(
             parser.is_effective(child)
             and child not in units
             and business_pattern.search(
-                document._render_effective_node(child, 0)
+                document.writer.effective(child, document._parser)
             )
             for child in node.nodes
         )
         for unit in units:
-            rendered = document._render_effective_node(unit, 0)
+            rendered = document.writer.effective(unit, document._parser)
             name = f"{parent}.{document._unit_number(unit)}"
             if kinds.get(name) in mappable_kinds and (
                 parent_business or business_pattern.search(rendered)
@@ -262,7 +262,7 @@ def _collect_reference_business(
     parser = document._parser
     mappable_kinds = {InterfaceKind.PHYSICAL, InterfaceKind.BUNDLE}
     external = "\n".join(
-        document._render_effective_node(node, 0)
+        document.writer.effective(node, document._parser)
         for node in document.root.nodes
         if parser.is_effective(node)
         and parser.base_header(node.header) not in {"interfaces", "groups"}
@@ -303,7 +303,7 @@ def _expand_vlan_tokens(value: str) -> set[int]:
 
 def _activate_domain_gateways(
     document: JunosDocument,
-    node: _WorkNode,
+    node: JuniperNode,
     active: set[str],
     active_vlans: set[int],
     active_vlan_names: set[str],
@@ -321,7 +321,7 @@ def _activate_domain_gateways(
     base = parser.base_header(node.header).rstrip(";")
     if base in {"bridge-domains", "vlans"}:
         for domain in node.nodes:
-            if not parser.is_effective(domain) or domain.children is None:
+            if not parser.is_effective(domain) or not domain.is_block:
                 continue
             interfaces, gateways, vlan_ids, domain_name = _domain_gateways(
                 document, domain
@@ -348,14 +348,14 @@ def _activate_domain_gateways(
 
 def _domain_gateways(
     document: JunosDocument,
-    domain: _WorkNode,
+    domain: JuniperNode,
 ) -> tuple[set[str], set[str], set[int], str]:
     """提取广播域的接入接口、网关、VLAN ID 和域名。
 
     从渲染文本中一次收集四类信息，使后续激活判断基于同一份规范化配置视图。
     """
     parser = document._parser
-    rendered = document._render_effective_node(domain, 0)
+    rendered = document.writer.effective(domain, document._parser)
     interfaces = {
         document.resolve_interface(value)
         for value in re.findall(
@@ -404,7 +404,7 @@ def _collect_active_vlans(
         unit = node if spec.unit is None else units.get((parent, spec.unit))
         if unit is None:
             continue
-        rendered = document._render_effective_node(unit, 0)
+        rendered = document.writer.effective(unit, document._parser)
         _update_active_vlans(
             rendered,
             spec.vlan,
@@ -416,13 +416,13 @@ def _collect_active_vlans(
 
 def _interface_index(
     document: JunosDocument,
-) -> tuple[dict[str, _WorkNode], dict[tuple[str, str], _WorkNode]]:
+) -> tuple[dict[str, JuniperNode], dict[tuple[str, str], JuniperNode]]:
     """建立父接口和逻辑单元的快速查找索引。
 
     一次遍历接口树可避免每个活跃单元都重复线性查找父节点，同时保持首个定义的语义。
     """
-    parents: dict[str, _WorkNode] = {}
-    units: dict[tuple[str, str], _WorkNode] = {}
+    parents: dict[str, JuniperNode] = {}
+    units: dict[tuple[str, str], JuniperNode] = {}
     for node in document._interface_nodes():
         parent = document._interface_name(node)
         if parent in parents:
@@ -468,7 +468,9 @@ def _update_active_vlans(
         )
 
 
-def find_interface_node(document: JunosDocument, name: str) -> _WorkNode | None:
+def find_interface_node(
+    document: JunosDocument, name: str
+) -> JuniperNode | None:
     """按规范化父接口名查找第一个有效的 Junos 接口节点。
 
     调用方可以传父接口或 unit 名；先去掉 unit 是因为 Junos 把 unit 存在父接口
@@ -501,8 +503,8 @@ def remove_interface(
 
 def _strip_bundle_options(
     document: JunosDocument,
-    children: list[_WorkNode],
-) -> list[_WorkNode]:
+    children: list[JuniperNode],
+) -> list[JuniperNode]:
     """移除脱离 ae 后不再成立的聚合相关 options 块。
 
     aggregated/gigether/ether options 只在聚合成员接口上有效；接口迁移到普通目标口
@@ -537,7 +539,7 @@ def rename_interface_tree(
     if not node:
         return
     node.header = document.resolve_interface(target)
-    if strip_bundle and node.children is not None:
+    if strip_bundle and node.is_block:
         node.children = _strip_bundle_options(document, node.children)
     _merge_duplicate_interface(document, node)
 
@@ -556,23 +558,23 @@ def clone_interface_tree(
     source_node = find_interface_node(document, source)
     interfaces = document._interfaces_block(create=True)
     require_invariant(
-        interfaces is not None and interfaces.children is not None,
+        interfaces is not None and interfaces.is_block,
         "Junos interfaces 块在 create=True 后必须存在且可包含子节点",
     )
     if source_node is None:
-        clone = _WorkNode(document.resolve_interface(target), [])
+        clone = JuniperNode(document.resolve_interface(target), [])
     else:
         clone = source_node.clone()
         clone.header = document.resolve_interface(target)
         clone.active = True
-        if strip_bundle and clone.children is not None:
+        if strip_bundle and clone.is_block:
             clone.children = _strip_bundle_options(document, clone.children)
     interfaces.children.append(clone)
     _merge_duplicate_interface(document, clone)
 
 
 def _merge_duplicate_interface(
-    document: JunosDocument, preferred: _WorkNode
+    document: JunosDocument, preferred: JuniperNode
 ) -> None:
     """合并同名接口节点的非重复子树，并停用首选节点之外的副本。
 
@@ -588,12 +590,12 @@ def _merge_duplicate_interface(
     if len(duplicates) < 2:
         return
     require_invariant(
-        preferred.children is not None,
+        preferred.is_block,
         "Junos 重复接口合并的首选节点必须是块节点",
     )
     existing = {document._render_node(child, 0) for child in preferred.children}
     for node in duplicates:
-        if node is preferred or node.children is None:
+        if node is preferred or not node.is_block:
             continue
         for child in node.children:
             rendered = document._render_node(child, 0)
@@ -612,7 +614,7 @@ def ensure_parent_interface(document: JunosDocument, name: str) -> None:
         return
     interfaces = document._interfaces_block(create=True)
     require_invariant(
-        interfaces is not None and interfaces.children is not None,
+        interfaces is not None and interfaces.is_block,
         "Junos interfaces 块必须存在且可包含子节点",
     )
-    interfaces.children.append(_WorkNode(name, []))
+    interfaces.children.append(JuniperNode(name, []))

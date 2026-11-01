@@ -6,11 +6,11 @@ from impl.common.errors import require_invariant
 from impl.common.lab_account import JUNOS_LAB_PASSWORD_HASH
 from impl.common.outcomes import CleanupOutcome
 
-from .document import JunosDocument, _WorkNode
+from .document import JuniperNode, JunosDocument
 
 
 def _disable_matching(
-    node: _WorkNode,
+    node: JuniperNode,
     keywords: set[str],
     category: str,
     outcome: CleanupOutcome,
@@ -23,7 +23,7 @@ def _disable_matching(
     命中后不再下钻；把“匹配 + 停用 + 统计”收敛成单一原语，供管理面清洗中的
     多处递归删除复用。
     """
-    if node.children is None:
+    if not node.is_block:
         return
     for child in node.children:
         if not child.effective:
@@ -43,7 +43,7 @@ def _disable_matching(
 
 
 def _disable_empty_netconf(
-    services: _WorkNode,
+    services: JuniperNode,
     outcome: CleanupOutcome,
 ) -> None:
     """停用 ``system services`` 下没有任何有效子语句的空 ``netconf`` 块。
@@ -55,7 +55,7 @@ def _disable_empty_netconf(
         if (
             child.effective
             and _first_token(child) == "netconf"
-            and child.children is not None
+            and child.is_block
             and not any(grandchild.effective for grandchild in child.children)
         ):
             child.active = False
@@ -70,26 +70,27 @@ def clean_management_access(document: JunosDocument) -> CleanupOutcome:
     外部 AAA、SNMP 和远程管理凭据不应进入隔离实验环境，否则既有泄密风险，也可能
     因外部认证服务器不可达而无法登录；与可改变业务能力的可选清洗分开。
     """
-    root = document._work_root()
-    system = _top_block(root, "system", create=True)
-    outcome = CleanupOutcome()
-    _remove_system_auth(system, outcome)
-    _clean_system_services(system, outcome)
+    with document.edit().bulk() as root:
+        system = _top_block(root, "system", create=True)
+        outcome = CleanupOutcome()
+        _remove_system_auth(system, outcome)
+        _clean_system_services(system, outcome)
 
-    snmp = _top_block(root, "snmp")
-    if snmp:
-        snmp.active = False
-        outcome.record("snmp")
+        snmp = _top_block(root, "snmp")
+        if snmp:
+            snmp.active = False
+            outcome.record("snmp")
 
-    security = _top_block(root, "security")
-    if security:
-        _disable_matching(security, {"ssh-known-hosts"}, "ssh-trust", outcome)
-    document._publish_work_root(root)
-    return outcome
+        security = _top_block(root, "security")
+        if security:
+            _disable_matching(
+                security, {"ssh-known-hosts"}, "ssh-trust", outcome
+            )
+        return outcome
 
 
 def _remove_system_auth(
-    system: _WorkNode,
+    system: JuniperNode,
     outcome: CleanupOutcome,
 ) -> None:
     """停用 system 下的本地认证、外部 AAA 与 accounting 语句。
@@ -116,7 +117,7 @@ def _remove_system_auth(
 
 
 def _clean_system_services(
-    system: _WorkNode,
+    system: JuniperNode,
     outcome: CleanupOutcome,
 ) -> None:
     """停用远程管理服务并清理空 netconf。
@@ -150,19 +151,18 @@ def add_lab_account(document: JunosDocument) -> None:
     清除生产认证后建立已知的 root 登录入口；Junos 不接受明文密码，
     因此使用预生成的 SHA-512 crypt 哈希。
     """
-    root = document._work_root()
-    system = _top_block(root, "system", create=True)
-    require_invariant(system is not None, "Junos system 工作块必须存在")
-    system.children.append(
-        _WorkNode(
-            "root-authentication encrypted-password "
-            f'"{JUNOS_LAB_PASSWORD_HASH}";'
+    with document.edit().bulk() as root:
+        system = _top_block(root, "system", create=True)
+        require_invariant(system is not None, "Junos system 工作块必须存在")
+        system.children.append(
+            JuniperNode(
+                "root-authentication encrypted-password "
+                f'"{JUNOS_LAB_PASSWORD_HASH}";'
+            )
         )
-    )
-    document._publish_work_root(root)
 
 
-def _first_token(node: _WorkNode) -> str:
+def _first_token(node: JuniperNode) -> str:
     """返回工作节点基础 header 的首个语义 token。
 
     清洗规则按命令关键字匹配，去除状态前缀和末尾分号后可保持判断一致。
@@ -172,8 +172,8 @@ def _first_token(node: _WorkNode) -> str:
 
 
 def _top_block(
-    root: _WorkNode, name: str, create: bool = False
-) -> _WorkNode | None:
+    root: JuniperNode, name: str, create: bool = False
+) -> JuniperNode | None:
     """在临时工作树中查找或创建顶层配置块。
 
     清洗流程需要稳定的容器入口，但新建内容只能存在于待发布工作树中。
@@ -183,6 +183,6 @@ def _top_block(
             return node
     if not create:
         return None
-    node = _WorkNode(name, [])
+    node = JuniperNode(name, [])
     root.children.append(node)
     return node

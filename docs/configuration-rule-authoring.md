@@ -5,7 +5,7 @@
 Cisco 和 Juniper 的裁剪、接口适配、兼容校验、最终校验和模拟适配代码规则分别使用
 `CiscoVisitorRule` 与 `JunosVisitorRule`：注册项声明范围和执行策略，Visitor 编写
 匹配及业务动作，会话与执行器管理文本事务和结果。底层机制分别见
-[Cisco ANTLR4 说明](antlr-cisco.md) 和 [Junos ANTLR4 说明](antlr-juniper.md)。Cisco 完整可运行模板见
+[手写 AST 说明](config-ast.md)。Cisco 完整可运行模板见
 [`rules/examples.py`](../src/impl/cisco/rules/examples.py)，
 内网大模型可直接使用[编写提示词](rule-templates/internal-model-prompt.md)。
 
@@ -65,7 +65,7 @@ impl/cisco/rules/
 
 ## 新增接口适配或校验
 
-从 `impl.cisco.rules.support` 导入编写接口，继承 `CiscoRuleVisitor`（继承生成的 ANTLR Visitor）。例如新增一项实验 MTU 上限校验：
+从 `impl.cisco.rules.support` 导入编写接口，继承 `CiscoRuleVisitor`（继承共享 ConfigVisitor）。例如新增一项实验 MTU 上限校验：
 
 ```python
 from impl.common.interface import InterfaceKind
@@ -73,7 +73,7 @@ from impl.cisco.rules.support import CiscoRuleVisitor, CiscoVisitorRule, Interfa
 
 
 class TargetMtuVisitor(CiscoRuleVisitor):
-    def visitNode(self, block):
+    def visit_node(self, block):
         for node in block.nodes:
             words = node.header.split()
             if len(words) == 2 and words[0] == "mtu":
@@ -123,50 +123,36 @@ EXAMPLE_RULE = CiscoVisitorRule(
 
 模拟规则各自声明模式条件。接口启用只处理目标数据口；已有 BFD 调整处理协议配置中的已有定时器，只提高低于阈值的值。新增规则应保持幂等，并测试 `off`、`compatible`、`stable` 和非目标接口。
 
-## 会话、范围和 ANTLR4 Visitor
+## 会话、范围和 AST Visitor
 
-通过 `document.root.nodes` 查询顶层 Context，`context.nodes` 查询子命令，`context.path` 获取祖先命令路径，`context.text` 获取完整源码片段。Context 是当前修订的只读视图，不直接修改 ANTLR 的 children 或其他字段。
+通过 `document.root.nodes` 查询顶层节点，`node.nodes` 查询子命令，`node.path`
+获取祖先命令路径，`document.writer.subtree(node)` 获取当前子树的规范化文本。`location` 仅记录原始位置。
 
-规则继承 `CiscoRuleVisitor`。局部匹配可覆盖 `visitNode(context)`，用 `self.visitChildren(context)` 访问子树；不调用即跳过该子树。需要先建立跨对象索引的规则可选择 `document_scope` 并覆盖 `visitConfiguration(root)`，在该入口调用只读依赖分析器。`finish()` 在全部访问根结束后执行一次，可完成聚合、冲突检查和待插入片段组装。每次执行创建独立会话、Outcome 和 Visitor，不能在注册对象或模块变量缓存 Context、事务或设备状态。
+规则继承 `CiscoRuleVisitor` 或 `JunosRuleVisitor`。覆盖 `visit_node(node)` 做局部分析，
+通过 `visit_children(node)` 继续访问后代；覆盖 `visit_configuration(root)` 做全局分析。
+`should_visit(node)` 可跳过整棵子树。每次执行创建独立会话、Outcome 和 Visitor；
+`finish()` 在所有访问根结束后执行一次，用于跨节点检查和修改汇总。
 
-`session.document` 用于查询，`session.context` 提供阶段输入，`session.result` 收集诊断和删除对象集合，`session.edits` 只开放编辑收集。以下代码位于 Visitor 中：
+通过 `session.document` 查询，`session.context` 读取阶段输入，`session.result`
+收集诊断，`session.edits` 收集编辑。编辑动作包括删除、改头、替换子树、前后插入、
+追加子节点、移动和克隆；每项操作提供原因，不能覆盖框架审计字段。
+顶层创建使用 `append_top_level`，确保新配置位于 `end` 之前。
 
-```python
-def visitNode(self, block):
-    for command in block.nodes:
-        if command.header == "description OLD":
-            self.session.edits.replace_header(
-                command, "description NEW", "更新描述", interface=block.interface_name,
-            )
-    return None
-```
+Visitor 不自行调用 Editor.apply 或文档修改方法。执行器遍历完成后应用编辑，
+按节点关系维护结构，无需重新解析整份配置。文本片段在挂入树前完成语法校验。
+业务冲突、运行异常或结果映射失败会恢复本规则开始前的树副本，清除变更统计，
+保留诊断和前序规则已完成的结果。回滚后重新查询节点，不复用旧树引用。
 
-注册项的 `selector(document, context)` 从当前快照返回互不重叠的访问根；外来、过期、重复或祖先与后代同时入选会报协议错误。`document_scope` 选择整份文档；`InterfaceScope` 声明目标字段、子接口范围和允许类型，复用接口缩写规范化。它按目标父口选择范围，即目标是子接口时也先归一为父口。空接口集合不匹配任何接口，不创建 Visitor。
+只读规则声明 `readonly=True`，不能申请编辑器；执行器检查完整树签名，发现直接
+写入时恢复树并抛出 `RuleContractError`。Listener 的进入/退出事件适合收集索引，
+不应在遍历事件内修改子节点列表。上述约定不是 Python 安全沙箱。
 
-兼容校验使用专门的 `compatibility_interfaces_scope`，沿用目标父口闭包及文档中全部 BVI 的范围。BFD 按全局协议子命令范围访问，接口启用按目标数据口访问。新增代码规则应选择业务所需范围，不能一律遍历整份文档。访问范围不是编辑沙箱；ethertype 迁移会向源接口范围之外的父接口插入片段。
+非 NNI、BGP 源、track 和接口绑定裁剪仍使用同一套注册规则，保留原业务事件及
+删除集合传递语义。底层操作数量不必等于业务事件数量；只有成功动作进入报告。
 
-编辑入口提供 `replace_header`、`replace_subtree`、`delete`、`insert_before`、`insert_after`、`append_child`；参数使用 Context 和文本，不创建可变 CiscoNode。每项操作必须有原因，详情不能覆盖 rule_id 等框架审计字段。顶层创建用 `append_top_level(session.edits, session.document, text, reason)`，保持 end/commit 在配置末尾。移动通过删除源、把 `source.text` 插入目标表达，框架调整片段缩进。
-
-Visitor 不调用 `document.rewrite()`、`commit()` 或其他 Document 修改方法。执行器在遍历完成且无业务错误时提交，候选源码重新解析成功才发布。业务冲突追加到 `session.result.errors`，本规则编辑和待报告变化全部丢弃。提交或结果映射异常会恢复本规则开始时的快照并重新抛出；前序规则的成功提交保留。不要吞掉 `RewriteConflictError` 等编程错误。
-
-成功提交后旧 Context 不可用于新修订，下一规则重新选择范围。新插入节点不在当前轮访问。只读规则声明 `readonly=True`，不创建事务，访问 `session.edits` 会报协议错误；执行器也检查快照是否被替换，违规恢复并抛出 `RuleContractError`。这是一项编写契约，不是 Python 隔离沙箱，不允许直接篡改 Context 或 token。只读校验保留收集全部适用规则诊断的行为。
-
-## 结果映射与复杂依赖
-
-`outcome_factory` 默认创建 `InterfaceAdaptationOutcome`；裁剪模板指定 `InterfacePruningOutcome`，删除集合可先暂存到 `session.result`，执行成功后才交给现有聚合器累计，失败会清空。`readonly` 规则不能报告变化或删除对象。
-
-默认映射将实际 `RewriteResult.changes` 写入接口 Outcome；`RewriteResult.total` 为实际操作数，删除子树计一次。可选 `result_mapper(session, visitor, edits)` 在成功提交后整理既有报告语义，不返回新 Outcome，也不能再次修改 Document。模拟规则用 `simulation_result` 按实际编辑的 `category` 统计，语义子树删除可用 `count` 保持原有语句计数。ethertype 用自定义映射把删除与插入汇总为既有 `moved` 事件。不要把计划中未提交的动作计入报告；rule_id 由原聚合器补充。
-
-非 NNI、BGP 源、track 和接口绑定裁剪也使用同一套 `CiscoVisitorRule`。`NonNNIVisitor`、`MemberSourcesVisitor`、`TrackDependenciesVisitor` 和 `InterfaceBindingsVisitor` 在 `visitConfiguration` 中执行跨对象分析；分析器接收会话 Outcome 和记录回调，只产生诊断、删除集合与待删除节点，不创建或提交事务。
-
-这些规则复用业务基类 `PruningVisitor`：`record(node, path, reason, references)` 暂存删除事件，`finish()` 过滤已被祖先删除覆盖的后代动作，并通过 `session.edits` 声明实际删除。提交成功后 `pruning_result` 映射为已有的 `remove` 事件，保留路径、原因及来源接口；祖先覆盖的后代业务事件也保持原报告语义，因此业务事件数量可与底层操作数量不同。失败时不报告这些事件或删除集合。现有 `prune_*` 函数仅作为委托规则对象执行的兼容入口。
-
-Cisco 与 Juniper 五类内置注册集合分别登记 `CiscoVisitorRule` 和
-`JunosVisitorRule`。共享协议仍保留 `FunctionRule`，用于调用方已有的简单扩展，
-但默认内置规则不再依赖它。低层 `document.rewrite()` 仅供 Document、解析、清洗和
-托管规则执行器等基础设施使用，规则及其分析器不自行提交事务。
-
-未修改源码保留原空白、注释与换行；只格式化新增或移动片段。render 另行应用现有空块策略，不发布新修订。完整操作、冲突边界和生成代码维护方式见 [ANTLR4 说明](antlr-cisco.md)。
+`source` 按当前 AST 输出，`render()` 另外应用镜像策略。Cisco 每层一个空格，Junos
+每层四个空格；保留注释、banner 和字符串内容，统一 LF，不保证原始空白逐字一致。
+完整接口和示例见[手写 AST 指南](config-ast.md)。
 
 ## 从模板新增一条规则
 
@@ -196,7 +182,6 @@ Cisco 与 Juniper 五类内置注册集合分别登记 `CiscoVisitorRule` 和
 ```sh
 python3 scripts/check_method_lengths.py
 PYTHONPATH=src .venv/bin/python -m unittest discover -s tests -q
-python3 scripts/generate_antlr.py --jar /path/to/antlr-4.13.2-complete.jar --check
 ```
 
-ANTLR 生成文件通过专用生成一致性检查，不计入手写函数长度限制。长度检查默认检查工作区相对 HEAD 新增、修改的函数；传入文件路径时检查文件内所有函数。扩展测试至少覆盖作用范围、空集合、配置冲突、幂等性及真实 Document 注册入口；校验比较执行前后解析快照。运行机制测试见 `tests/test_cisco_rule_runtime.py`；真实裁剪规则的状态隔离、业务事件、删除集合传递和异常回滚见 `tests/test_cisco_managed_pruning.py`。
+所有手写源码执行相同的长度、复杂度和文档检查。扩展测试覆盖作用范围、空集合、冲突、幂等性和真实 Document 入口；状态比较使用树签名，不能依赖旧快照身份。规则回滚测试见 `tests/test_cisco_rule_runtime.py` 和 `tests/test_cisco_managed_pruning.py`。

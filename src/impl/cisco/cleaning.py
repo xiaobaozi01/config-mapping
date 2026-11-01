@@ -42,7 +42,7 @@ def clean_management_access(document: CiscoDocument) -> CleanupOutcome:
     需要保留，因此只递归删除其中的认证子命令而非整块。
     """
     outcome = CleanupOutcome()
-    transaction = document.rewrite()
+    transaction = document.edit()
     for block in document.root.nodes:
         if not block.active:
             continue
@@ -67,7 +67,7 @@ def clean_management_access(document: CiscoDocument) -> CleanupOutcome:
                 match_anywhere=True,
             )
             outcome.record("line-auth-reference", removed)
-    transaction.commit()
+    transaction.apply()
     return outcome
 
 
@@ -77,11 +77,11 @@ def add_lab_account(document: CiscoDocument) -> None:
     清除生产认证后必须建立已知的本地登录入口，否则输出设备无法接管；插在结束
     标记之前可确保账号落在配置主体内，又不破坏结束标记之后的任何内容。
     """
-    transaction = document.rewrite()
+    transaction = document.edit()
     account = (
         f"username {LAB_USERNAME}\n"
         f" secret 0 {LAB_PASSWORD}\n"
         " group root-system\n!\n"
     )
     append_top_level(transaction, document, account, "建立实验账号")
-    transaction.commit()
+    transaction.apply()

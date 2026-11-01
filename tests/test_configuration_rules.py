@@ -1,6 +1,5 @@
 """规则扩展、诊断收集和只读校验的行为约束。"""
 
-import copy
 import unittest
 from dataclasses import FrozenInstanceError
 from pathlib import Path
@@ -13,6 +12,7 @@ from impl.cisco.rules.support import (
     CiscoVisitorRule,
     simulation_result,
 )
+from impl.common.config_ast.model import tree_signature
 from impl.common.outcomes import (
     InterfacePruningOutcome,
     SimulationAdaptationOutcome,
@@ -32,7 +32,7 @@ FIXTURES = Path(__file__).parent / "fixtures"
 
 class SimulationMarkerVisitor(CiscoRuleVisitor):
 
-    def visitConfiguration(self, root):
+    def visit_configuration(self, root):
         self.session.edits.append_child(
             root,
             "description custom-simulation",
@@ -85,12 +85,12 @@ class ConfigurationRuleTest(unittest.TestCase):
     def test_validation_collects_all_rules_after_an_error(self):
         class FirstVisitor(CiscoRuleVisitor):
 
-            def visitConfiguration(self, root):
+            def visit_configuration(self, root):
                 self.session.result.errors.append("first-error")
 
         class LastVisitor(CiscoRuleVisitor):
 
-            def visitConfiguration(self, root):
+            def visit_configuration(self, root):
                 self.session.result.errors.append("last-error")
 
         rules = (
@@ -125,18 +125,12 @@ class ConfigurationRuleTest(unittest.TestCase):
             )
             with self.subTest(vendor=factory.vendor):
                 document = factory(source)
-                before = (
-                    document.snapshot
-                    if isinstance(document, CiscoDocument)
-                    else copy.deepcopy(document.root)
-                )
+                before = tree_signature(document.root)
                 result = document.validate_interfaces(targets, set())
                 self.assertTrue(result.errors)
                 self.assertTrue(result.diagnostics)
                 self.assertEqual(
-                    document.snapshot
-                    if isinstance(document, CiscoDocument)
-                    else document.root,
+                    tree_signature(document.root),
                     before,
                 )
 

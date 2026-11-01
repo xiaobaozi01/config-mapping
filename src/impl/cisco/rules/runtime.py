@@ -1,4 +1,4 @@
-"""ANTLR Visitor 规则的生命周期：选择、收集、提交、映射及失败恢复。"""
+"""AST Visitor 规则的生命周期：选择、收集、提交、映射及失败恢复。"""
 
 from __future__ import annotations
 
@@ -6,15 +6,16 @@ from collections.abc import Callable, Iterable
 from dataclasses import dataclass, field
 from typing import TYPE_CHECKING, Generic, TypeVar
 
+from impl.common.config_ast import ConfigVisitor
+from impl.common.config_ast.editor import EditResult, EditScope
+from impl.common.config_ast.model import tree_signature
 from impl.common.outcomes import (
     InterfaceAdaptationOutcome,
     InterfacePruningOutcome,
     SimulationAdaptationOutcome,
 )
 
-from ..antlr.context import CiscoContext
-from ..antlr.generated.CiscoParserVisitor import CiscoParserVisitor
-from ..antlr.rewriting import RewriteResult
+from ..ast import CiscoNode
 from .scopes import document_scope
 
 if TYPE_CHECKING:
@@ -47,6 +48,8 @@ class RuleEdits:
             "insert_before",
             "insert_after",
             "append_child",
+            "move",
+            "clone",
         }
     )
 
@@ -72,7 +75,7 @@ class RuleEdits:
 class RuleSession(Generic[ContextT, OutcomeT]):
     """保存单条规则执行期间的文档、上下文、结果和事务。
 
-    会话集中管理快照一致性、只读限制和提交，使各个 Visitor 无需重复实现生命周期。
+    会话集中管理树状态一致性、只读限制和提交，使各个 Visitor 无需重复实现生命周期。
     """
 
     def __init__(
@@ -89,9 +92,9 @@ class RuleSession(Generic[ContextT, OutcomeT]):
         self.document = document
         self.context = context
         self.result = result
-        self.snapshot = document.snapshot
+        self.baseline = tree_signature(document.root)
         self.readonly = readonly
-        self._transaction = None if readonly else document.rewrite()
+        self._transaction = None if readonly else document.edit()
         self._edits = None if readonly else RuleEdits(self._transaction)
 
     @property
@@ -104,23 +107,23 @@ class RuleSession(Generic[ContextT, OutcomeT]):
             raise RuleContractError("只读校验规则不能申请编辑")
         return self._edits
 
-    def assert_snapshot(self, snapshot):
-        """断言文档仍使用规则开始时的快照。
+    def assert_unchanged(self):
+        """Reject edits performed outside the controlled edit collector.
 
-        Context 只在原快照内有效，快照变化说明规则绕过了托管事务。
+        Visitors collect edits through their session; direct mutation would bypass the executor’s audit and rollback boundary.
         """
-        if self.document.snapshot is not snapshot:
-            raise RuleContractError("规则绕过执行器修改了文档快照")
+        if tree_signature(self.document.root) != self.baseline:
+            raise RuleContractError("规则绕过 Editor 修改了配置")
 
-    def _commit(self) -> RewriteResult:
-        """提交可编辑会话的重写事务。
+    def apply_edits(self):
+        """Apply collected operations after traversal has completed.
 
-        只读会话返回空结果，使执行器可以复用同一完成流程而不产生写操作。
+        Read-only sessions return an empty result without creating an editor or advancing the document revision.
         """
-        return RewriteResult() if self.readonly else self._transaction.commit()
+        return EditResult() if self.readonly else self._transaction.apply()
 
 
-class CiscoRuleVisitor(CiscoParserVisitor, Generic[ContextT, OutcomeT]):
+class CiscoRuleVisitor(ConfigVisitor, Generic[ContextT, OutcomeT]):
     """为 Cisco 规则提供会话绑定和完成钩子。
 
     finish 在所有访问根处理完后调用一次，使跨节点动作可以延迟到完整分析后再提交。
@@ -162,7 +165,7 @@ def _has_errors(result):
 def _discard_changes(result):
     """清除失败规则已经收集的变更统计。
 
-    除恢复文档快照外还要清理结果对象，避免报告把未提交动作描述为成功。
+    除恢复文档树状态外还要清理结果对象，避免报告把未提交动作描述为成功。
     """
     if isinstance(result, InterfaceAdaptationOutcome):
         result.changes.clear()
@@ -184,24 +187,30 @@ def _default_result(session, visitor, edits):
     session.result.changes[:] = edits.changes
 
 
-def _validate_roots(roots, snapshot):
-    """校验访问根属于同一快照且不存在祖先后代重叠。
+def _validate_roots(roots, document_root):
+    """校验访问根属于同一树状态且不存在祖先后代重叠。
 
     重复覆盖会导致同一子树被多次编辑并触发冲突，因此在 Visitor 启动前统一拒绝。
     """
+    members = {
+        id(node)
+        for node in document_root.walk(
+            include_self=True, include_formatting=True
+        )
+    }
     identities = set()
     for root in roots:
-        if not isinstance(root, CiscoContext) or root.snapshot is not snapshot:
-            raise RuleContractError("访问根不属于当前文档快照")
+        if not isinstance(root, CiscoNode) or id(root) not in members:
+            raise RuleContractError("访问根不属于当前文档树状态")
         if id(root) in identities:
             raise RuleContractError("访问根不能重复")
         identities.add(id(root))
     for root in roots:
-        parent = root.parentCtx
+        parent = root.parent
         while parent is not None:
             if id(parent) in identities:
                 raise RuleContractError("访问根不能同时包含祖先和后代")
-            parent = parent.parentCtx
+            parent = parent.parent
 
 
 def _check_readonly_result(result):
@@ -225,15 +234,15 @@ def _check_readonly_result(result):
 class CiscoVisitorRule(Generic[ContextT, OutcomeT]):
     """声明 Visitor 工厂、选择范围、条件和结果映射。
 
-    dataclass 让规则注册保持声明式，同时由 apply 统一执行快照校验和失败恢复。
+    dataclass 让规则注册保持声明式，同时由 apply 统一执行树签名校验和失败恢复。
     """
 
     rule_id: str
     visitor_factory: Callable[
         [RuleSession[ContextT, OutcomeT]], CiscoRuleVisitor[ContextT, OutcomeT]
     ]
-    selector: Callable[[CiscoDocument, ContextT], Iterable[CiscoContext]] = (
-        field(default=document_scope)
+    selector: Callable[[CiscoDocument, ContextT], Iterable[CiscoNode]] = field(
+        default=document_scope
     )
     condition: Callable[[ContextT], bool] = field(default=always)
     readonly: bool = False
@@ -245,7 +254,7 @@ class CiscoVisitorRule(Generic[ContextT, OutcomeT]):
             [
                 RuleSession[ContextT, OutcomeT],
                 CiscoRuleVisitor[ContextT, OutcomeT],
-                RewriteResult,
+                EditResult,
             ],
             None,
         ]
@@ -260,77 +269,79 @@ class CiscoVisitorRule(Generic[ContextT, OutcomeT]):
         return self.condition(context)
 
     def apply(self, document: CiscoDocument, context: ContextT) -> OutcomeT:
-        """执行 Visitor 规则并返回提交后或清理后的结果。
+        """Run a rule against the AST and restore its backup on failure.
 
-        每次执行都校验原始快照、访问根和结果类型，任何异常都会恢复文档并清除变更。
+        A failed edit or rule restores the tree backup; completed edits are exposed only through the returned result.
         """
-        original = document.snapshot
-        result = None
-        try:
-            result = self.outcome_factory()
-            if not isinstance(
-                result,
-                (InterfaceAdaptationOutcome, SimulationAdaptationOutcome),
-            ):
-                raise RuleContractError("规则工厂必须返回受支持的 Outcome")
-            if document.snapshot is not original:
-                raise RuleContractError("Outcome 工厂不能修改文档")
-            session = RuleSession(document, context, result, self.readonly)
-            roots = tuple(self.selector(document, context))
-            _validate_roots(roots, original)
-            session.assert_snapshot(original)
-            if roots:
-                visitor = self._visit(session, roots)
-                self._finish(session, visitor)
-            return result
-        except Exception:
-            if isinstance(
-                result,
-                (InterfaceAdaptationOutcome, SimulationAdaptationOutcome),
-            ):
-                _discard_changes(result)
-            if document.snapshot is not original:
-                document._publish(original)
-            raise
+        with EditScope(document, independent=True) as scope:
+            original = scope.backup
+            result = None
+            try:
+                result = self.outcome_factory()
+                if not isinstance(
+                    result,
+                    (InterfaceAdaptationOutcome, SimulationAdaptationOutcome),
+                ):
+                    raise RuleContractError("规则工厂必须返回受支持的 Outcome")
+                if tree_signature(document.root) != tree_signature(original):
+                    raise RuleContractError("Outcome 工厂不能修改配置")
+                session = RuleSession(document, context, result, self.readonly)
+                roots = tuple(self.selector(document, context))
+                _validate_roots(roots, document.root)
+                session.assert_unchanged()
+                if roots:
+                    visitor = self._visit(session, roots)
+                    self._finish(session, visitor)
+                if _has_errors(result):
+                    if tree_signature(original) != tree_signature(
+                        document.root
+                    ):
+                        scope.rollback()
+                    _discard_changes(result)
+                return result
+            except Exception:
+                if isinstance(
+                    result,
+                    (InterfaceAdaptationOutcome, SimulationAdaptationOutcome),
+                ):
+                    _discard_changes(result)
+                scope.rollback()
+                raise
 
     def _visit(self, session, roots):
-        """创建访问器并逐个执行访问根。
+        """Traverse selected nodes before applying collected edits.
 
-        每个根处理后检查快照，使直接修改文档的违规 Visitor 立即暴露。
+        All selected roots share one visitor instance, and finish runs once after their callbacks complete.
         """
         visitor = self.visitor_factory(session)
         if (
             not isinstance(visitor, CiscoRuleVisitor)
-            or getattr(visitor, "session", None) is not session
+            or visitor.session is not session
         ):
-            raise RuleContractError("Visitor 工厂必须返回 CiscoRuleVisitor")
-        session.assert_snapshot(session.snapshot)
+            raise RuleContractError(
+                "Visitor 工厂必须返回绑定当前会话的 CiscoRuleVisitor"
+            )
         for root in roots:
             visitor.visit(root)
-            session.assert_snapshot(session.snapshot)
         visitor.finish()
-        session.assert_snapshot(session.snapshot)
+        session.assert_unchanged()
         return visitor
 
     def _finish(self, session, visitor):
-        """校验结果、提交事务并执行结果映射。
+        """Apply edits and map audit results, enforcing read-only rules.
 
-        错误状态优先于提交，确保失败规则不会发布配置；提交后再次确认快照和只读约束。
+        Result mapping is checked for unexpected mutations so reporting cannot introduce unaudited configuration changes.
         """
         if self.readonly:
             _check_readonly_result(session.result)
         if _has_errors(session.result):
-            _discard_changes(session.result)
             return
-        edits = session._commit()
-        committed = session.document.snapshot
+        edits = session.apply_edits()
+        baseline = tree_signature(session.document.root)
         mapper = self.result_mapper or _default_result
         mapper(session, visitor, edits)
-        session.assert_snapshot(committed)
-        if _has_errors(session.result):
-            if session.document.snapshot is not session.snapshot:
-                session.document._publish(session.snapshot)
-            _discard_changes(session.result)
+        if tree_signature(session.document.root) != baseline:
+            raise RuleContractError("结果映射不能修改配置")
         if self.readonly:
             _check_readonly_result(session.result)
 

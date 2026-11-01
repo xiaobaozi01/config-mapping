@@ -145,7 +145,7 @@ class CiscoGroupExpander:
     def top_level_nodes(self, nodes: list[_GroupStatement]) -> None:
         """用展开后的语句树原子替换正式文档内容。
 
-        替换只经由发布事务执行，使任何解析失败都维持原快照。
+        替换只经由发布事务执行，使任何解析失败都维持原树状态。
         """
         publish_expansion(self._document, nodes)
 
@@ -1074,7 +1074,7 @@ def render_statements(
 ) -> list[str]:
     """把 group 工作语句渲染为带缩进的配置行。
 
-    该渲染仅服务候选事务，保留格式和注释后再交给正式文档重解析。
+    该渲染仅服务候选事务，保留格式和注释后再交给Editor 作为新片段解析。
     """
     lines = []
     for node in nodes:
@@ -1120,7 +1120,7 @@ def publish_expansion(document, statements):
     for statement in statements:
         if not statement.is_formatting:
             candidates[statement.header].append(statement)
-    transaction = document.rewrite()
+    transaction = document.edit()
     consumed = set()
     for context in document.root.nodes:
         if context.is_formatting:
@@ -1140,7 +1140,7 @@ def publish_expansion(document, statements):
             append_top_level(
                 transaction, document, text, "新增 group 继承配置块"
             )
-    transaction.commit()
+    transaction.apply()
 
 
 def _rollback_expansion(outcome: GroupExpansionOutcome) -> None:

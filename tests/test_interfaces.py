@@ -141,7 +141,7 @@ class JunosInterfaceClassificationTest(unittest.TestCase):
                 for child in target.nodes
                 if child.header.startswith("mtu ")
             ],
-            ["mtu 9192;"],
+            ["mtu 9192"],
         )
         for unit in document._unit_nodes(target):
             self.assertFalse(

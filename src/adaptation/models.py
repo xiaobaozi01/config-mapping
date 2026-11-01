@@ -59,7 +59,10 @@ class Vendor(StrEnum):
 
     @property
     def rule_prefix(self) -> str:
-        """返回规则标识和配置目录使用的厂商短名。"""
+        """返回规则标识和配置目录使用的厂商短名。
+
+        该领域值用于阶段输入或报告输出，保持统一定义可避免调用方各自解释相同状态。
+        """
         if self is Vendor.CISCO_IOSXR:
             return "cisco"
         if self is Vendor.JUNIPER_JUNOS:
@@ -68,7 +71,10 @@ class Vendor(StrEnum):
 
     @property
     def target_image(self) -> str:
-        """返回厂商默认目标镜像名。"""
+        """返回厂商默认目标镜像名。
+
+        该领域值用于阶段输入或报告输出，保持统一定义可避免调用方各自解释相同状态。
+        """
         if self is Vendor.CISCO_IOSXR:
             return "xrv9000"
         if self is Vendor.JUNIPER_JUNOS:
@@ -77,14 +83,20 @@ class Vendor(StrEnum):
 
 
 class MappingRole(StrEnum):
-    """定义接口映射在拓扑中的业务角色。"""
+    """定义接口映射在拓扑中的业务角色。
+
+    该领域值用于阶段输入或报告输出，保持统一定义可避免调用方各自解释相同状态。
+    """
 
     NNI = "NNI"
     NON_NNI = "NON_NNI"
 
 
 class MappingAction(StrEnum):
-    """定义接口映射允许的稳定动作及其序列化值。"""
+    """定义接口映射允许的稳定动作及其序列化值。
+
+    该领域值用于阶段输入或报告输出，保持统一定义可避免调用方各自解释相同状态。
+    """
 
     MAP = "map"
     MAP_MEMBER = "map-member"
@@ -95,7 +107,10 @@ class MappingAction(StrEnum):
 
 
 class EventKind(StrEnum):
-    """定义转换报告中的稳定事件分类。"""
+    """定义转换报告中的稳定事件分类。
+
+    该领域值用于阶段输入或报告输出，保持统一定义可避免调用方各自解释相同状态。
+    """
 
     BUNDLE_ADAPTATION = "bundle-adaptation"
     BUNDLE_ADAPTATION_WARNING = "bundle-adaptation-warning"
@@ -194,7 +209,10 @@ class InterfaceMapping:
     reason: str = ""
 
     def __post_init__(self) -> None:
-        """校验并规范化接口映射角色和动作。"""
+        """校验并规范化接口映射角色和动作。
+
+        该领域值用于阶段输入或报告输出，保持统一定义可避免调用方各自解释相同状态。
+        """
         try:
             self.role = MappingRole(self.role)
         except ValueError as exc:

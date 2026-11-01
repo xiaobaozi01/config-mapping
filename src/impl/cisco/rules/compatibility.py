@@ -88,12 +88,12 @@ class AggregationAttributesVisitor(CiscoRuleVisitor):
         self.members = session.document.bundle_members()
         self.interface = None
 
-    def visitNode(self, node):
+    def visit_node(self, node):
         """检查一个节点并登记聚合属性的删除或迁移。
 
         只处理目标接口作用域，所有编辑通过托管会话收集后统一提交。
         """
-        if node.parentCtx is self.session.document.root:
+        if node.parent is self.session.document.root:
             self.interface = node.interface_name
             if self.interface in self.members:
                 return None
@@ -102,7 +102,7 @@ class AggregationAttributesVisitor(CiscoRuleVisitor):
                 node, "目标非聚合接口不保留聚合属性", interface=self.interface
             )
             return None
-        return self.visitChildren(node)
+        return self.visit_children(node)
 
 
 class EthertypeVisitor(CiscoRuleVisitor):
@@ -123,7 +123,7 @@ class EthertypeVisitor(CiscoRuleVisitor):
         self.additions = {}
         self.moves = []
 
-    def visitNode(self, block):
+    def visit_node(self, block):
         """处理一个接口块中的 ethertype 命令。
 
         冲突值只报告错误；无冲突时删除子接口命令并记录一次主口添加。
@@ -179,7 +179,9 @@ class EthertypeVisitor(CiscoRuleVisitor):
         for name, nodes in self.additions.items():
             if not nodes:
                 continue
-            text = "".join(node.text for node in nodes)
+            text = "".join(
+                self.session.document.writer.subtree(node) for node in nodes
+            )
             parent = self.parents.get(name)
             if parent is not None:
                 self.session.edits.append_child(
@@ -260,9 +262,7 @@ def l2vpn_scope(document, context):
     )
 
 
-def _validate_command_types(
-    name, command, kind, l2, unit, outcome, session
-):
+def _validate_command_types(name, command, kind, l2, unit, outcome, session):
     """校验单条命令与接口类型及层级的匹配关系。
 
     所有非法组合追加到同一结果，使一次转换可以完整报告需要人工处理的冲突。
@@ -271,19 +271,19 @@ def _validate_command_types(
         _record_input_semantic(
             session,
             outcome,
-            f"L2 接口 {name} 不能包含三层地址或 VRF 命令: {command}"
+            f"L2 接口 {name} 不能包含三层地址或 VRF 命令: {command}",
         )
     if l2 and re.match(r"^mac(?:-|\s+)address\b", command, re.IGNORECASE):
         _record_input_semantic(
             session,
             outcome,
-            f"L2 接口 {name} 不能包含三层 MAC 地址命令: {command}"
+            f"L2 接口 {name} 不能包含三层 MAC 地址命令: {command}",
         )
     if not l2 and re.match(r"^rewrite\b", command, re.IGNORECASE):
         _record_input_semantic(
             session,
             outcome,
-            f"三层接口 {name} 不能包含 L2 标签改写命令: {command}"
+            f"三层接口 {name} 不能包含 L2 标签改写命令: {command}",
         )
     if kind == InterfaceKind.GATEWAY and re.match(
         r"^(?:encapsulation|rewrite)\b", command, re.IGNORECASE
@@ -291,7 +291,7 @@ def _validate_command_types(
         _record_input_semantic(
             session,
             outcome,
-            f"BVI 接口 {name} 不能包含以太网子接口命令: {command}"
+            f"BVI 接口 {name} 不能包含以太网子接口命令: {command}",
         )
     if (
         kind in {InterfaceKind.PHYSICAL, InterfaceKind.BUNDLE}
@@ -301,7 +301,7 @@ def _validate_command_types(
         _record_input_semantic(
             session,
             outcome,
-            f"物理主口 {name} 不能包含子接口封装命令: {command}"
+            f"物理主口 {name} 不能包含子接口封装命令: {command}",
         )
     if (
         kind == InterfaceKind.PHYSICAL
@@ -329,7 +329,7 @@ class EndVisitor(CiscoRuleVisitor):
         super().__init__(session)
         self.ended = False
 
-    def visitNode(self, node):
+    def visit_node(self, node):
         """检查当前节点相对于终止标记的位置。
 
         格式节点被忽略，使空行和叹号不会改变活动配置判断。
@@ -342,7 +342,7 @@ class EndVisitor(CiscoRuleVisitor):
             _record_input_semantic(
                 self.session,
                 self.session.result,
-                f"配置终止标记 end 后存在活动配置: {node.header.split()[0]}"
+                f"配置终止标记 end 后存在活动配置: {node.header.split()[0]}",
             )
         return None
 
@@ -353,7 +353,7 @@ class ScalarValuesVisitor(CiscoRuleVisitor):
     同一语义槽位出现不同值时设备结果依赖顺序，规则必须报错而不能任意选择。
     """
 
-    def visitNode(self, block):
+    def visit_node(self, block):
         """检查一个接口块的直接单值命令。
 
         每个接口独立维护已见值，避免不同接口的相同命令被误判为冲突。
@@ -376,7 +376,7 @@ class ScalarValuesVisitor(CiscoRuleVisitor):
                         self.session,
                         self.session.result,
                         f"接口 {block.interface_name} 的单值配置 "
-                        f"{' '.join(decision.identity)} 存在冲突"
+                        f"{' '.join(decision.identity)} 存在冲突",
                     )
         return None
 
@@ -400,7 +400,7 @@ class InterfaceTypesVisitor(CiscoRuleVisitor):
             for block in interface_nodes(session.document)
         }
 
-    def visitNode(self, block):
+    def visit_node(self, block):
         """检查接口块的角色、层级和直接命令。
 
         先验证接口整体角色，再逐条验证命令，能够给出更具体的错误位置。
@@ -451,7 +451,7 @@ class BundleBindingsVisitor(CiscoRuleVisitor):
         super().__init__(session)
         self.members = session.document.bundle_members()
 
-    def visitNode(self, block):
+    def visit_node(self, block):
         """把成员绑定歧义作为始终阻断的完整性错误。
 
         无法唯一确定 Bundle 时不能猜测目标聚合关系。
@@ -461,9 +461,7 @@ class BundleBindingsVisitor(CiscoRuleVisitor):
             name in self.members
             and self.session.document.bundle_mode(name) == BundleMode.UNKNOWN
         ):
-            self.session.result.errors.append(
-                f"聚合成员 {name} 包含冲突绑定"
-            )
+            self.session.result.errors.append(f"聚合成员 {name} 包含冲突绑定")
         return None
 
 
@@ -481,7 +479,7 @@ class CompatibleCommandsVisitor(CiscoRuleVisitor):
         super().__init__(session)
         self.members = session.document.bundle_members()
 
-    def visitNode(self, block):
+    def visit_node(self, block):
         """扫描接口块的直接命令并生成兼容性诊断。
 
         已覆盖命令族只做基本检查，未覆盖命令族保留并提示镜像人工核验。
@@ -525,7 +523,7 @@ class L2vpnVisitor(CiscoRuleVisitor):
             for block in interface_nodes(session.document)
         }
 
-    def visitNode(self, node):
+    def visit_node(self, node):
         """检查一条 L2VPN 接口引用并继续遍历子树。
 
         routed 和 attachment 语法分别验证，以产生准确且互不混淆的错误。
@@ -542,13 +540,13 @@ class L2vpnVisitor(CiscoRuleVisitor):
                 _record_input_semantic(
                     self.session,
                     outcome,
-                    f"L2VPN routed interface 必须引用 BVI，不能引用 {name}"
+                    f"L2VPN routed interface 必须引用 BVI，不能引用 {name}",
                 )
             elif name not in self.blocks:
                 _record_input_semantic(
                     self.session,
                     outcome,
-                    f"L2VPN routed interface 引用不存在的 BVI: {name}"
+                    f"L2VPN routed interface 引用不存在的 BVI: {name}",
                 )
         elif attachment:
             name = document.resolve_interface(attachment.group(1))
@@ -557,7 +555,7 @@ class L2vpnVisitor(CiscoRuleVisitor):
                 _record_input_semantic(
                     self.session,
                     outcome,
-                    f"L2VPN 接入接口 {name} 必须配置 l2transport"
+                    f"L2VPN 接入接口 {name} 必须配置 l2transport",
                 )
             elif target is None and _in_scope(name, self.parents):
                 _record_input_semantic(
@@ -565,7 +563,7 @@ class L2vpnVisitor(CiscoRuleVisitor):
                     outcome,
                     f"L2VPN 引用不存在的目标接入接口: {name}",
                 )
-        return self.visitChildren(node)
+        return self.visit_children(node)
 
 
 class RemovedReferencesVisitor(CiscoRuleVisitor):
@@ -590,7 +588,7 @@ class RemovedReferencesVisitor(CiscoRuleVisitor):
             for reference in session.context.deferred_interface_references
         }
 
-    def visitNode(self, node):
+    def visit_node(self, node):
         """检查当前命令中的残留接口引用。
 
         描述和备注属于说明文本，不参与接口依赖判断。
@@ -611,7 +609,7 @@ class RemovedReferencesVisitor(CiscoRuleVisitor):
                         f"残留已删除接口引用: {' / '.join(path)}; "
                         f"接口 {', '.join(sorted(unexpected))}"
                     )
-        return self.visitChildren(node)
+        return self.visit_children(node)
 
 
 END_RULE = CiscoVisitorRule("cisco.validate.end", EndVisitor, readonly=True)

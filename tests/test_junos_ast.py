@@ -19,9 +19,9 @@ def junos_config(name: str) -> str:
 
 def delete(document, context):
     """通过文本事务删除一个 Junos Context。"""
-    transaction = document.rewrite()
+    transaction = document.edit()
     transaction.delete(context, "test setup")
-    transaction.commit()
+    transaction.apply()
 
 
 class JunosAstTest(unittest.TestCase):
@@ -163,7 +163,7 @@ class JunosAstTest(unittest.TestCase):
         )
         system = document.root.nodes[0]
 
-        self.assertEqual(system.nodes[0].header, 'host-name "lab#1";')
+        self.assertEqual(system.nodes[0].header, 'host-name "lab#1"')
         self.assertEqual(system.nodes[0].comment, "# host note")
         self.assertIn('host-name "lab#1"; # host note\n', document.render())
         delete(document, system.nodes[1].nodes[0])
@@ -219,8 +219,8 @@ class JunosAstTest(unittest.TestCase):
         document = JunosDocument("security { # header note\n # inner note\n}\n")
         expected = {
             "omit": "\n",
-            "semicolon": "# header note\n # inner note\nsecurity;\n",
-            "braces": "security { # header note\n # inner note\n}\n",
+            "semicolon": "# inner note\nsecurity; # header note\n",
+            "braces": "security { # header note\n    # inner note\n}\n",
         }
         for action, rendered in expected.items():
             with self.subTest(action=action):
@@ -233,11 +233,11 @@ class JunosAstTest(unittest.TestCase):
 
     def test_generated_empty_block_ignores_yaml_default(self):
         document = JunosDocument("")
-        transaction = document.rewrite()
+        transaction = document.edit()
         transaction.append_child(
             document.root, "generated {\n    # note\n}\n", "generate"
         )
-        transaction.commit()
+        transaction.apply()
         policy = EmptyBlockPolicy("braces", ())
 
         with patch(

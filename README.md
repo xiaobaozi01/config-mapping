@@ -2,7 +2,7 @@
 
 将 IOS XR 和 Junos 大括号配置转换为适用于 GNS3 XRv9000/vMX 的配置。第一次接触项目请从 [新人导读](docs/onboarding-guide.md) 开始；需求基线见 [docs/requirements.md](docs/requirements.md)，完整转换过程见 [docs/processing-flow.md](docs/processing-flow.md)，新增 group 语义规则见 [语义 identity 规则编写指南](docs/semantic-rule-authoring.md)。裁剪、适配、模拟与校验的扩展方式见 [配置处理规则指南](docs/configuration-rule-authoring.md)。
 
-Cisco 使用 [ANTLR4 解析与原子文本重写](docs/antlr-cisco.md)，Juniper 使用独立的 [Junos ANTLR4 解析与重写](docs/antlr-juniper.md)。两家厂商的源码与解析快照都是唯一配置状态；业务规则通过只读 Context 查询，并由 Visitor 会话和文本事务统一提交。Cisco 可运行模板位于 `impl/cisco/rules/examples.py`，规则编写入口见[配置处理规则指南](docs/configuration-rule-authoring.md)，简单清洗继续使用现有 YAML。
+Cisco 和 Juniper 使用纯 Python 手写 Parser 和可变 AST，提供统一 Visitor、Listener、Editor 和 Writer。规则失败时恢复树副本，输出统一排版；详见[手写 AST 指南](docs/config-ast.md)。Cisco 可运行规则模板位于 `impl/cisco/rules/examples.py`，简单清洗继续使用 YAML。
 
 拓扑预检后会展开常见的 IOS XR `group/apply-group` 和 Junos `groups/apply-groups` 配置，使继承的接口及认证配置进入后续转换。已应用 group 无法静态求值时转换失败，不输出可能不完整的设备配置。
 
@@ -10,9 +10,9 @@ group 展开是事务式的，并遵循显式配置、嵌套层级和 group 列�
 
 ## 代码边界
 
-- `impl/cisco/`：IOS XR ANTLR Context、事务、Group、接口、清洗、模拟适配及 XRv9000 规则。
-- `impl/juniper/`：Junos ANTLR Context、事务、Group、接口、清洗、模拟适配及 vMX 规则。
-- `impl/common/`：两家厂商共享的接口类型、操作结果、策略、不变量和语义 identity 引擎。
+- `impl/cisco/`：IOS XR Parser、AST、Writer、Group、接口、清洗、模拟适配及 XRv9000 规则。
+- `impl/juniper/`：Junos Parser、AST、Writer、Group、接口、清洗、模拟适配及 vMX 规则。
+- `impl/common/`：两家厂商共享的 AST、遍历、Editor、接口类型、操作结果、策略、不变量和语义 identity 引擎。
 - `impl/common/contracts.py`：Cisco 与 Juniper 显式实现的稳定厂商能力协议，厂商 AST 不向流程层泄漏。
 - `adaptation/topology.py`：Excel 拓扑读取、预检和输出。
 - `adaptation/groups.py`：Group 展开的跨设备调度和诊断汇总。
@@ -39,7 +39,7 @@ group 展开是事务式的，并遵循显式配置、嵌套层级和 group 列�
 - `group_configs/`：独立的厂商 group 优先级、通配、`inactive`/`protect`、引号组名与 `apply-groups-except` 配置。
 - `washing_configs/`：管理面必清项、默认保留项及五类扩展清洗样例。
 - `simulation_adaptation/`：目标镜像模拟参数适配与幂等性样例。
-- `cisco_ast/`：IOS XR 配置层级、`!` 边界与编辑样例；ANTLR 原文保留及事务样例另见 `antlr_cisco/`。
+- `cisco_ast/`：IOS XR 配置层级、`!` 边界与编辑样例；历史解析和编辑回归样例另见 `antlr_cisco/`。
 - `junos_ast/`：Junos 行内块、注释、hostname 与括号边界样例。
 - `semantic_identity/`：规则 identity 覆盖关系与未知语句降级样例。
 - `interfaces/`：接口识别、业务闭包分析与 BVI/VLAN 推断样例。

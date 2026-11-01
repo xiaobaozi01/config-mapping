@@ -12,10 +12,12 @@ from impl.common.outcomes import (
 )
 
 if TYPE_CHECKING:
-    from ..document import JunosDocument, _WorkNode
+    from ..document import JuniperNode, JunosDocument
 
 
-def _walk(document: JunosDocument, node: _WorkNode, path: tuple[str, ...] = ()):
+def _walk(
+    document: JunosDocument, node: JuniperNode, path: tuple[str, ...] = ()
+):
     """递归遍历活动节点并保留厂商语法路径。
 
     报告需要定位到原始层级，因此这里不把路径转换成跨厂商名称。

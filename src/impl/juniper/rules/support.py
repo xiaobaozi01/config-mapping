@@ -1,9 +1,9 @@
 """Junos 规则编写入口：Context、Visitor、会话和编辑工具。"""
 
-from ..antlr.context import JunosContext
-from ..antlr.generated.JunosParserListener import JunosParserListener
-from ..antlr.generated.JunosParserVisitor import JunosParserVisitor
-from ..antlr.rewriting import RewriteConflictError, format_fragment
+from impl.common.config_ast import ConfigListener, ConfigVisitor
+from impl.common.config_ast.editor import EditConflictError, format_fragment
+
+from ..ast import JuniperNode
 from .runtime import (
     JunosRuleVisitor,
     JunosVisitorRule,
@@ -14,12 +14,12 @@ from .runtime import (
 )
 
 __all__ = [
-    "JunosContext",
-    "JunosParserListener",
-    "JunosParserVisitor",
+    "ConfigListener",
+    "ConfigVisitor",
+    "EditConflictError",
+    "JuniperNode",
     "JunosRuleVisitor",
     "JunosVisitorRule",
-    "RewriteConflictError",
     "RuleContractError",
     "RuleEdits",
     "RuleSession",

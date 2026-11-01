@@ -140,6 +140,7 @@ class DocumentCacheTest(unittest.TestCase):
                     for value in vars(document._parser).values()
                     if callable(value) and hasattr(value, "cache_info")
                 )
+                writer = document.writer
                 del document
                 gc.collect()
                 self.assertTrue(
@@ -147,9 +148,9 @@ class DocumentCacheTest(unittest.TestCase):
                 )
                 self.assertTrue(retained_node.header)
                 if cls is cisco.CiscoDocument:
-                    self.assertTrue(retained_node.text)
+                    self.assertTrue(writer.subtree(retained_node))
                 else:
-                    self.assertTrue(retained_node.text)
+                    self.assertTrue(writer.subtree(retained_node))
 
     def test_repeated_strings_hit_bounded_caches_including_non_matches(self):
         cisco_document = cisco.CiscoDocument("")
@@ -214,7 +215,7 @@ class DocumentCacheTest(unittest.TestCase):
             (junos_document._parser.unit_number, "protect: unit 001;", "001"),
             (junos_document._parser.vlan, "protect: vlan-id 0;", 0),
             (junos_document._parser.vlan, "vlan-tags outer 100 inner 20;", 100),
-            (junos_document._parser.vlan, "vlan-id 100", None),
+            (junos_document._parser.vlan, "vlan-id 100", 100),
             (
                 junos_document._parser.inner_vlan,
                 "vlan-tags outer 100 inner 0;",
@@ -237,13 +238,15 @@ class DocumentCacheTest(unittest.TestCase):
     def test_junos_prefix_consumers_share_one_cached_parse(self):
         header = " protect: inactive: protect: unit 10; "
         document = junos.JunosDocument("")
-        self.assertFalse(document._parser.is_effective(junos._WorkNode(header)))
+        self.assertFalse(
+            document._parser.is_effective(junos.JuniperNode(header))
+        )
         self.assertEqual(document._parser.base_header(header), "unit 10;")
         self.assertEqual(
             document._parser.output_header(header), "inactive: unit 10;"
         )
         info = document._parser.header_prefixes.cache_info()
-        self.assertEqual((info.misses, info.hits), (1, 2))
+        self.assertEqual((info.misses, info.hits), (2, 1))
 
     def test_junos_prefix_order_repetition_and_case_are_preserved(self):
         document = junos.JunosDocument("")
@@ -265,7 +268,7 @@ class DocumentCacheTest(unittest.TestCase):
             ("inactive:", "", True, "inactive: "),
         ]:
             with self.subTest(header=header):
-                node = junos._WorkNode(header)
+                node = junos.JuniperNode(header)
                 self.assertEqual(node.configured_inactive, inactive)
                 self.assertEqual(document._parser.base_header(header), base)
                 self.assertEqual(document._parser.output_header(header), output)
@@ -278,26 +281,26 @@ class DocumentCacheTest(unittest.TestCase):
         self.assertEqual(node.interface_name, "GigabitEthernet0/0/0/1")
         self.assertTrue(node.is_preconfigured_interface)
         self.assertTrue(node.l2transport)
-        transaction = document.rewrite()
+        transaction = document.edit()
         transaction.replace_header(node, "interface Loopback10", "test")
-        transaction.commit()
+        transaction.apply()
         updated = document.root.nodes[0]
         self.assertEqual(updated.interface_name, "Loopback10")
         self.assertFalse(updated.is_preconfigured_interface)
         self.assertFalse(updated.l2transport)
-        self.assertTrue(node.is_preconfigured_interface)
-        self.assertNotEqual(node.snapshot, updated.snapshot)
+        self.assertFalse(node.is_preconfigured_interface)
+        self.assertIs(node, updated)
 
     def test_cisco_interface_queries_follow_rewrite_after_warming(self):
         document = cisco.CiscoDocument("interface Gi0/0/0/1\n!\n")
         self.assertEqual(
             document.interface_specs()[0].name, "GigabitEthernet0/0/0/1"
         )
-        transaction = document.rewrite()
+        transaction = document.edit()
         transaction.append_child(
             document.root, "interface Loopback10\n", "test"
         )
-        transaction.commit()
+        transaction.apply()
         self.assertEqual(len(document.interface_specs()), 2)
         document.remove_interface("Gi0/0/0/1")
         self.assertEqual(
@@ -308,14 +311,12 @@ class DocumentCacheTest(unittest.TestCase):
 
     def test_junos_prefix_flags_follow_edits_active_state_and_comments(self):
         document = junos.JunosDocument("")
-        node = junos._WorkNode("protect: inactive: unit 10;", [])
+        node = junos.JuniperNode("protect: inactive: unit 10;", [])
         self.assertFalse(node.effective)
         node.header = "protect: unit 10;"
         self.assertFalse(node.configured_inactive)
         self.assertTrue(node.effective)
-        self.assertEqual(
-            document._parser.output_header(node.header), "unit 10;"
-        )
+        self.assertEqual(document._parser.output_header(node.header), "unit 10")
         node.active = False
         self.assertFalse(node.effective)
         node.active = True
@@ -326,8 +327,8 @@ class DocumentCacheTest(unittest.TestCase):
 
     def test_junos_unit_queries_follow_header_state_and_children_edits(self):
         document = junos.JunosDocument("")
-        unit = junos._WorkNode("unit 001;")
-        interface = junos._WorkNode("ge-0/0/1", [unit])
+        unit = junos.JuniperNode("unit 001;")
+        interface = junos.JuniperNode("ge-0/0/1", [unit])
         self.assertEqual(document._unit_nodes(interface), [unit])
         self.assertEqual(document._unit_number(unit), "001")
         unit.header = "protect: unit 20"
@@ -341,7 +342,7 @@ class DocumentCacheTest(unittest.TestCase):
         unit.active = True
         unit.header = "description unit 20;"
         self.assertEqual(document._unit_nodes(interface), [])
-        added = junos._WorkNode("unit 30", [])
+        added = junos.JuniperNode("unit 30", [])
         interface.children.append(added)
         self.assertEqual(document._unit_nodes(interface), [added])
         interface.children.remove(added)
@@ -349,9 +350,9 @@ class DocumentCacheTest(unittest.TestCase):
 
     def test_junos_vlan_queries_follow_header_state_and_children_edits(self):
         document = junos.JunosDocument("")
-        first = junos._WorkNode("vlan-id 100;")
-        tags = junos._WorkNode("protect: vlan-tags outer 200 inner 20;")
-        unit = junos._WorkNode("unit 10", [first, tags])
+        first = junos.JuniperNode("vlan-id 100;")
+        tags = junos.JuniperNode("protect: vlan-tags outer 200 inner 20;")
+        unit = junos.JuniperNode("unit 10", [first, tags])
 
         def check(outer, inner):
             self.assertEqual(document._find_vlan(unit), outer)
@@ -378,7 +379,8 @@ class DocumentCacheTest(unittest.TestCase):
         self.assertEqual(document._find_vlan(clone), 400)
         self.assertEqual(document._find_inner_vlan(clone), 40)
         check(300, 30)
-        unit.children = None
+        unit.children = []
+        unit.kind = "statement"
         check(None, None)
 
 

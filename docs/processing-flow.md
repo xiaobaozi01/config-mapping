@@ -142,7 +142,7 @@ NNI 中的聚合链路识别先由纯函数 `plan_nni_components()` 生成不可
 
 `InterfaceClassificationHandler` 使用厂商物理接口白名单分类接口。已知虚拟接口和未知接口均不参与 NNI 物理端口分配；未知接口原样保留并写入告警，若链接表把非物理接口作为端点则转换失败。
 
-`interface preconfigure` 表示源设备硬件尚未插入时保存的物理接口候选配置。系统按“当前设备已经实例化并生效的配置”生成 GNS3 实验，因此 Group 展开后，`PreconfiguredInterfaceCleanupHandler` 在接口分类前通过 ANTLR 重写事务删除整个候选块。预配置接口不会进入 NNI、接口引用改写或目标端口分配，输出中也不会出现 `interface preconfigure`。
+`interface preconfigure` 表示源设备硬件尚未插入时保存的物理接口候选配置。系统按“当前设备已经实例化并生效的配置”生成 GNS3 实验，因此 Group 展开后，`PreconfiguredInterfaceCleanupHandler` 在接口分类前通过 AST Editor删除整个候选块。预配置接口不会进入 NNI、接口引用改写或目标端口分配，输出中也不会出现 `interface preconfigure`。
 
 `CleaningRulesHandler` 在两个固定点运行。`pre_analysis` 的 `cisco.remove.banner` 在任何业务分析前按分隔符停用完整 exec/login banner；`post_rewrite` 先执行两家目标镜像目录下 `cleaning.yaml` 中 `enable: true` 的规则，再原子执行管理认证替换。默认启用的 `cisco.remove.ptp.interface` 只将 `interface PTP...` 虚拟接口块标记为非活动；全局 `ptp`、普通数据口下的 `ptp` 及频率同步配置不命中该规则。同样默认启用的还有接口类型约束清理规则：删除 LLDP/CDP、以太网 CFM/OAM、非 Bundle-Ether 接口上的 `bfd`、接口 QoS 挂载以及 Junos 服务链（`service-set`、接口服务挂载、服务接口），避免这些与路由验证无关、且受接口类型限制的配置在迁移后导致导入报错。Junos 容器被删空时按 `empty_blocks.yaml` 省略输出。
 
@@ -249,7 +249,7 @@ CiscoDocument.root
 └── NodeContext: !
 ```
 
-顶层和嵌套配置使用 ANTLR4 生成的 Context，业务查询通过只读的 `nodes`、`header`、`path` 和源码范围进行。`RewriteTransaction` 负责快照、冲突、审计和发布，并使用 `TokenStreamRewriter` 按 token index 生成候选文本；候选重新解析成功后才原子发布。具体机制见 [ANTLR4 说明](antlr-cisco.md)。
+顶层和嵌套配置使用手写 Parser 构建的可变 AST。查询通过 `nodes`、`header`、`path` 和原始 `location`；Editor 基于节点身份编辑，Writer 根据修改后的树规范化输出。规则通过树副本实现失败回滚，详见[手写 AST 指南](config-ast.md)。
 
 ### 7.2 接口名规范化
 
@@ -497,21 +497,17 @@ interfaces
             └── address 10.0.0.1/30
 ```
 
-Context 包含：
+配置节点包含：
 
 - `header`：当前语句。
 - `nodes`：大括号中的直接语句或注释。
-- `path`、`text`、`indent`：只读路径和源码范围。
+- `path`：当前祖先命令路径；子树文本由 Writer 提供。
 - `configured_inactive`、`effective`：停用状态和业务有效性。
-- `snapshot`：所属不可变解析快照。
+- `location`：原始输入行列，新增节点为空。
 
 配置大括号不平衡时直接报错。
 
-所有修改通过 `JunosRewriteTransaction` 收集。事务把字符编辑投影到 token 文本，
-再由当前快照的 `TokenStreamRewriter` 生成候选源码并重新解析；未修改区域保持
-原字节，旧 Context 在发布后失效。`render()` 只创建临时输出视图，处理空块策略和
-`protect:`，不修改源码快照。Group、裁剪和模拟算法可使用一次遍历内的临时工作树，
-但最终仍只通过一个候选文本事务发布。具体机制见 [Junos ANTLR4 说明](antlr-juniper.md)。
+修改通过共享 Editor 或规则内受控批量 AST 操作完成；失败恢复规则前的树副本。`source` 是当前树的规范化序列化，`render()` 额外处理空块策略和 `protect:`，不会修改树。注释与字符串内容保留，原始缩进和空行不要求逐字一致。详见[手写 AST 指南](config-ast.md)。
 
 `inactive:` 和 `protect:` 前缀在名称、路径及 identity 比较时被去除。两者的
 生效状态不同：`inactive:` 节点及其完整子树不参与求值，父节点保留时仍以停用状态

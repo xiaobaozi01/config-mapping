@@ -1,39 +1,51 @@
-"""Junos Visitor 规则的生命周期、快照校验和受控编辑。"""
+"""AST Visitor 规则的生命周期：选择、收集、提交、映射及失败恢复。"""
 
 from __future__ import annotations
 
 from collections.abc import Callable, Iterable
 from dataclasses import dataclass, field
-from typing import Generic, TypeVar
+from typing import TYPE_CHECKING, Generic, TypeVar
 
+from impl.common.config_ast import ConfigVisitor
+from impl.common.config_ast.editor import EditResult, EditScope
+from impl.common.config_ast.model import tree_signature
 from impl.common.outcomes import (
     InterfaceAdaptationOutcome,
     InterfacePruningOutcome,
     SimulationAdaptationOutcome,
 )
 
-from ..antlr.context import JunosContext
-from ..antlr.generated.JunosParserVisitor import JunosParserVisitor
-from ..antlr.rewriting import RewriteResult
+from ..ast import JuniperNode
+
+
+def document_scope(document, context):
+    """Select the whole configuration for a document rule.
+
+    Returning the root once lets document-wide rules build indexes without overlapping selected subtrees.
+    """
+    return (document.root,)
+
+
+if TYPE_CHECKING:
+    from ..document import JunosDocument
 
 ContextT = TypeVar("ContextT")
 OutcomeT = TypeVar(
-    "OutcomeT",
-    bound=InterfaceAdaptationOutcome | SimulationAdaptationOutcome,
+    "OutcomeT", bound=InterfaceAdaptationOutcome | SimulationAdaptationOutcome
 )
 
 
 class RuleContractError(RuntimeError):
-    """表示规则违反托管执行器的只读、快照或提交约定。
+    """表示规则违反托管执行器约定。
 
-    立即终止违规规则可防止绕过事务、复用过期 Context 或报告未发布变更。
+    包括绕过会话修改文档、使用无效访问根或让只读规则报告变更，必须终止当前规则。
     """
 
 
 class RuleEdits:
-    """只向 Visitor 暴露受控的文本编辑动作。
+    """向 Visitor 暴露受控的编辑收集接口。
 
-    白名单转发可阻止规则自行提交事务或访问执行器内部状态。
+    commit 和 preview 等生命周期方法由执行器独占，规则只能登记允许的编辑。
     """
 
     _ACTIONS = frozenset(
@@ -44,126 +56,114 @@ class RuleEdits:
             "insert_before",
             "insert_after",
             "append_child",
+            "move",
+            "clone",
         }
     )
 
     def __init__(self, transaction):
         """绑定规则会话创建的重写事务。
 
-        规则只能通过属性转发登记动作，事务生命周期仍由执行器独占。
+        底层事务不直接公开，所有访问必须通过动作白名单转发。
         """
         self._transaction = transaction
 
     def __getattr__(self, name):
-        """按白名单转发一个受支持的编辑方法。
+        """按白名单转发规则可执行的事务动作。
 
-        未列出的属性立即报错，避免规则直接调用提交或读取私有操作集合。
+        未知属性立即报错，防止规则自行提交事务或访问内部状态。
         """
         if name not in self._ACTIONS:
-            raise RuleContractError("Visitor 只能收集编辑，提交由执行器管理")
+            raise RuleContractError(
+                "Visitor 只能收集编辑，提交由 JunosVisitorRule 管理"
+            )
         return getattr(self._transaction, name)
 
 
 class RuleSession(Generic[ContextT, OutcomeT]):
-    """保存单条规则执行期间的文档、结果和事务。
+    """保存单条规则执行期间的文档、上下文、结果和事务。
 
-    会话集中管理快照一致性、只读限制和提交，使各 Visitor 无需重复实现生命周期。
+    会话集中管理树状态一致性、只读限制和提交，使各个 Visitor 无需重复实现生命周期。
     """
 
     def __init__(
         self,
-        document,
+        document: JunosDocument,
         context: ContextT,
         result: OutcomeT,
         readonly: bool,
     ):
         """创建只读或可编辑的规则会话。
 
-        只读会话不创建事务，从结构上保证校验规则无法登记配置修改。
+        只读会话不创建重写事务，从结构上保证校验规则不能修改配置。
         """
         self.document = document
         self.context = context
         self.result = result
-        self.snapshot = document.snapshot
+        self.baseline = tree_signature(document.root)
         self.readonly = readonly
-        self._transaction = None if readonly else document.rewrite()
+        self._transaction = None if readonly else document.edit()
         self._edits = None if readonly else RuleEdits(self._transaction)
 
     @property
-    def edits(self):
-        """返回编辑收集入口；只读规则请求时立即失败。
+    def edits(self) -> RuleEdits:
+        """返回当前会话允许使用的编辑入口。
 
-        将只读约束放在访问入口而不是依赖规则自觉遵守，可形成强制安全边界。
+        只读会话请求编辑会立即报错，避免规则运行时分支绕过只读约束。
         """
         if self.readonly:
             raise RuleContractError("只读校验规则不能申请编辑")
         return self._edits
 
-    def assert_snapshot(self, snapshot):
-        """确认文档没有被 Visitor 绕过事务修改。
+    def assert_unchanged(self):
+        """Reject edits performed outside the controlled edit collector.
 
-        规则执行期间快照变化意味着编辑坐标失效，必须立即回滚并终止规则。
+        Visitors collect edits through their session; direct mutation would bypass the executor’s audit and rollback boundary.
         """
-        if self.document.snapshot is not snapshot:
-            raise RuleContractError("规则绕过执行器修改了文档快照")
+        if tree_signature(self.document.root) != self.baseline:
+            raise RuleContractError("规则绕过 Editor 修改了配置")
 
-    def _commit(self) -> RewriteResult:
-        """提交会话事务；只读规则返回空结果。
+    def apply_edits(self):
+        """Apply collected operations after traversal has completed.
 
-        统一完成入口让可编辑和只读规则共享执行器，同时避免虚假发布动作。
+        Read-only sessions return an empty result without creating an editor or advancing the document revision.
         """
-        return RewriteResult() if self.readonly else self._transaction.commit()
+        return EditResult() if self.readonly else self._transaction.apply()
 
 
-class JunosRuleVisitor(JunosParserVisitor, Generic[ContextT, OutcomeT]):
-    """为 Junos 规则绑定会话和遍历完成钩子。
+class JunosRuleVisitor(ConfigVisitor, Generic[ContextT, OutcomeT]):
+    """为 Junos 规则提供会话绑定和完成钩子。
 
-    Visitor 通过会话读取 Context 和收集编辑，不能自行管理快照发布。
+    finish 在所有访问根处理完后调用一次，使跨节点动作可以延迟到完整分析后再提交。
     """
 
     def __init__(self, session: RuleSession[ContextT, OutcomeT]):
         """绑定访问器所属的规则会话。
 
-        固定会话引用使执行器能够校验访问器没有绕过当前事务。
+        Visitor 通过会话读取上下文并收集编辑，不能自行管理文档生命周期。
         """
         self.session = session
 
     def finish(self) -> None:
-        """在所有访问根结束后执行可选汇总。
+        """完成遍历后的可选汇总动作。
 
-        默认无动作，跨节点规则可在此统一分析后再登记编辑。
+        默认不执行任何操作，需要延迟提交的规则可以覆盖此方法。
         """
-        return None
+        pass
 
 
-class _DocumentActionVisitor(JunosParserVisitor):
-    """在 ANTLR 根访问期间执行一次临时工作树动作。
+def always(context) -> bool:
+    """无条件允许规则执行。
 
-    以生成 Visitor 作为统一入口，使复杂业务动作仍遵循规则执行协议。
+    作为默认条件函数，简单规则无需重复定义恒真条件。
     """
-
-    def __init__(self, document, context, action):
-        """保存文档、规则上下文和待执行动作。
-
-        这些依赖由托管执行器注入，避免工作树动作自行查找全局状态。
-        """
-        self.document = document
-        self.context = context
-        self.action = action
-
-    def visitConfiguration(self, context):
-        """执行动作并返回其结果。
-
-        根 Context 只用于触发统一访问生命周期，动作内部使用隔离工作树。
-        """
-        del context
-        return self.action(self.document, self.context)
+    return True
 
 
 def _has_errors(result):
-    """判断接口结果是否包含阻断提交的错误。
+    """判断接口结果是否包含错误。
 
-    错误状态优先于已收集编辑，确保失败规则不会发布部分配置。
+    模拟结果没有 errors 字段，通过结果类型区分可避免访问不存在的属性。
     """
     return isinstance(result, InterfaceAdaptationOutcome) and bool(
         result.errors
@@ -171,9 +171,9 @@ def _has_errors(result):
 
 
 def _discard_changes(result):
-    """丢弃未提交规则产生的变更统计。
+    """清除失败规则已经收集的变更统计。
 
-    回滚不仅恢复文档，还必须清空结果，避免报告把计划动作误写成成功修改。
+    除恢复文档树状态外还要清理结果对象，避免报告把未提交动作描述为成功。
     """
     if isinstance(result, InterfaceAdaptationOutcome):
         result.changes.clear()
@@ -185,30 +185,46 @@ def _discard_changes(result):
             getattr(result, name).clear()
 
 
-def _validate_roots(roots, snapshot):
-    """校验访问根非空、属于当前快照且不存在祖先/后代重叠。
+def _default_result(session, visitor, edits):
+    """把事务实际提交的编辑写入接口结果。
 
-    重复覆盖会让同一子树被多次编辑并产生不确定冲突，因此启动前统一拒绝。
+    默认映射只使用提交后的 edits，未提交或已回滚动作不会出现在报告中。
     """
+    if not isinstance(session.result, InterfaceAdaptationOutcome):
+        raise RuleContractError("模拟规则必须提供分类结果映射")
+    session.result.changes[:] = edits.changes
+
+
+def _validate_roots(roots, document_root):
+    """校验访问根属于同一树状态且不存在祖先后代重叠。
+
+    重复覆盖会导致同一子树被多次编辑并触发冲突，因此在 Visitor 启动前统一拒绝。
+    """
+    members = {
+        id(node)
+        for node in document_root.walk(
+            include_self=True, include_formatting=True
+        )
+    }
     identities = set()
     for root in roots:
-        if not isinstance(root, JunosContext) or root.snapshot is not snapshot:
-            raise RuleContractError("访问根不属于当前 Junos 文档快照")
+        if not isinstance(root, JuniperNode) or id(root) not in members:
+            raise RuleContractError("访问根不属于当前文档树状态")
         if id(root) in identities:
             raise RuleContractError("访问根不能重复")
         identities.add(id(root))
     for root in roots:
-        parent = root.parentCtx
+        parent = root.parent
         while parent is not None:
             if id(parent) in identities:
                 raise RuleContractError("访问根不能同时包含祖先和后代")
-            parent = parent.parentCtx
+            parent = parent.parent
 
 
 def _check_readonly_result(result):
-    """禁止只读规则报告任何配置变更。
+    """拒绝只读规则报告变更或删除对象。
 
-    即使没有实际写盘，虚假变更也会破坏调用方对校验规则无副作用的假设。
+    即使规则没有实际修改文档，也不能返回虚假变更，否则会破坏只读调用方假设。
     """
     changes = (
         result.changes
@@ -224,97 +240,88 @@ def _check_readonly_result(result):
 
 @dataclass(frozen=True, slots=True)
 class JunosVisitorRule(Generic[ContextT, OutcomeT]):
-    """声明 Junos Visitor 工厂、范围、条件和结果映射。
+    """声明 Visitor 工厂、选择范围、条件和结果映射。
 
-    执行器统一负责快照检查、提交和失败恢复，规则只描述业务动作。
+    dataclass 让规则注册保持声明式，同时由 apply 统一执行树签名校验和失败恢复。
     """
 
     rule_id: str
-    visitor_factory: (
-        Callable[
-            [RuleSession[ContextT, OutcomeT]],
-            JunosRuleVisitor[ContextT, OutcomeT],
-        ]
-        | None
-    ) = None
-    selector: Callable[[object, ContextT], Iterable[JunosContext]] = field(
-        default=lambda document, context: (document.root,)
+    document_action: Callable | None = None
+    visitor_factory: Callable | None = None
+    selector: Callable[[JunosDocument, ContextT], Iterable[JuniperNode]] = (
+        field(default=document_scope)
     )
-    condition: Callable[[ContextT], bool] = field(default=lambda context: True)
+    condition: Callable[[ContextT], bool] = field(default=always)
     readonly: bool = False
     outcome_factory: Callable[[], OutcomeT] = field(
         default=InterfaceAdaptationOutcome
     )
-    document_action: Callable[[object, ContextT], OutcomeT] | None = None
+    result_mapper: (
+        Callable[
+            [
+                RuleSession[ContextT, OutcomeT],
+                JunosRuleVisitor[ContextT, OutcomeT],
+                EditResult,
+            ],
+            None,
+        ]
+        | None
+    ) = None
 
     def applies(self, context: ContextT) -> bool:
-        """判断规则条件是否允许执行。
+        """调用规则条件判断上下文是否适用。
 
         条件在事务创建前求值，不适用规则不会分配会话或触碰文档。
         """
         return self.condition(context)
 
-    def apply(self, document, context: ContextT) -> OutcomeT:
-        """执行 Visitor，成功时只提交一次文本事务。
+    def apply(self, document: JunosDocument, context: ContextT) -> OutcomeT:
+        """Run a rule against the AST and restore its backup on failure.
 
-        标准 Visitor 和复杂工作树动作共用同一对外入口，但各自遵循原子提交边界。
+        A failed edit or rule restores the tree backup; completed edits are exposed only through the returned result.
         """
         if self.document_action is not None:
             return self._apply_document_action(document, context)
-        return self._apply_visitor(document, context)
+        with EditScope(document, independent=True) as scope:
+            original = scope.backup
+            result = None
+            try:
+                result = self.outcome_factory()
+                if not isinstance(
+                    result,
+                    (InterfaceAdaptationOutcome, SimulationAdaptationOutcome),
+                ):
+                    raise RuleContractError("规则工厂必须返回受支持的 Outcome")
+                if tree_signature(document.root) != tree_signature(original):
+                    raise RuleContractError("Outcome 工厂不能修改配置")
+                session = RuleSession(document, context, result, self.readonly)
+                roots = tuple(self.selector(document, context))
+                _validate_roots(roots, document.root)
+                session.assert_unchanged()
+                if roots:
+                    visitor = self._visit(session, roots)
+                    self._finish(session, visitor)
+                if _has_errors(result):
+                    if tree_signature(original) != tree_signature(
+                        document.root
+                    ):
+                        scope.rollback()
+                    _discard_changes(result)
+                return result
+            except Exception:
+                if isinstance(
+                    result,
+                    (InterfaceAdaptationOutcome, SimulationAdaptationOutcome),
+                ):
+                    _discard_changes(result)
+                scope.rollback()
+                raise
 
-    def _apply_visitor(self, document, context: ContextT) -> OutcomeT:
-        """执行标准 Visitor 会话并维护快照失败恢复。
+    def _visit(self, session, roots):
+        """Traverse selected nodes before applying collected edits.
 
-        任何访问、提交或结果映射异常都会恢复原快照并清除未发布变更。
+        All selected roots share one visitor instance, and finish runs once after their callbacks complete.
         """
-        original = document.snapshot
-        result = None
-        try:
-            result = self.outcome_factory()
-            if not isinstance(
-                result,
-                (InterfaceAdaptationOutcome, SimulationAdaptationOutcome),
-            ):
-                raise RuleContractError("规则工厂必须返回受支持的 Outcome")
-            session = RuleSession(document, context, result, self.readonly)
-            self._visit_roots(document, context, session, original)
-            session.assert_snapshot(original)
-            if self.readonly:
-                _check_readonly_result(result)
-            if not _has_errors(result):
-                edits = session._commit()
-                if isinstance(result, InterfaceAdaptationOutcome):
-                    result.changes.extend(
-                        dict(change, rule_id=self.rule_id)
-                        for change in edits.changes
-                    )
-            session.assert_snapshot(document.snapshot)
-            return result
-        except Exception:
-            if isinstance(
-                result,
-                (
-                    InterfaceAdaptationOutcome,
-                    SimulationAdaptationOutcome,
-                ),
-            ):
-                _discard_changes(result)
-            if document.snapshot is not original:
-                document._publish(original)
-            raise
-
-    def _visit_roots(self, document, context, session, original):
-        """按选择器访问所有根并检查会话没有被绕过。
-
-        每个访问根结束后校验快照，使直接修改文档的违规 Visitor 立即暴露。
-        """
-        roots = tuple(self.selector(document, context))
-        _validate_roots(roots, original)
-        if not roots:
-            return
-        if self.visitor_factory is None:
-            raise RuleContractError("可编辑 Visitor 规则必须提供访问器工厂")
         visitor = self.visitor_factory(session)
         if (
             not isinstance(visitor, JunosRuleVisitor)
@@ -325,87 +332,92 @@ class JunosVisitorRule(Generic[ContextT, OutcomeT]):
             )
         for root in roots:
             visitor.visit(root)
-            session.assert_snapshot(original)
         visitor.finish()
+        session.assert_unchanged()
+        return visitor
 
-    def _apply_document_action(self, document, context: ContextT) -> OutcomeT:
-        """在临时工作树上执行动作，并通过一个事务发布实际变化。
+    def _finish(self, session, visitor):
+        """Apply edits and map audit results, enforcing read-only rules.
 
-        嵌套调用复用调用方工作树，避免创建第二份临时状态或重复提交。
+        Result mapping is checked for unexpected mutations so reporting cannot introduce unaudited configuration changes.
         """
-        original = document.snapshot
-        nested = hasattr(document, "_working_root")
-        manager = _NullWorkingTree() if nested else document._working_tree()
-        with manager as working_root:
-            visitor = _DocumentActionVisitor(
-                document, context, self.document_action
-            )
-            result = visitor.visit(original.root)
-        if not isinstance(
-            result,
-            (InterfaceAdaptationOutcome, SimulationAdaptationOutcome),
-        ):
-            raise RuleContractError("规则动作必须返回受支持的 Outcome")
+        if self.readonly:
+            _check_readonly_result(session.result)
+        if _has_errors(session.result):
+            return
+        edits = session.apply_edits()
+        baseline = tree_signature(session.document.root)
+        mapper = self.result_mapper or _default_result
+        mapper(session, visitor, edits)
+        if tree_signature(session.document.root) != baseline:
+            raise RuleContractError("结果映射不能修改配置")
+        if self.readonly:
+            _check_readonly_result(session.result)
+
+    def _tag_changes(self, result):
+        """Attach the rule identity to completed bulk-edit audit records.
+
+        Bulk actions use the same report origin field as edits produced through a standard visitor session.
+        """
         if isinstance(result, InterfaceAdaptationOutcome):
             for change in result.changes:
                 change["rule_id"] = self.rule_id
-            if self.readonly:
-                _check_readonly_result(result)
-        if not nested:
-            document._publish_work_root(working_root)
+
+    def _run_action(self, document, context):
+        """Give mutable actions an editor boundary and keep validation read-only.
+
+        Read-only actions never acquire an editor; the rule scope still detects bypasses.
+        """
         if self.readonly:
-            if document.snapshot is not original:
-                document._publish(original)
-                raise RuleContractError("只读校验规则修改了配置")
-            _check_readonly_result(result)
-        return result
+            return self.document_action(document, context)
+        with document.edit().bulk():
+            return self.document_action(document, context)
 
+    def _apply_document_action(self, document, context):
+        """Guard a bulk AST action with rule-level rollback.
 
-class _NullWorkingTree:
-    """在调用方已建立工作树时不创建第二份工作状态。
-
-    空上下文管理器保留统一调用形式，同时让嵌套规则直接修改外层工作树。
-    """
-
-    def __init__(self):
-        """初始化不含工作根的占位上下文。
-
-        嵌套执行不需要新的根节点，显式空值可避免误用未管理的第二棵树。
+        A backup covers direct vendor operations as well as returned business errors, preventing partial rule results.
         """
-        self.root = None
-
-    def __enter__(self):
-        """进入占位作用域并返回空工作根。
-
-        返回空值提醒调用方复用外层工作树，而不是依赖此处创建新状态。
-        """
-        return self.root
-
-    def __exit__(self, *_args):
-        """退出占位作用域且不屏蔽异常。
-
-        返回 False 让真实异常继续传播，确保外层执行器完成恢复处理。
-        """
-        return False
+        with EditScope(document, independent=True) as scope:
+            original = scope.backup
+            result = None
+            try:
+                result = self._run_action(document, context)
+                if not isinstance(
+                    result,
+                    (InterfaceAdaptationOutcome, SimulationAdaptationOutcome),
+                ):
+                    raise RuleContractError("规则动作必须返回受支持的 Outcome")
+                if self.readonly:
+                    _check_readonly_result(result)
+                    if tree_signature(original) != tree_signature(
+                        document.root
+                    ):
+                        raise RuleContractError("只读规则修改了配置")
+                if _has_errors(result):
+                    if tree_signature(original) != tree_signature(
+                        document.root
+                    ):
+                        scope.rollback()
+                    _discard_changes(result)
+                self._tag_changes(result)
+                return result
+            except Exception:
+                scope.rollback()
+                if isinstance(
+                    result,
+                    (InterfaceAdaptationOutcome, SimulationAdaptationOutcome),
+                ):
+                    _discard_changes(result)
+                raise
 
 
 def simulation_result(session, visitor, edits):
     """把实际提交的模拟动作转换为分类统计。
 
-    只在事务成功后记录类别，使报告与真实写入的新快照保持一致。
+    每条动作可以携带 count，使删除整棵语义子树时仍按原语句数量报告。
     """
-    del visitor
     for change in edits.changes:
         session.result.record(
-            change["action"], change.get("category", "configuration")
+            change["action"], change["category"], change.get("count", 1)
         )
-
-
-__all__ = [
-    "JunosRuleVisitor",
-    "JunosVisitorRule",
-    "RuleContractError",
-    "RuleEdits",
-    "RuleSession",
-    "simulation_result",
-]

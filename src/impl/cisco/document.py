@@ -1,4 +1,4 @@
-"""ANTLR 驱动的 IOS XR 文档门面；当前源码与解析快照是唯一配置状态。"""
+"""手写 AST 驱动的 IOS XR 文档门面。"""
 
 from __future__ import annotations
 
@@ -9,10 +9,10 @@ from functools import lru_cache
 from impl.common.cleaning import (
     CleaningAction,
     CleaningOperation,
-    compile_cleaning_rules,
 )
+from impl.common.config_ast.document import AstDocument
+from impl.common.config_ast.model import tree_signature
 from impl.common.contracts import VendorConfiguration
-from impl.common.empty_blocks import EmptyBlockAction
 from impl.common.interface import (
     BundleMode,
     InterfaceKind,
@@ -33,97 +33,15 @@ from impl.common.outcomes import (
 )
 from impl.common.policies import SimulationAdaptationPolicy, WashingPolicy
 
-from .antlr.context import CiscoContext
-from .antlr.parsing import CiscoSnapshot
-from .antlr.rewriting import RewriteTransaction
+from .ast import CiscoNode
 from .empty_blocks import xrv9000_empty_block_policy
-
-
-def _is_preconfigured_interface_header(header: str) -> bool:
-    """判断接口头是否声明为 ``preconfigure`` 候选。
-
-    该模式表示硬件尚未实例化，必须在接口分类前识别并排除。
-    """
-    return bool(
-        re.match(r"^interface\s+preconfigure(?:\s|$)", header, re.IGNORECASE)
-    )
-
-
-def _is_l2transport_header(header: str) -> bool:
-    """判断接口头是否以 ``l2transport`` 结尾。
-
-    只匹配行内模式可快速区分二层接口，同时不把子命令中的同名文本视为接口模式。
-    """
-    return bool(
-        re.match(r"interface\s+.+\s+l2transport\s*$", header, re.IGNORECASE)
-    )
-
-
-def _interface_name_from_header(header: str) -> str | None:
-    """从不可变接口头提取规范化接口名。
-
-    统一处理预配置和 l2transport 后缀，使缓存键不受等价书写差异影响。
-    """
-    if not header.lower().startswith("interface"):
-        return None
-    match = re.match(r"^interface\s+(.+?)\s*$", header, re.IGNORECASE)
-    if not match:
-        return None
-    value = match.group(1)
-    if _is_preconfigured_interface_header(header):
-        preconfigured = re.match(
-            r"^interface\s+preconfigure(?:\s+(.+?))?\s*$",
-            header,
-            re.IGNORECASE,
-        )
-        value = preconfigured.group(1) if preconfigured else None
-        if not value:
-            return None
-    value = re.sub(r"\s+l2transport\s*$", "", value, flags=re.IGNORECASE)
-    return canonical_cisco_interface(value)
-
-
-# 拓扑中经常使用接口缩写，统一展开后才能与配置块可靠匹配。
-_CISCO_PREFIXES = {
-    "gi": "GigabitEthernet",
-    "gigabitethernet": "GigabitEthernet",
-    "te": "TenGigE",
-    "tengige": "TenGigE",
-    "hu": "HundredGigE",
-    "hundredgige": "HundredGigE",
-    "fo": "FortyGigE",
-    "fortygige": "FortyGigE",
-    "tf": "TwentyFiveGigE",
-    "twentyfivegige": "TwentyFiveGigE",
-    "be": "Bundle-Ether",
-    "bundle-ether": "Bundle-Ether",
-    "lo": "Loopback",
-    "loopback": "Loopback",
-    "mgmteth": "MgmtEth",
-}
-
-_CISCO_INTERFACE_TOKEN = re.compile(
-    r"(?<![\w./-])(?:[A-Za-z][A-Za-z-]*\s*\d[\d/]*(?:\.\d+)?)(?![\w./-])"
+from .parser import CiscoParser
+from .semantics import (
+    _interface_name_from_header,
+    _is_l2transport_header,
+    canonical_cisco_interface,
 )
-
-
-def canonical_cisco_interface(value: str) -> str:
-    """清理接口名空白、移除头部模式后缀并展开常见 IOS XR 缩写。
-
-    拓扑表可能使用 ``Gi``、``Te`` 或 ``BE``，配置中则通常使用完整名称；统一成
-    同一种表示后，端点校验、聚合关系查询和接口树改名才能可靠匹配同一接口。
-    """
-    value = re.sub(
-        r"\s+l2transport\s*$", "", value.strip(), flags=re.IGNORECASE
-    )
-    compact = re.sub(r"\s+", "", value.strip())
-    match = re.match(r"([A-Za-z-]+)(.*)", compact)
-    if not match:
-        return compact
-    prefix, suffix = match.groups()
-    expanded = _CISCO_PREFIXES.get(prefix.lower(), prefix)
-    return f"{expanded}{suffix}"
-
+from .writer import CiscoWriter
 
 _CISCO_PHYSICAL_INTERFACE = re.compile(
     r"^(?:Ethernet|FastEthernet|GigabitEthernet|TenGigE|TwentyFiveGigE|"
@@ -173,7 +91,7 @@ def _resolved_interface_kind(name: str) -> InterfaceKind:
 class _CiscoHeaderParser:
     """保存单个 Cisco 文档的字符串解析缓存。
 
-    缓存只依赖不可变 header，不持有文档或节点，避免复制和快照发布时泄漏旧状态。
+    缓存只依赖不可变 header，不持有文档或节点，避免复制和树替换时泄漏旧状态。
     """
 
     def __init__(self) -> None:
@@ -202,80 +120,39 @@ class _CiscoHeaderParser:
         return type(self)()
 
 
-class CiscoDocument(VendorConfiguration):
+class CiscoDocument(AstDocument, VendorConfiguration):
     """提供 IOS XR 配置解析、查询、迁移和渲染的统一门面。
 
-    该类只维护当前快照和按需缓存，具体接口、group 和规则算法委托专用模块实现。
+    该类只维护当前配置树和按需缓存，具体接口、group 和规则算法委托专用模块实现。
     """
 
     vendor = "cisco_iosxr"
 
     def __init__(self, text: str):
-        """从 Cisco 配置文本创建初始解析快照。
+        """Parse the configuration into the single mutable document tree.
 
-        构造阶段只建立文本和解析上下文，接口分析等昂贵结果延迟到首次查询。
+        该操作在当前文档的业务处理边界内运行，调用方继续负责统一的结果记录和失败处理。
         """
         self._parser = _CiscoHeaderParser()
         self._interface_analysis_cache = _CiscoAnalysisCache()
-        self._snapshot = CiscoSnapshot(text)
+        self._revision = 0
+        self.writer = CiscoWriter()
+        self.root = CiscoParser().parse(text)
+        self._last_signature = tree_signature(self.root)
 
-    @property
-    def snapshot(self):
-        """返回当前不可变解析快照。
+    def parse_fragment(self, text):
+        """Parse an isolated fragment before attaching it to the tree.
 
-        事务通过替换快照而非原地修改提供一致性，调用方可据此识别修订变化。
+        Fragment validation happens before the editor alters the live tree, isolating syntax errors from configuration state.
         """
-        return self._snapshot
+        return CiscoParser().parse(text)
 
-    @property
-    def source(self):
-        """返回当前快照的完整配置源码。
+    def validate_header(self, node, header):
+        """Delegate structural command validation to the vendor parser.
 
-        源码与解析 token 来自同一快照，保证文本查询和结构化操作看到同一修订。
+        The facade selects syntax services without implementing grammar checks.
         """
-        return self.snapshot.text
-
-    @property
-    def revision(self):
-        """返回当前快照的单调修订号。
-
-        修订号用于诊断和缓存失效，不作为持久化标识。
-        """
-        return self.snapshot.revision
-
-    @property
-    def root(self):
-        """返回当前快照的 Cisco 虚拟根上下文。
-
-        所有规则访问都从该根开始，以确保绑定同一快照并避免跨修订引用。
-        """
-        return self.snapshot.root
-
-    def _publish(self, snapshot):
-        """原子替换当前快照并清空接口分析缓存。
-
-        只有事务成功重解析后才调用，使失败操作不会暴露部分配置。
-        """
-        self._snapshot = snapshot
-        self._interface_analysis_cache = _CiscoAnalysisCache()
-
-    def rewrite(self):
-        """创建基于当前快照的新重写事务。
-
-        事务捕获固定快照坐标，提交后重新解析并发布新修订。
-        """
-        return RewriteTransaction(self)
-
-    def __deepcopy__(self, _memo):
-        """复制配置内容并保留原有空块语义。
-
-        重新解析源码后传播块标记，使副本可独立修改且不共享正式 AST 或缓存。
-        """
-        from .antlr.metadata import retain_block_modes
-
-        cloned = type(self)(self.source)
-        retain_block_modes(self.snapshot, cloned.snapshot, (), set())
-        return cloned
+        return CiscoParser().validate_header(node, header)
 
     def hostname(self):
         """返回 IOS XR ``hostname`` 命令的最终值。
@@ -289,11 +166,11 @@ class CiscoDocument(VendorConfiguration):
         ]
         return values[-1] if values else None
 
-    def _interface_nodes(self) -> list[CiscoContext]:
+    def _interface_nodes(self) -> list[CiscoNode]:
         """返回仍有效且已识别接口名的 IOS XR 顶层节点。
 
         具体筛选委托接口模块，让所有调用方复用同一套接口识别规则，每次返回
-        当前修订的 Context。
+        当前文档的 AST 节点。
         """
         return self._interfaces().interface_nodes(self)
 
@@ -301,7 +178,7 @@ class CiscoDocument(VendorConfiguration):
     def _interfaces():
         """延迟返回 Cisco 接口操作模块。
 
-        接口模块需要引用 ``CiscoDocument`` 和 ``CiscoContext``；在方法调用时再导入
+        接口模块需要引用 ``CiscoDocument`` 和 ``CiscoNode``；在方法调用时再导入
         可打破模块初始化阶段的循环依赖，同时保持文档类对外提供稳定门面。
         """
         from . import interfaces
@@ -315,6 +192,7 @@ class CiscoDocument(VendorConfiguration):
         统一规格也是业务口筛选、VLAN 分配和审计映射共享同一事实来源的基础。
         """
         return self._interface_analysis_cache.read(
+            self.root,
             "interface_specs",
             lambda: self._interfaces().interface_specs(self),
             copy_interface_specs,
@@ -335,6 +213,7 @@ class CiscoDocument(VendorConfiguration):
         清理真实成员，因此统一暴露该方向的映射。
         """
         return self._interface_analysis_cache.read(
+            self.root,
             "bundle_members",
             lambda: self._interfaces().bundle_members(self),
             dict,
@@ -379,6 +258,7 @@ class CiscoDocument(VendorConfiguration):
         bridge-domain 仍包含活跃 attachment circuit 时才作为活跃网关。
         """
         return self._interface_analysis_cache.read(
+            self.root,
             "business_interface_names",
             lambda: self._interfaces().business_interface_names(self),
             set,
@@ -432,7 +312,7 @@ class CiscoDocument(VendorConfiguration):
             self, source, target, strip_bundle
         )
 
-    def _merge_duplicate_interface(self, preferred: CiscoContext) -> None:
+    def _merge_duplicate_interface(self, preferred: CiscoNode) -> None:
         """把同名接口块的非重复配置子树合并到首选块。
 
         接口改名或克隆可能撞上已有目标定义；合并而非覆盖可以保留双方有效配置，
@@ -630,248 +510,35 @@ class CiscoDocument(VendorConfiguration):
     def apply_cleaning_rules(
         self, operations: Sequence[CleaningOperation]
     ) -> list[int]:
-        """按删除和替换轮次执行批量清洗操作。
+        """Delegate ordered cleaning to the vendor cleaning service.
 
-        两轮顺序在单次树遍历中模拟，最终只重解析并发布一次候选配置。
+        The service owns matching and traversal; the document retains its stable API.
         """
-        hits = [0] * len(operations)
-        phases = {
-            phase.action: phase for phase in compile_cleaning_rules(operations)
-        }
-        transaction = self.rewrite()
-        for block in self.root.nodes:
-            _clean_phases(
-                transaction,
-                block,
-                (),
-                block.interface_name,
-                phases,
-                hits,
-            )
-        transaction.commit()
-        return hits
+        from .configuration_cleaning import apply_cleaning_rules
+
+        return apply_cleaning_rules(self, operations)
 
     def replace_references(self, replacements: dict[str, list[str]]) -> None:
-        """改写配置中指向迁移源接口的引用。
+        """Delegate interface-reference conversion to the reference service.
 
-        展开基于原始快照并跳过接口定义 header，避免新目标再次作为源产生级联替换。
+        The document exposes the vendor capability while the service owns traversal.
         """
-        canonical = {
-            self.resolve_interface(source): list(dict.fromkeys(targets))
-            for source, targets in replacements.items()
-            if targets and targets != [source]
-        }
-        if not canonical:
-            return
-        source_keys = {name.lower(): name for name in canonical}
+        from .references import replace_references
 
-        def expand(value):
-            """把一个命令文本展开为所有合法目标组合。
-
-            多源同时出现时笛卡尔展开并去重，可保留一对多映射的完整语义。
-            """
-            matches = [
-                match
-                for match in _CISCO_INTERFACE_TOKEN.finditer(value)
-                if self.resolve_interface(match.group()).lower() in source_keys
-            ]
-            variants, position = [""], 0
-            for match in matches:
-                targets = canonical[
-                    source_keys[self.resolve_interface(match.group()).lower()]
-                ]
-                variants = [
-                    current + value[position : match.start()] + target
-                    for current in variants
-                    for target in targets
-                ]
-                position = match.end()
-            return list(
-                dict.fromkeys(
-                    current + value[position:] for current in variants
-                )
-            )
-
-        transaction = self.rewrite()
-        for node in self.root.nodes:
-            _rewrite_reference_node(
-                transaction,
-                node,
-                expand,
-                skip_header=node.interface_name is not None,
-            )
-        transaction.commit()
+        replace_references(self, replacements)
 
     def render(self) -> str:
         """生成应用镜像空块策略后的最终配置文本。
 
-        仅在事务预览中计算输出，不修改当前源码或已发布解析快照。
+        Writer 直接过滤输出中的空块，不创建编辑器或修改当前配置树。
         """
-        transaction = self.rewrite()
-        _plan_rendering(
-            transaction, self.root.nodes, (), xrv9000_empty_block_policy()
-        )
-        return transaction.preview()
-
-
-def _expanded_reference_text(node, expand, header):
-    """递归渲染使用指定 header 变体的节点子树。
-
-    子节点也逐层应用同一映射，使父命令展开后内部引用保持对应目标。
-    """
-    lines = [" " * node.indent + header]
-    for child in node.nodes:
-        if child.is_formatting:
-            lines.extend(child.text.rstrip("\r\n").splitlines())
-        else:
-            for variant in expand(child.header):
-                lines.extend(
-                    _expanded_reference_text(child, expand, variant)
-                    .rstrip("\r\n")
-                    .splitlines()
-                )
-    return "\n".join(lines) + "\n"
-
-
-def _rewrite_reference_node(transaction, node, expand, *, skip_header=False):
-    """递归登记节点及其子树的引用替换操作。
-
-    多目标替换改为整棵子树展开，单目标只改 header，确保编辑区间不重叠。
-    """
-    if node.is_formatting:
-        return
-    headers = [node.header] if skip_header else expand(node.header)
-    if len(headers) > 1:
-        text = "".join(
-            _expanded_reference_text(node, expand, header) for header in headers
-        )
-        transaction.replace_subtree(node, text, "展开一对多接口引用")
-        return
-    if headers[0] != node.header:
-        transaction.replace_header(node, headers[0], "改写接口引用")
-    for child in node.nodes:
-        _rewrite_reference_node(transaction, child, expand)
-
-
-def _omit_empty_block(node, ancestors, policy):
-    """判断节点是否应按镜像策略省略整个空块。
-
-    只有块自身和全部后代都为空时才省略，避免删除仍含注释或业务内容的容器。
-    """
-    if node.is_formatting:
-        return True
-    path = (*ancestors, node.header.strip())
-    children_empty = all(
-        _omit_empty_block(child, path, policy) for child in node.nodes
-    )
-    return (
-        node.is_block
-        and children_empty
-        and policy.action_for(path) == EmptyBlockAction.OMIT
-    )
-
-
-def _plan_rendering(transaction, nodes, ancestors, policy):
-    """递归登记最终渲染中的空块删除操作。
-
-    与预检查使用同一策略路径，保证删除判断和实际事务操作一致。
-    """
-    for node in nodes:
-        if node.is_formatting:
-            continue
-        if _omit_empty_block(node, ancestors, policy):
-            transaction.delete(node, "按镜像策略省略空块")
-        else:
-            _plan_rendering(
-                transaction, node.nodes, (*ancestors, node.header), policy
-            )
-
-
-def _clean_phases(
-    transaction, node, ancestors, interface, phases, hits
-) -> None:
-    """在单次遍历中模拟先删除、后替换的两个清洗轮次。
-
-    删除节点后不访问其子树；替换后的 header 立即作为子节点的祖先路径。
-    """
-    if node.is_formatting:
-        return
-    header = node.header
-    if _apply_clean_phase(
-        transaction,
-        node,
-        ancestors,
-        interface,
-        phases.get(CleaningAction.DELETE),
-        hits,
-        header,
-    ):
-        return
-    replacement = phases.get(CleaningAction.REPLACE)
-    if replacement is not None:
-        header = _replace_cleaning_header(
-            transaction,
-            node,
-            ancestors,
-            interface,
-            replacement,
-            hits,
-            header,
-        )
-    for child in node.nodes:
-        _clean_phases(
-            transaction,
-            child,
-            (*ancestors, header),
-            interface,
-            phases,
-            hits,
-        )
-
-
-def _apply_clean_phase(
-    transaction, node, ancestors, interface, phase, hits, header
-) -> bool:
-    """应用删除轮次的首条命中并返回是否删除当前子树。"""
-    if phase is None:
-        return False
-    for operation in phase.matching_operations(ancestors, header):
-        if (
-            operation.interface_names is not None
-            and interface not in operation.interface_names
-        ):
-            continue
-        if not operation.pattern.search(header):
-            continue
-        hits[operation.index] += 1
-        transaction.delete(node, "声明式清洗删除")
-        return True
-    return False
-
-
-def _replace_cleaning_header(
-    transaction, node, ancestors, interface, phase, hits, header
-) -> str:
-    """应用替换轮次首条命中并返回子节点应使用的新 header。"""
-    for operation in phase.matching_operations(ancestors, header):
-        if (
-            operation.interface_names is not None
-            and interface not in operation.interface_names
-        ):
-            continue
-        if not operation.pattern.search(header):
-            continue
-        hits[operation.index] += 1
-        header = operation.pattern.sub(operation.value or "", header)
-        transaction.replace_header(node, header, "声明式清洗替换")
-        break
-    return header
+        return self.writer.render(self.root, xrv9000_empty_block_policy())
 
 
 class _CiscoAnalysisCache:
-    """保存一份 Cisco 文档当前快照的接口分析结果。
+    """保存一份 Cisco 文档当前配置树的接口分析结果。
 
-    缓存由文档快照发布时整体替换，因此条目天然绑定单一修订，不会返回旧树结果。
+    缓存由文档修改时整体替换，因此条目天然绑定单一修订，不会返回旧树结果。
     """
 
     def __init__(self):
@@ -880,12 +547,17 @@ class _CiscoAnalysisCache:
         查询按需计算并按名称缓存，未访问的分析不会产生启动成本。
         """
         self.results = {}
+        self.signature = None
 
-    def read(self, query, collect, copy_result):
+    def read(self, root, query, collect, copy_result):
         """读取或计算一个查询，并返回调用方独立副本。
 
-        复制结果可防止调用方修改列表或集合时污染同一快照的后续查询。
+        复制结果可防止调用方修改列表或集合时污染同一树状态的后续查询。
         """
+        signature = tree_signature(root)
+        if signature != self.signature:
+            self.results.clear()
+            self.signature = signature
         if query not in self.results:
             self.results[query] = collect()
         return copy_result(self.results[query])

@@ -9,7 +9,6 @@ from dataclasses import dataclass
 from pathlib import Path
 
 ROOT = Path(__file__).resolve().parents[1]
-GENERATED_PATH = "/antlr/generated/"
 LABEL_PATTERN = re.compile(r"(?:做什么|为什么|流程)\s*[:：]")
 SECTION_PATTERN = re.compile(
     r"(?m)^\s*(?:Args|Arguments|Returns|Raises|Yields|Attributes)\s*:"
@@ -65,11 +64,8 @@ def _iter_members(tree):
 def check_file(path: Path) -> list[Violation]:
     """返回单个 Python 文件中的全部 docstring 违规。
 
-    生成代码由 ANTLR 一致性检查覆盖，手写代码则要求自然语言两段说明。
+    所有 Python 源文件统一要求自然语言两段说明。
     """
-    normalized = f"{path.as_posix().rstrip('/')}/"
-    if GENERATED_PATH in normalized:
-        return []
     source = path.read_text(encoding="utf-8")
     tree = ast.parse(source, filename=str(path))
     violations = []

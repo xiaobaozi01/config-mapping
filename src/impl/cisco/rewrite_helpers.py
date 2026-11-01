@@ -4,7 +4,10 @@ from __future__ import annotations
 
 
 def append_top_level(transaction, document, text: str, reason: str) -> None:
-    """在终止命令前追加顶层配置，或在没有终止命令时直接追加根部。"""
+    """在终止命令前追加顶层配置，或在没有终止命令时直接追加根部。
+
+    Editor 事务负责统一登记修改，使调用方可以在完整编辑成功后再一次性提交。
+    """
     terminal = next(
         (
             node
@@ -27,7 +30,10 @@ def delete_matching(
     match_anywhere: bool = False,
     reason: str = "删除匹配命令",
 ) -> int:
-    """递归删除匹配正则的配置节点并返回删除对象数量。"""
+    """递归删除匹配正则的配置节点并返回删除对象数量。
+
+    注释和分隔符不参与匹配，命中父节点时其活动子树会作为同一删除操作处理。
+    """
     test = pattern.search if match_anywhere else pattern.match
     removed = 0
     for node in nodes:

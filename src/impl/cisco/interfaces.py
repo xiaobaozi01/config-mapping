@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import re
 
+from impl.common.config_ast.editor import format_fragment
 from impl.common.errors import require_invariant
 from impl.common.interface import (
     InterfaceKind,
@@ -13,12 +14,12 @@ from impl.common.interface import (
     referenced_interface_names,
 )
 
-from .antlr.rewriting import format_fragment
 from .document import (
-    CiscoContext,
     CiscoDocument,
+    CiscoNode,
 )
 from .rewrite_helpers import append_top_level, delete_matching
+from .writer import CiscoWriter
 
 _MEMBER_BUSINESS = re.compile(
     r"^(?:ipv[46]\s+(?:address|unnumbered|enable)|vrf|l2transport|xconnect)\b",
@@ -26,7 +27,7 @@ _MEMBER_BUSINESS = re.compile(
 )
 
 
-def interface_nodes(document: CiscoDocument) -> list[CiscoContext]:
+def interface_nodes(document: CiscoDocument) -> list[CiscoNode]:
     """返回文档中仍有效且已识别出接口名的 IOS XR 配置块。
 
     后续接口分析和修改统一从这里取数，以免把已逻辑删除的块或普通顶层配置
@@ -92,7 +93,7 @@ def interface_specs(document: CiscoDocument) -> list[InterfaceSpec]:
     return result
 
 
-def _node_identity(node: CiscoContext) -> tuple[object, ...]:
+def _node_identity(node: CiscoNode) -> tuple[object, ...]:
     """返回节点及其语义子树的可哈希结构标识。
 
     接口块碰撞合并时需要以完整子树而非单行文本判重；忽略格式节点可避免仅因 ``!``
@@ -250,8 +251,7 @@ def interface_has_business(document: CiscoDocument, name: str) -> bool:
             continue
         if block_name == parent:
             if block.l2transport or any(
-                _MEMBER_BUSINESS.match(node.header)
-                for node in block.walk()
+                _MEMBER_BUSINESS.match(node.header) for node in block.walk()
             ):
                 return True
         elif interface_parent(block_name) == parent:
@@ -373,9 +373,7 @@ def business_interface_names(document: CiscoDocument) -> set[str]:
     return active
 
 
-def find_interface_node(
-    document: CiscoDocument, name: str
-) -> CiscoContext | None:
+def find_interface_node(document: CiscoDocument, name: str) -> CiscoNode | None:
     """按规范化名称查找第一个仍有效的 IOS XR 接口配置块。
 
     统一规范化调用方输入可兼容接口别名；忽略非活动块则确保后续修改不会落到
@@ -402,14 +400,14 @@ def remove_interface(
     清理与完整接口树迁移。
     """
     canonical = document.resolve_interface(name)
-    transaction = document.rewrite()
+    transaction = document.edit()
     for block in interface_nodes(document):
         current = block.interface_name
         if current == canonical or (
             include_children and current and current.startswith(canonical + ".")
         ):
             transaction.delete(block, "删除接口及其业务子树")
-    transaction.commit()
+    transaction.apply()
 
 
 def rename_interface_tree(document, source, target, strip_bundle=False):
@@ -421,7 +419,7 @@ def rename_interface_tree(document, source, target, strip_bundle=False):
     source, target = document.resolve_interface(
         source
     ), document.resolve_interface(target)
-    transaction = document.rewrite()
+    transaction = document.edit()
     renamed = []
     for block in interface_nodes(document):
         current = block.interface_name
@@ -443,7 +441,7 @@ def rename_interface_tree(document, source, target, strip_bundle=False):
                 block.nodes,
                 re.compile(r"^(?:bundle\b|lacp\b|aggregated-)", re.I),
             )
-    transaction.commit()
+    transaction.apply()
     for name in renamed:
         _merge_duplicate_interface(
             document, find_interface_node(document, name)
@@ -455,9 +453,9 @@ def _clone_fragment(original, name, strip_bundle):
 
     先复制完整子树再格式化文本，保证注释和未知子命令一并保留，同时不修改源接口。
     """
-    candidate = CiscoDocument(format_fragment(original.text, 0))
+    candidate = CiscoDocument(CiscoWriter().write(original))
     root = candidate.root.nodes[0]
-    transaction = candidate.rewrite()
+    transaction = candidate.edit()
     transaction.replace_header(
         root,
         f"interface {name}" + (" l2transport" if original.l2transport else ""),
@@ -469,7 +467,7 @@ def _clone_fragment(original, name, strip_bundle):
             root.nodes,
             re.compile(r"^(?:bundle\b|lacp\b|aggregated-)", re.I),
         )
-    transaction.commit()
+    transaction.apply()
     return candidate.source + "!\n"
 
 
@@ -496,9 +494,9 @@ def clone_interface_tree(document, source, target, strip_bundle=False):
         name = target + original.interface_name[len(source) :]
         names.append(name)
         fragments.append(_clone_fragment(original, name, strip_bundle))
-    transaction = document.rewrite()
+    transaction = document.edit()
     transaction.insert_after(originals[-1], "".join(fragments), "克隆接口树")
-    transaction.commit()
+    transaction.apply()
     for name in names:
         _merge_duplicate_interface(
             document, find_interface_node(document, name)
@@ -528,8 +526,10 @@ def _merge_duplicate_interface(document, preferred):
             identity = _node_identity(node)
             if identity not in seen:
                 seen.add(identity)
-                fragments.append(format_fragment(node.text, 1))
-    transaction = document.rewrite()
+                fragments.append(
+                    format_fragment(document.writer.subtree(node), 1)
+                )
+    transaction = document.edit()
     transaction.replace_subtree(
         preferred,
         preferred.header + "\n" + "".join(fragments),
@@ -538,7 +538,7 @@ def _merge_duplicate_interface(document, preferred):
     for block in duplicates:
         if block is not preferred:
             transaction.delete(block, "移除已合并的重复接口")
-    transaction.commit()
+    transaction.apply()
 
 
 def _insert_top_level_before_end(document, text):
@@ -546,9 +546,9 @@ def _insert_top_level_before_end(document, text):
 
     终止命令之后的内容不属于活动配置，因此新增定义必须通过统一顶层插入器进入主体。
     """
-    transaction = document.rewrite()
+    transaction = document.edit()
     append_top_level(transaction, document, text, "创建目标接口")
-    transaction.commit()
+    transaction.apply()
 
 
 def ensure_parent_interface(document: CiscoDocument, name: str) -> None:

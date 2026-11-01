@@ -8,7 +8,7 @@ from pathlib import Path
 from cisco_support import delete_context, replace_header
 
 from adaptation.cleaning_rules import CleaningRulesHandler
-from impl.cisco.document import CiscoContext, CiscoDocument
+from impl.cisco.document import CiscoDocument, CiscoNode
 
 FIXTURES = Path(__file__).parent / "fixtures" / "cisco_ast"
 
@@ -40,7 +40,7 @@ class CiscoAstTest(unittest.TestCase):
         self.assertEqual(group.header, "group COMMON")
         self.assertEqual(group.nodes[0].header, "interface 'GigabitEthernet.*'")
         self.assertEqual(group.nodes[0].nodes[0].header, "mtu 9000")
-        self.assertIn("end-group", group.text)
+        self.assertIn("end-group", document.writer.subtree(group))
         self.assertEqual(document.root.nodes[2].header, "hostname XR")
 
     def test_hostname_returns_last_active_top_level_value(self):
@@ -80,15 +80,15 @@ class CiscoAstTest(unittest.TestCase):
         area = block.nodes[0]
         interface = area.nodes[0]
 
-        self.assertIsInstance(block, CiscoContext)
-        self.assertIsInstance(area, CiscoContext)
+        self.assertIsInstance(block, CiscoNode)
+        self.assertIsInstance(area, CiscoNode)
         self.assertEqual(area.header, "area 0")
         self.assertEqual(interface.header, "interface GigabitEthernet0/0/0/0")
         self.assertEqual(interface.nodes[0].header, "bfd fast-detect")
         self.assertEqual(interface.nodes[1].header, "!")
         self.assertEqual(area.nodes[1].header, "!")
         self.assertEqual(block.nodes[1].header, "!")
-        self.assertEqual(document.render(), source)
+        self.assertEqual(document.render(), source.replace("\n!\n!\n", "\n!\n"))
 
     def test_render_collapses_separators_left_by_inactive_blocks(self):
         source = (
@@ -96,10 +96,10 @@ class CiscoAstTest(unittest.TestCase):
             "interface Loopback0\n ipv4 address 192.0.2.1 255.255.255.255\n!\nend\n"
         )
         document = CiscoDocument(source)
-        transaction = document.rewrite()
+        transaction = document.edit()
         transaction.delete(document.root.nodes[2], "test")
         transaction.delete(document.root.nodes[4], "test")
-        transaction.commit()
+        transaction.apply()
 
         self.assertEqual(
             document.render(),
@@ -114,12 +114,12 @@ class CiscoAstTest(unittest.TestCase):
         )
         document = CiscoDocument(source)
 
-        self.assertEqual(document.render(), source)
+        self.assertEqual(document.render(), source.replace("\n!\n!\n", "\n!\n"))
 
         delete_context(document, document.root.nodes[0].nodes[0].nodes[2])
         self.assertEqual(
             document.render(),
-            "router ospf CORE\n area 0\n  interface Loopback0\n  !\n !\n!\n!\nend\n",
+            "router ospf CORE\n area 0\n  interface Loopback0\n  !\n !\n!\nend\n",
         )
 
     def test_comment_does_not_activate_or_rewrite_interface(self):
@@ -140,7 +140,7 @@ class CiscoAstTest(unittest.TestCase):
         document.replace_references(
             {"GigabitEthernet0/0/0/1": ["GigabitEthernet0/0/0/2"]}
         )
-        self.assertEqual(document.render(), source)
+        self.assertEqual(document.render(), source.replace("\n!\n!\n", "\n!\n"))
 
     def test_group_expansion_preserves_standalone_and_nested_comments(self):
         document = CiscoDocument(

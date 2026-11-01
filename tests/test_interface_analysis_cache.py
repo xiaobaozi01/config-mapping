@@ -40,32 +40,40 @@ def analyze(document):
 
 def reverse_container(document, container):
     """通过文本事务反转一个接口或 unit 下的语句顺序。"""
-    transaction = document.rewrite()
+    transaction = document.edit()
     if isinstance(document, CiscoDocument):
         payload = (
             container.header
             + "\n"
-            + "".join(node.text for node in reversed(container.nodes))
+            + "".join(
+                document.writer.subtree(node)
+                for node in reversed(container.nodes)
+            )
         )
     else:
         payload = (
             container.header
             + " { "
-            + " ".join(node.text for node in reversed(container.nodes))
+            + " ".join(
+                document.writer.subtree(node)
+                for node in reversed(container.nodes)
+            )
             + " }"
         )
     transaction.replace_subtree(container, payload, "reverse statements")
-    transaction.commit()
+    transaction.apply()
 
 
 def move_into_inactive_child(document, container):
     """把业务语句移动到 inactive 子块。"""
     nested, business = container.nodes
-    transaction = document.rewrite()
+    transaction = document.edit()
     transaction.replace_header(nested, "inactive: nested", "inactive target")
     transaction.delete(business, "move source")
-    transaction.append_child(nested, business.text, "move target")
-    transaction.commit()
+    transaction.append_child(
+        nested, document.writer.subtree(business), "move target"
+    )
+    transaction.apply()
 
 
 class InterfaceAnalysisCacheTest(unittest.TestCase):
@@ -502,12 +510,12 @@ class InterfaceCacheDifferentialTest(unittest.TestCase):
                 )
                 if cls is CiscoDocument:
                     nested, business = container.nodes
-                    transaction = document.rewrite()
+                    transaction = document.edit()
                     transaction.delete(business, "move source")
                     transaction.append_child(
-                        nested, business.text, "move target"
+                        nested, document.writer.subtree(business), "move target"
                     )
-                    transaction.commit()
+                    transaction.apply()
                     self.assertIn(
                         name, self.assert_matches_uncached(document)[2]
                     )

@@ -25,7 +25,10 @@ def _report(
     kind: EventKind,
     outcome: InterfaceAdaptationOutcome,
 ) -> None:
-    """把厂商接口处理结果写入设备状态和全局结构化事件。"""
+    """把厂商接口处理结果写入设备状态和全局结构化事件。
+
+    这一入口连接配置处理结果与转换报告，配置变更和诊断需要保持一致的设备归属。
+    """
     device = context.devices[name]
     device.errors.extend(
         f"设备 {name}: {message}" for message in outcome.errors
@@ -60,7 +63,10 @@ def _report_diagnostics(
     kind: EventKind,
     outcome: InterfaceAdaptationOutcome,
 ) -> None:
-    """把规则级错误和告警转换为带来源 ID 的处理器事件。"""
+    """把规则级错误和告警转换为带来源 ID 的处理器事件。
+
+    这一入口连接配置处理结果与转换报告，配置变更和诊断需要保持一致的设备归属。
+    """
     for level, messages in (
         ("error", outcome.errors),
         ("warning", outcome.warnings),
@@ -138,12 +144,12 @@ class PreconfiguredInterfaceCleanupHandler:
                 continue
             document = cast(CiscoDocument, device.document)
             removed = 0
-            transaction = document.rewrite()
+            transaction = document.edit()
             for block in document.root.nodes:
                 if block.is_preconfigured_interface:
                     transaction.delete(block, "忽略未实例化的预配置接口")
                     removed += 1
-            transaction.commit()
+            transaction.apply()
             if removed:
                 context.add_event(
                     EventKind.PRECONFIGURED_INTERFACE_CLEANUP,

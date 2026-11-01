@@ -1,6 +1,5 @@
 """物理父口和 unit 引用完整改写，接口定义不重复迁移。"""
 
-import importlib.util
 import unittest
 from pathlib import Path
 
@@ -49,14 +48,13 @@ def nni_context():
 
 class JunosReferenceRewriteTest(unittest.TestCase):
 
-    def test_reference_rewriter_is_owned_by_document_module(self):
-        from impl.juniper import document
+    def test_reference_rewriter_is_owned_by_reference_service(self):
+        from impl.juniper import document, references
 
-        self.assertTrue(hasattr(document, "_ReferenceRewriter"))
+        self.assertFalse(hasattr(document, "_ReferenceRewriter"))
         self.assertEqual(
-            document._ReferenceRewriter.__module__, document.__name__
+            references._ReferenceRewriter.__module__, references.__name__
         )
-        self.assertIsNone(importlib.util.find_spec("impl.juniper.references"))
 
     def test_nni_generates_parent_and_unit_mappings(self):
         context = nni_context()
@@ -106,7 +104,7 @@ class JunosReferenceRewriteTest(unittest.TestCase):
             [node.header for node in definitions],
             ["ge-0/0/1", "ge-0/0/2", "demux0", "inactive: ge-0/0/0"],
         )
-        first = document._render_effective_node(definitions[0], 0)
+        first = document.writer.effective(definitions[0], document._parser)
         self.assertIn("unnumbered-address ge-0/0/1.0;", first)
         self.assertNotIn("unnumbered-address ge-0/0/2.0;", first)
         output = document.render()
@@ -139,9 +137,9 @@ class JunosReferenceRewriteTest(unittest.TestCase):
             (FIXTURES / "junos_definition_and_references.cfg").read_text()
         )
         node = document._interfaces_block().nodes[0]
-        transaction = document.rewrite()
+        transaction = document.edit()
         transaction.delete(node, "test deletion")
-        transaction.commit()
+        transaction.apply()
         document.replace_references({"ge-0/0/0.0": ["ge-0/0/5.0"]})
         self.assertIsNone(document._find_interface_node("ge-0/0/0"))
         self.assertIn("inactive: ge-0/0/0", document.source)

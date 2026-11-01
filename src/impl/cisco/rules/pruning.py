@@ -13,12 +13,12 @@ from impl.common.outcomes import (
 )
 
 from ..document import (
-    _CISCO_INTERFACE_TOKEN,
-    CiscoContext,
     CiscoDocument,
+    CiscoNode,
     canonical_cisco_interface,
 )
 from ..interfaces import interface_nodes
+from ..semantics import _CISCO_INTERFACE_TOKEN
 from .support import CiscoRuleVisitor, CiscoVisitorRule, document_scope
 
 # 整个接口 token 一次规范化，避免 Gi/BE 缩写和主口/子口前缀误匹配。
@@ -89,7 +89,7 @@ def _is_known_removed_reference(node, path):
     return known_binding or static_route
 
 
-def _addresses(block: CiscoContext) -> set[str]:
+def _addresses(block: CiscoNode) -> set[str]:
     """收集接口块子树中的已配置 IP 地址。
 
     无效或未编号前缀会被忽略，使地址清理只跟踪能够明确归类的本地地址。
@@ -103,7 +103,7 @@ def _addresses(block: CiscoContext) -> set[str]:
     return result
 
 
-def _walk(nodes: list[CiscoContext], path: tuple[str, ...] = ()):
+def _walk(nodes: list[CiscoNode], path: tuple[str, ...] = ()):
     """递归遍历活动 Cisco 节点及完整命令路径。
 
     跳过格式节点可让依赖分析只处理实际配置，同时保留报告定位所需的祖先路径。
@@ -227,12 +227,10 @@ class _BgpSourcePruner:
 
         先完成只读索引再分析，使后续删除决策基于同一份原始配置。
         """
-        self.sessions: dict[int, tuple[CiscoContext, tuple[str, ...], bool]] = (
-            {}
-        )
+        self.sessions: dict[int, tuple[CiscoNode, tuple[str, ...], bool]] = {}
         self.templates: dict[tuple[tuple[str, ...], str, str], list[int]] = {}
         self.statements: dict[
-            int, tuple[CiscoContext, tuple[str, ...], tuple[str, str]]
+            int, tuple[CiscoNode, tuple[str, ...], tuple[str, str]]
         ] = {}
         self.direct: dict[int, dict[tuple[str, str], set[int]]] = {}
         self.uses: dict[int, list[tuple[str, str]]] = {}
@@ -645,7 +643,7 @@ class _CiscoPruner:
 
     def _handle_removed_reference(
         self,
-        node: CiscoContext,
+        node: CiscoNode,
         current: tuple[str, ...],
         references: set[str],
     ) -> bool:
@@ -675,9 +673,7 @@ class _CiscoPruner:
         )
         return False
 
-    def clean(
-        self, nodes: list[CiscoContext], path: tuple[str, ...] = ()
-    ) -> None:
+    def clean(self, nodes: list[CiscoNode], path: tuple[str, ...] = ()) -> None:
         """递归删除或保留指向已裁剪接口的活动依赖。
 
         已知绑定自动删除，未知引用保留并记录 warning；递归依赖当前节点是否已被整节点
@@ -753,7 +749,10 @@ class InterfaceDependencyCascade:
         outcome,
         record,
     ):
-        """保存删除集合、地址作用域和审计回调。"""
+        """保存删除集合、地址作用域和审计回调。
+
+        该操作在当前文档的业务处理边界内运行，调用方继续负责统一的结果记录和失败处理。
+        """
         self.document = document
         self.removed_interfaces = removed_interfaces
         self.removed_addresses = removed_addresses
@@ -762,7 +761,10 @@ class InterfaceDependencyCascade:
         self.record = record
 
     def run(self):
-        """依次清理 BGP 本地源和监控会话。"""
+        """依次清理 BGP 本地源和监控会话。
+
+        该操作在当前文档的业务处理边界内运行，调用方继续负责统一的结果记录和失败处理。
+        """
         _BgpSourcePruner(
             self.document,
             self.removed_interfaces,
@@ -810,14 +812,14 @@ class PruningVisitor(CiscoRuleVisitor):
     def finish(self):
         """向规则会话提交最外层且互不重叠的删除。
 
-        祖先已删除的后代不再单独提交，避免 TokenStreamRewriter 区间冲突。
+        祖先已删除的后代不再单独提交，避免 祖先删除后继续编辑已移除节点。
         """
         if self.session.result.errors:
             return
         for node, reason, sources in self.deletions.values():
-            parent = node.parentCtx
+            parent = node.parent
             while parent is not None and id(parent) not in self.deletions:
-                parent = parent.parentCtx
+                parent = parent.parent
             if parent is None:
                 self.session.edits.delete(
                     node, reason, source_interfaces=sources
@@ -830,7 +832,7 @@ class NonNNIVisitor(PruningVisitor):
     该访问器只创建分析器并委托 analyze，自身负责事件收集和统一提交。
     """
 
-    def visitConfiguration(self, root):
+    def visit_configuration(self, root):
         """从配置根启动完整非 NNI 剪枝分析。
 
         保护集合来自规则上下文，分析结果通过当前 Visitor 记录删除。
@@ -849,7 +851,7 @@ class MemberSourcesVisitor(PruningVisitor):
     该模式只传播已显式删除的成员接口，不重新计算完整非 NNI 范围。
     """
 
-    def visitConfiguration(self, root):
+    def visit_configuration(self, root):
         """通过共享依赖级联内核清理已删除成员。
 
         删除集合直接取规则上下文，确保只处理调用方指定的成员。
@@ -870,7 +872,7 @@ class InterfaceBindingsVisitor(PruningVisitor):
     该规则不修改接口集合，只沿已删除成员检查全局配置中的引用。
     """
 
-    def visitConfiguration(self, root):
+    def visit_configuration(self, root):
         """从配置根递归检查已删除接口绑定。
 
         使用规则上下文的删除集合，未知依赖由分析器报告错误而不自动删除。
@@ -1001,7 +1003,10 @@ def _track_uses(name, definitions, commands):
 
 
 def _defer_track_references(outcome, nodes, interfaces, reason):
-    """记录保留 track 定义中仍指向已删除接口的精确引用。"""
+    """记录保留 track 定义中仍指向已删除接口的精确引用。
+
+    该操作在当前文档的业务处理边界内运行，调用方继续负责统一的结果记录和失败处理。
+    """
     for node in nodes:
         for child, path in _walk([node]):
             references = interface_references(child.header, interfaces)
@@ -1065,7 +1070,7 @@ class TrackDependenciesVisitor(PruningVisitor):
                 lost,
             )
 
-    def visitConfiguration(self, root):
+    def visit_configuration(self, root):
         """分析全部 track 定义和消费者并登记删除。
 
         重复定义或未知消费者会阻止该 track 自动裁剪，保证依赖链可解释。

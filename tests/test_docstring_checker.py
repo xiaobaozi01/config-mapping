@@ -95,14 +95,14 @@ class DocstringCheckerTest(TestCase):
 
         self.assertEqual(violations, [])
 
-    def test_generated_antlr_files_are_excluded(self):
+    def test_nested_source_files_are_checked(self):
         with TemporaryDirectory() as directory:
             for vendor in ("cisco", "juniper"):
                 generated = (
                     Path(directory)
                     / "impl"
                     / vendor
-                    / "antlr"
+                    / "parser"
                     / "generated"
                     / "parser.py"
                 )
@@ -113,4 +113,4 @@ class DocstringCheckerTest(TestCase):
 
                 violations = check_file(generated)
 
-                self.assertEqual(violations, [])
+                self.assertEqual(len(violations), 1)

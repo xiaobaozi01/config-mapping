@@ -8,13 +8,13 @@ from typing import TYPE_CHECKING
 from impl.common.interface import interface_parent
 from impl.common.outcomes import InterfaceAdaptationOutcome
 
-from .document import _CISCO_INTERFACE_TOKEN
+from .semantics import _CISCO_INTERFACE_TOKEN
 
 if TYPE_CHECKING:
-    from .document import CiscoContext, CiscoDocument
+    from .document import CiscoDocument, CiscoNode
 
 
-def _walk(nodes: list[CiscoContext], path: tuple[str, ...] = ()):
+def _walk(nodes: list[CiscoNode], path: tuple[str, ...] = ()):
     """递归遍历活动配置节点并返回完整命令路径。
 
     跳过格式节点可让约束检查只处理实际命令，同时保留路径用于定位冲突引用。

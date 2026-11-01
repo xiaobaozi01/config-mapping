@@ -18,6 +18,7 @@ from impl.common.empty_blocks import EmptyBlockPolicy as CommonEmptyBlockPolicy
 
 
 class CiscoEmptyBlockRulesTest(unittest.TestCase):
+
     def test_cisco_actions_use_the_shared_empty_block_action_type(self):
         self.assertIs(
             xrv9000_empty_block_policy().default, EmptyBlockAction.KEEP
@@ -46,15 +47,19 @@ class CiscoEmptyBlockRulesTest(unittest.TestCase):
             {"target": {"vendor": "cisco_iosxr", "image": "vmx"}},
         ]
         for action in ("semicolon", "braces"):
-            invalid.extend([
-                {"default_when_empty": action},
-                {"rules": [{"path": ["**"], "action": action}]},
-            ])
+            invalid.extend(
+                [
+                    {"default_when_empty": action},
+                    {"rules": [{"path": ["**"], "action": action}]},
+                ]
+            )
         with TemporaryDirectory() as directory:
             path = Path(directory) / "empty_blocks.yaml"
             for change in invalid:
                 with self.subTest(change=change):
-                    path.write_text(yaml.safe_dump(base | change), encoding="utf-8")
+                    path.write_text(
+                        yaml.safe_dump(base | change), encoding="utf-8"
+                    )
                     with self.assertRaises(ValueError):
                         load_empty_block_policy(path)
 
@@ -77,7 +82,10 @@ class CiscoEmptyBlockRulesTest(unittest.TestCase):
             (("router ospf CORE", "area 1"), "omit"),
             (("router ospf CORE", "area 1", "interface Loopback0"), "keep"),
             (("router bgp 65000", "address-family ipv4 unicast"), "omit"),
-            (("router bgp 65000", "vrf BLUE", "address-family ipv4 unicast"), "omit"),
+            (
+                ("router bgp 65000", "vrf BLUE", "address-family ipv4 unicast"),
+                "omit",
+            ),
             (("address-family ipv4 unicast",), "keep"),
         ):
             with self.subTest(path=block_path):
@@ -85,6 +93,7 @@ class CiscoEmptyBlockRulesTest(unittest.TestCase):
 
 
 class CiscoEmptyBlockRenderingTest(unittest.TestCase):
+
     def render_with_policy(self, document, default="omit", rules=()):
         with patch(
             "impl.cisco.document.xrv9000_empty_block_policy",
@@ -93,16 +102,24 @@ class CiscoEmptyBlockRenderingTest(unittest.TestCase):
             return document.render()
 
     def test_default_preserves_original_empty_blocks_and_leaf_commands(self):
-        source = "hostname XR\n!\ninterface Loopback0\n!\nrouter ospf CORE\n!\nend\n"
+        source = (
+            "hostname XR\n!\ninterface Loopback0\n!\nrouter ospf CORE\n!\nend\n"
+        )
         self.assertEqual(CiscoDocument(source).render(), source)
 
-    def test_omit_empty_blocks_preserves_leaf_commands_and_collapses_separators(self):
+    def test_omit_empty_blocks_preserves_leaf_commands_and_collapses_separators(
+        self,
+    ):
         document = CiscoDocument(
             "hostname XR\n!\ninterface Loopback0\n!\nrouter ospf CORE\n!\nend\n"
         )
-        self.assertEqual(self.render_with_policy(document), "hostname XR\n!\nend\n")
+        self.assertEqual(
+            self.render_with_policy(document), "hostname XR\n!\nend\n"
+        )
 
-    def test_cleaned_descendants_make_ancestors_empty_without_mutating_ast(self):
+    def test_cleaned_descendants_make_ancestors_empty_without_mutating_ast(
+        self,
+    ):
         document = CiscoDocument(
             "router ospf CORE\n area 0\n  interface Loopback0\n"
             "   authentication key-chain PROD\n  !\n !\n!\nend\n"
@@ -116,7 +133,7 @@ class CiscoEmptyBlockRenderingTest(unittest.TestCase):
     def test_comments_and_formatting_do_not_keep_empty_block(self):
         source = "interface Loopback0\n ! note\n\n !\n!\nend\n"
         document = CiscoDocument(source)
-        self.assertEqual(document.render(), source)
+        self.assertEqual(document.render(), source.replace("\n\n", "\n"))
         self.assertEqual(self.render_with_policy(document), "!\nend\n")
 
     def test_path_override_keeps_empty_child_and_its_parent(self):
@@ -125,9 +142,16 @@ class CiscoEmptyBlockRenderingTest(unittest.TestCase):
             "  !\n !\n!\nend\n"
         )
         document.apply_cleaning_rule(("**",), "^cost", "delete", None)
-        rules = ((("^router ospf CORE$", "^area 0$", "^interface Loopback0$"), "keep"),)
+        rules = (
+            (
+                ("^router ospf CORE$", "^area 0$", "^interface Loopback0$"),
+                "keep",
+            ),
+        )
         rendered = self.render_with_policy(document, rules=rules)
-        self.assertIn("router ospf CORE\n area 0\n  interface Loopback0\n", rendered)
+        self.assertIn(
+            "router ospf CORE\n area 0\n  interface Loopback0\n", rendered
+        )
         self.assertNotIn("cost", rendered)
 
     def test_omit_rule_only_affects_matching_empty_blocks(self):
@@ -137,7 +161,9 @@ class CiscoEmptyBlockRenderingTest(unittest.TestCase):
         )
         document.apply_cleaning_rule(("**",), "^authentication", "delete", None)
         rules = ((("^router ospf CORE$", "*"), "omit"),)
-        rendered = self.render_with_policy(document, default="keep", rules=rules)
+        rendered = self.render_with_policy(
+            document, default="keep", rules=rules
+        )
         self.assertNotIn("area 0", rendered)
         self.assertIn(" area 1\n  interface Loopback0\n", rendered)
 

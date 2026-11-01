@@ -128,9 +128,9 @@ class NniCloneConstraintsTest(unittest.TestCase):
         protocols = next(
             node for node in document.root.nodes if node.header == "protocols"
         )
-        transaction = document.rewrite()
+        transaction = document.edit()
         transaction.delete(protocols, "test setup")
-        transaction.commit()
+        transaction.apply()
         outcome = document.validate_nni_clone("ae10", {"ge-0/0/0", "ge-0/0/1"})
         self.assertEqual(outcome.errors, [])
 

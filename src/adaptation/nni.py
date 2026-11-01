@@ -156,7 +156,8 @@ def _validate_peer_bundle_fanout(
         if len(remote_bundles) <= 1:
             continue
         rendered = ", ".join(
-            f"{peer}:{remote_bundle}" for remote_bundle in sorted(remote_bundles)
+            f"{peer}:{remote_bundle}"
+            for remote_bundle in sorted(remote_bundles)
         )
         warnings.append(
             f"设备 {device_name} 聚合 {bundle} 同时连接到同一对端的多个聚合: "

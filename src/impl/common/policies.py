@@ -7,7 +7,10 @@ from enum import StrEnum
 
 
 class SimulationMode(StrEnum):
-    """定义模拟参数适配允许使用的稳定模式。"""
+    """定义模拟参数适配允许使用的稳定模式。
+
+    模式从关闭到稳定逐级增加改动范围，调用方可按目标镜像的验证程度选择。
+    """
 
     OFF = "off"
     COMPATIBLE = "compatible"
@@ -15,7 +18,10 @@ class SimulationMode(StrEnum):
 
 
 class GroupIdentityMode(StrEnum):
-    """定义 group 未覆盖语义出现潜在冲突时的处理策略。"""
+    """定义 group 未覆盖语义出现潜在冲突时的处理策略。
+
+    默认告警在保留未知配置的同时暴露覆盖缺口，严格输入场景可以选择直接失败。
+    """
 
     PRESERVE = "preserve"
     WARN = "warn"
@@ -36,7 +42,10 @@ class SimulationAdaptationPolicy:
     bfd_minimum_multiplier: int = 3
 
     def __post_init__(self) -> None:
-        """把配置入口的字符串规范化为受限模式。"""
+        """把配置入口的字符串规范化为受限模式。
+
+        非字符串或未声明模式会立即失败，避免后续规则在含义不明时继续执行。
+        """
         try:
             self.mode = SimulationMode(self.mode)
         except ValueError as exc:
@@ -56,7 +65,10 @@ class WashingPolicy:
     junos_excluded_groups: tuple[str, ...] = ("re1",)
 
     def __post_init__(self) -> None:
-        """把配置入口的字符串规范化为受限处理策略。"""
+        """把配置入口的字符串规范化为受限处理策略。
+
+        构造完成后的对象只保存枚举值，使厂商展开器无需重复解释配置文本。
+        """
         try:
             mode = GroupIdentityMode(self.group_unknown_identity)
         except ValueError as exc:

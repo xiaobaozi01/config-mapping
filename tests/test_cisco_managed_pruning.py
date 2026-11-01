@@ -5,10 +5,11 @@ from dataclasses import replace
 from unittest.mock import patch
 
 from impl.cisco import rules
-from impl.cisco.antlr.parsing import ConfigurationParseError
 from impl.cisco.document import CiscoDocument
+from impl.cisco.parser import ConfigurationParseError
 from impl.cisco.rules import pruning
 from impl.cisco.rules.support import CiscoVisitorRule
+from impl.common.config_ast.model import tree_signature
 from impl.common.outcomes import InterfacePruningOutcome
 from impl.common.rules import PruneContext
 
@@ -50,12 +51,12 @@ class ManagedPruningFailureTest(unittest.TestCase):
         for rule, source, context in prune_cases():
             with self.subTest(rule=rule.rule_id):
                 document = CiscoDocument(source)
-                snapshot = document.snapshot
+                snapshot = tree_signature(document.root)
                 staged = InterfacePruningOutcome()
 
                 def reject(session, visitor, edits):
                     self.assertGreater(edits.total, 0)
-                    self.assertIsNot(document.snapshot, snapshot)
+                    self.assertNotEqual(tree_signature(document.root), snapshot)
                     pruning.pruning_result(session, visitor, edits)
                     self.assertTrue(session.result.changes)
                     raise RuntimeError("mapping failed")
@@ -65,7 +66,7 @@ class ManagedPruningFailureTest(unittest.TestCase):
                 )
                 with self.assertRaisesRegex(RuntimeError, "mapping failed"):
                     failing.apply(document, context)
-                self.assertIs(document.snapshot, snapshot)
+                self.assertEqual(tree_signature(document.root), snapshot)
                 self.assertEqual(document.revision, 0)
                 self.assertEqual(
                     (
@@ -82,16 +83,16 @@ class ManagedPruningFailureTest(unittest.TestCase):
         for rule, source, context in prune_cases():
             with self.subTest(rule=rule.rule_id):
                 document = CiscoDocument(source)
-                snapshot = document.snapshot
+                snapshot = tree_signature(document.root)
                 staged = InterfacePruningOutcome()
                 registered = replace(rule, outcome_factory=lambda: staged)
                 with patch(
-                    "impl.cisco.antlr.rewriting.CiscoSnapshot",
+                    "impl.common.config_ast.editor.ConfigEditor._execute",
                     side_effect=ConfigurationParseError("invalid"),
                 ):
                     with self.assertRaises(ConfigurationParseError):
                         registered.apply(document, context)
-                self.assertIs(document.snapshot, snapshot)
+                self.assertEqual(tree_signature(document.root), snapshot)
                 self.assertEqual(
                     (
                         staged.changes,
@@ -107,10 +108,10 @@ class ManagedPruningFailureTest(unittest.TestCase):
             + "router bgp 65001\n neighbor 192.0.2.3\n  use neighbor-group MISSING\n"
         )
         document = CiscoDocument(source)
-        snapshot = document.snapshot
+        snapshot = tree_signature(document.root)
         result = document.prune_non_nni({"Gi0/0/0/0"})
         self.assertFalse(result.errors)
-        self.assertIsNot(document.snapshot, snapshot)
+        self.assertNotEqual(tree_signature(document.root), snapshot)
         self.assertEqual(result.removed_interfaces, {REMOVED})
         self.assertEqual(result.removed_addresses, {"192.0.2.1"})
         self.assertTrue(result.changes)
@@ -218,7 +219,7 @@ class ManagedPruningResultTest(unittest.TestCase):
         self,
     ):
         document = CiscoDocument(FULL_SOURCE + TRACK_SOURCE + BINDING_SOURCE)
-        original = document.snapshot
+        original = tree_signature(document.root)
         observed = []
 
         def observe(context):
@@ -226,7 +227,7 @@ class ManagedPruningResultTest(unittest.TestCase):
                 (
                     context.removed_interfaces,
                     context.removed_addresses,
-                    document.snapshot,
+                    tree_signature(document.root),
                 )
             )
             return True
@@ -256,7 +257,7 @@ class ManagedPruningResultTest(unittest.TestCase):
     ):
         class NestedVisitor(pruning.PruningVisitor):
 
-            def visitConfiguration(self, root):
+            def visit_configuration(self, root):
                 parent = root.nodes[0]
                 self.record(
                     parent.nodes[0],

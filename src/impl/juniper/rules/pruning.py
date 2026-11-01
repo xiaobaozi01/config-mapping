@@ -18,7 +18,7 @@ from ..interfaces import _collect_active_vlans, _expand_vlan_tokens
 from .compatibility import _validate_pruned_references, _walk
 
 if TYPE_CHECKING:
-    from ..document import JunosDocument, _WorkNode
+    from ..document import JuniperNode, JunosDocument
 
 
 def _address(value: str) -> str | None:
@@ -195,7 +195,7 @@ class _JunosPruner:
 
     def record(
         self,
-        node: _WorkNode,
+        node: JuniperNode,
         path: tuple[str, ...],
         reason: str,
         names: set[str] | None = None,
@@ -400,7 +400,7 @@ class _JunosPruner:
         if match and (address := _address(match.group(1))):
             self.result.removed_addresses.add(address)
 
-    def references(self, node: _WorkNode) -> set[str]:
+    def references(self, node: JuniperNode) -> set[str]:
         """返回单个节点的 header 中可识别的已删除接口引用。
 
         只检查当前语句，避免父节点误吞子树引用而提前删除本应单独审计的配置。
@@ -409,7 +409,7 @@ class _JunosPruner:
             self.document._parser.base_header(node.header), self.removed
         )
 
-    def subtree_references(self, node: _WorkNode) -> set[str]:
+    def subtree_references(self, node: JuniperNode) -> set[str]:
         """返回节点及其有效子树中的已删除接口引用。
 
         静态路由可能在子语句保存下一跳或出接口，汇总检查后才能安全删除父节点。
@@ -472,7 +472,7 @@ class _JunosPruner:
                         interfaces,
                     )
 
-    def local_source(self, node: _WorkNode):
+    def local_source(self, node: JuniperNode):
         """读取节点下首个有效 local-address 及其地址值。
 
         返回值同时携带节点和标准化地址，使调用方能够删除具体语句而不重新定位。
@@ -541,7 +541,7 @@ class _JunosPruner:
                 else:
                     self.record(group, path, "BGP 组无使用有效源的保留邻居")
 
-    def clean(self, node: _WorkNode, path: tuple[str, ...] = ()) -> None:
+    def clean(self, node: JuniperNode, path: tuple[str, ...] = ()) -> None:
         """递归删除指向已删接口的明确业务依赖。
 
         仅处理已知协议、VPN、桥域和 QoS 上下文，未知引用保留给最终校验审计。
@@ -573,7 +573,7 @@ class _JunosPruner:
                 retained = [
                     value for value in values if value not in self.removed
                 ]
-                if retained and child.children is None:
+                if retained and not child.is_block:
                     child.header = (
                         f"interface [ {' '.join(retained)} ];"
                         if len(retained) > 1
@@ -633,20 +633,11 @@ def prune_non_nni(
     """
     from . import prune_non_nni as execute
 
-    if hasattr(document, "_working_root"):
-        return execute(
-            document,
-            protected_parents,
-            strict_input_validation=strict_input_validation,
-        )
-    with document._working_tree() as working_root:
-        outcome = execute(
-            document,
-            protected_parents,
-            strict_input_validation=strict_input_validation,
-        )
-    document._publish_work_root(working_root)
-    return outcome
+    return execute(
+        document,
+        protected_parents,
+        strict_input_validation=strict_input_validation,
+    )
 
 
 def prune_interface_dependencies(
@@ -691,9 +682,4 @@ def prune_interface_dependencies(
             InterfacePruningOutcome(),
         )
 
-    if hasattr(document, "_working_root"):
-        return collect()
-    with document._working_tree() as working_root:
-        outcome = collect()
-    document._publish_work_root(working_root)
-    return outcome
+    return collect()

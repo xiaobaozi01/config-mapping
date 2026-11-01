@@ -6,8 +6,8 @@ from pathlib import Path
 from unittest.mock import patch
 
 from impl.cisco import rules
-from impl.cisco.antlr.parsing import ConfigurationParseError
 from impl.cisco.document import CiscoDocument
+from impl.cisco.parser import ConfigurationParseError
 from impl.cisco.rules import compatibility
 from impl.cisco.rules.support import (
     CiscoRuleVisitor,
@@ -16,6 +16,7 @@ from impl.cisco.rules.support import (
     RuleContractError,
     compatibility_interfaces_scope,
 )
+from impl.common.config_ast.model import tree_signature
 from impl.common.interface import InterfaceKind
 from impl.common.outcomes import (
     InterfaceAdaptationOutcome,
@@ -46,13 +47,13 @@ class MarkVisitor(CiscoRuleVisitor):
         super().__init__(session)
         self.count = 0
 
-    def visitNode(self, node):
+    def visit_node(self, node):
         self.count += 1
         if node.header == "hostname OLD":
             self.session.edits.replace_header(
                 node, "hostname NEW", "test marker"
             )
-        return self.visitChildren(node)
+        return self.visit_children(node)
 
 
 class RuntimeLifecycleTest(unittest.TestCase):
@@ -85,11 +86,13 @@ class RuntimeLifecycleTest(unittest.TestCase):
 
     def test_later_function_rule_sees_managed_commit_with_fresh_contexts(self):
         document = CiscoDocument("hostname OLD\n")
-        original = document.snapshot
+        original = tree_signature(document.root)
         observed = []
 
         def read(doc, context):
-            observed.append((doc.snapshot, doc.root.nodes[0].header))
+            observed.append(
+                (tree_signature(doc.root), doc.root.nodes[0].header)
+            )
             return InterfaceAdaptationOutcome()
 
         execute_rules(
@@ -106,13 +109,15 @@ class RuntimeLifecycleTest(unittest.TestCase):
 
     def test_finish_runs_once_after_all_roots_before_single_commit(self):
         document = CiscoDocument("hostname OLD\ndescription OLD\n")
-        snapshot = document.snapshot
+        snapshot = tree_signature(document.root)
         observed = []
 
         class FinishVisitor(MarkVisitor):
 
             def finish(self):
-                observed.append((self.count, self.session.document.snapshot))
+                observed.append(
+                    (self.count, tree_signature(self.session.document.root))
+                )
                 self.session.edits.replace_header(
                     self.session.document.root.nodes[1],
                     "description NEW",
@@ -148,14 +153,14 @@ class RuntimeLifecycleTest(unittest.TestCase):
             selector=lambda doc, ctx: (),
         )
         document = example()
-        snapshot = document.snapshot
+        snapshot = tree_signature(document.root)
         self.assertEqual(rule.apply(document, EMPTY).changes, [])
-        self.assertIs(document.snapshot, snapshot)
+        self.assertEqual(tree_signature(document.root), snapshot)
 
     def test_foreign_duplicate_and_overlapping_roots_fail_before_visiting(self):
         document = example()
         foreign = example()
-        snapshot = document.snapshot
+        snapshot = tree_signature(document.root)
         for roots in (
             (foreign.root,),
             (document.root, document.root),
@@ -169,7 +174,7 @@ class RuntimeLifecycleTest(unittest.TestCase):
                 )
                 with self.assertRaises(RuleContractError):
                     rule.apply(document, EMPTY)
-                self.assertIs(document.snapshot, snapshot)
+                self.assertEqual(tree_signature(document.root), snapshot)
 
     def test_cached_visitor_is_rejected_on_subsequent_execution(self):
         visitors = []
@@ -191,7 +196,7 @@ class RuntimeFailureTest(unittest.TestCase):
 
     def test_business_error_discards_edits_changes_and_prune_sets(self):
         document = CiscoDocument("hostname OLD\n")
-        snapshot = document.snapshot
+        snapshot = tree_signature(document.root)
 
         class FailVisitor(MarkVisitor):
 
@@ -207,7 +212,7 @@ class RuntimeFailureTest(unittest.TestCase):
             "failed", FailVisitor, outcome_factory=InterfacePruningOutcome
         )
         result = rule.apply(document, PruneContext(frozenset()))
-        self.assertIs(document.snapshot, snapshot)
+        self.assertEqual(tree_signature(document.root), snapshot)
         self.assertEqual(result.errors, ["business conflict"])
         self.assertEqual(result.warnings, ["preserved warning"])
         self.assertEqual(
@@ -223,11 +228,11 @@ class RuntimeFailureTest(unittest.TestCase):
         self,
     ):
         document = CiscoDocument("hostname OLD\n")
-        snapshot = document.snapshot
+        snapshot = tree_signature(document.root)
 
         class InvalidVisitor(CiscoRuleVisitor):
 
-            def visitNode(self, node):
+            def visit_node(self, node):
                 self.session.edits.replace_header(
                     node, "group UNTERMINATED", "invalid"
                 )
@@ -238,14 +243,14 @@ class RuntimeFailureTest(unittest.TestCase):
             self.assertRaises(ConfigurationParseError),
         ):
             document.adapt_interfaces(set())
-        self.assertIs(document.snapshot, snapshot)
+        self.assertEqual(tree_signature(document.root), snapshot)
         self.assertEqual(document.revision, 0)
 
     def test_mapper_failure_restores_snapshot_and_clears_staged_statistics(
         self,
     ):
         document = CiscoDocument("hostname OLD\n")
-        snapshot = document.snapshot
+        snapshot = tree_signature(document.root)
         results = []
 
         def outcome_factory():
@@ -266,14 +271,14 @@ class RuntimeFailureTest(unittest.TestCase):
         )
         with self.assertRaisesRegex(RuntimeError, "mapping failed"):
             rule.apply(document, EMPTY)
-        self.assertIs(document.snapshot, snapshot)
+        self.assertEqual(tree_signature(document.root), snapshot)
         self.assertEqual(results[0].total, 0)
 
     def test_mapper_business_error_restores_snapshot_and_returns_only_diagnostics(
         self,
     ):
         document = CiscoDocument("hostname OLD\n")
-        snapshot = document.snapshot
+        snapshot = tree_signature(document.root)
 
         def reject(session, visitor, edits):
             session.result.changes.extend(edits.changes)
@@ -282,73 +287,73 @@ class RuntimeFailureTest(unittest.TestCase):
         result = CiscoVisitorRule(
             "reject", MarkVisitor, result_mapper=reject
         ).apply(document, EMPTY)
-        self.assertIs(document.snapshot, snapshot)
+        self.assertEqual(tree_signature(document.root), snapshot)
         self.assertEqual(result.changes, [])
         self.assertEqual(result.errors, ["mapping conflict"])
 
     def test_mapper_cannot_perform_a_second_commit(self):
         document = CiscoDocument("hostname OLD\n")
-        snapshot = document.snapshot
+        snapshot = tree_signature(document.root)
 
         def forbidden(session, visitor, edits):
-            transaction = session.document.rewrite()
+            transaction = session.document.edit()
             transaction.replace_header(
                 session.document.root.nodes[0], "hostname EXTRA", "bypass"
             )
-            transaction.commit()
+            transaction.apply()
 
         with self.assertRaises(RuleContractError):
             CiscoVisitorRule(
                 "bypass", MarkVisitor, result_mapper=forbidden
             ).apply(document, EMPTY)
-        self.assertIs(document.snapshot, snapshot)
+        self.assertEqual(tree_signature(document.root), snapshot)
 
     def test_failed_rule_restores_its_start_without_undoing_preceding_rule(
         self,
     ):
         document = CiscoDocument("hostname OLD\n")
         CiscoVisitorRule("first", MarkVisitor).apply(document, EMPTY)
-        committed = document.snapshot
+        committed = tree_signature(document.root)
 
         class BypassVisitor(CiscoRuleVisitor):
 
-            def visitNode(self, node):
-                transaction = self.session.document.rewrite()
+            def visit_node(self, node):
+                transaction = self.session.document.edit()
                 transaction.replace_header(node, "hostname BAD", "bypass")
-                transaction.commit()
+                transaction.apply()
 
         with self.assertRaises(RuleContractError):
             CiscoVisitorRule("second", BypassVisitor).apply(document, EMPTY)
-        self.assertIs(document.snapshot, committed)
+        self.assertEqual(tree_signature(document.root), committed)
         self.assertEqual(document.hostname(), "NEW")
 
     def test_invalid_outcome_factory_and_selector_mutation_restore_document(
         self,
     ):
         document = CiscoDocument("hostname OLD\n")
-        snapshot = document.snapshot
+        snapshot = tree_signature(document.root)
         with self.assertRaises(RuleContractError):
             CiscoVisitorRule(
                 "bad-outcome", MarkVisitor, outcome_factory=list
             ).apply(document, EMPTY)
 
         def selector(doc, context):
-            transaction = doc.rewrite()
+            transaction = doc.edit()
             transaction.delete(doc.root.nodes[0], "bypass")
-            transaction.commit()
+            transaction.apply()
             return (doc.root,)
 
         with self.assertRaises(RuleContractError):
             CiscoVisitorRule(
                 "bad-selector", MarkVisitor, selector=selector
             ).apply(document, EMPTY)
-        self.assertIs(document.snapshot, snapshot)
+        self.assertEqual(tree_signature(document.root), snapshot)
 
     def test_visitor_cannot_commit_through_edit_facade(self):
         class CommitVisitor(MarkVisitor):
 
             def finish(self):
-                self.session.edits.commit()
+                self.session.edits.apply()
 
         document = CiscoDocument("hostname OLD\n")
         with self.assertRaises(RuleContractError):
@@ -361,13 +366,13 @@ class RuntimeReadonlyTest(unittest.TestCase):
     def test_readonly_never_creates_transaction_and_keeps_all_diagnostics(self):
         class CheckVisitor(CiscoRuleVisitor):
 
-            def visitNode(self, node):
+            def visit_node(self, node):
                 self.session.result.errors.append(node.header)
 
         document = CiscoDocument("hostname A\nhostname B\n")
         with patch.object(
             document,
-            "rewrite",
+            "edit",
             side_effect=AssertionError("readonly transaction"),
         ):
             result = CiscoVisitorRule(
@@ -381,12 +386,12 @@ class RuntimeReadonlyTest(unittest.TestCase):
     ):
         class EditVisitor(CiscoRuleVisitor):
 
-            def visitNode(self, node):
+            def visit_node(self, node):
                 self.session.edits.delete(node, "not allowed")
 
         class FakeChangeVisitor(CiscoRuleVisitor):
 
-            def visitNode(self, node):
+            def visit_node(self, node):
                 self.session.result.changes.append({"action": "fake"})
 
         for visitor in (EditVisitor, FakeChangeVisitor):
@@ -401,18 +406,18 @@ class RuntimeReadonlyTest(unittest.TestCase):
     def test_readonly_direct_write_restores_snapshot(self):
         class DirectWriteVisitor(CiscoRuleVisitor):
 
-            def visitNode(self, node):
+            def visit_node(self, node):
                 self.session.document.replace_references(
                     {"Gi0/0/0/0": ["Gi0/0/0/1"]}
                 )
 
         document = CiscoDocument("router ospf 1\n interface Gi0/0/0/0\n")
-        snapshot = document.snapshot
+        snapshot = tree_signature(document.root)
         with self.assertRaises(RuleContractError):
             CiscoVisitorRule(
                 "readonly", DirectWriteVisitor, readonly=True
             ).apply(document, EMPTY)
-        self.assertIs(document.snapshot, snapshot)
+        self.assertEqual(tree_signature(document.root), snapshot)
 
 
 class MigratedScopeTest(unittest.TestCase):
@@ -421,13 +426,13 @@ class MigratedScopeTest(unittest.TestCase):
         self,
     ):
         document = example()
-        transaction = document.rewrite()
+        transaction = document.edit()
         transaction.append_child(
             document.root,
             "interface BVI100\n mtu 1000\n mtu 2000\n",
             "add gateway",
         )
-        transaction.commit()
+        transaction.apply()
         scope = InterfaceScope(
             "target_interfaces", True, frozenset({InterfaceKind.PHYSICAL})
         )
@@ -475,7 +480,7 @@ class MigratedScopeTest(unittest.TestCase):
 
     def test_simulation_requires_result_mapping_and_rolls_back_if_missing(self):
         document = CiscoDocument("hostname OLD\n")
-        snapshot = document.snapshot
+        snapshot = tree_signature(document.root)
         rule = CiscoVisitorRule(
             "missing-map",
             MarkVisitor,
@@ -483,14 +488,14 @@ class MigratedScopeTest(unittest.TestCase):
         )
         with self.assertRaises(RuleContractError):
             rule.apply(document, EMPTY)
-        self.assertIs(document.snapshot, snapshot)
+        self.assertEqual(tree_signature(document.root), snapshot)
 
     def test_managed_prune_and_function_rule_share_accumulated_context(self):
         observed = []
 
         class RemoveVisitor(CiscoRuleVisitor):
 
-            def visitNode(self, node):
+            def visit_node(self, node):
                 self.session.edits.delete(node, "remove source")
                 self.session.result.removed_interfaces.add(
                     "GigabitEthernet0/0/0/0"

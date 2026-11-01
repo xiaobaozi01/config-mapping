@@ -13,7 +13,10 @@ from .cleaning import matches_cleaning_path
 
 
 class EmptyBlockAction(StrEnum):
-    """定义空容器允许的厂商输出形式。"""
+    """定义空容器允许的厂商输出形式。
+
+    不同镜像对空块语法支持不同，因此调用方只使用本镜像策略文件允许的动作。
+    """
 
     KEEP = "keep"
     OMIT = "omit"
@@ -32,7 +35,10 @@ class EmptyBlockPolicy:
     rules: tuple[tuple[tuple[str, ...], EmptyBlockAction], ...]
 
     def __post_init__(self) -> None:
-        """校验默认动作和全部路径规则动作。"""
+        """校验默认动作和全部路径规则动作。
+
+        构造阶段统一转换枚举并固化规则序列，避免渲染期间再次处理无效配置。
+        """
         try:
             default = EmptyBlockAction(self.default)
         except ValueError as exc:
@@ -176,7 +182,10 @@ def _load_empty_block_rules(
 
 
 def _format_action_choices(actions: tuple[EmptyBlockAction, ...]) -> str:
-    """返回面向配置维护者的允许动作文本。"""
+    """返回面向配置维护者的允许动作文本。
+
+    动作值按调用方给定顺序连接，使错误信息与镜像策略声明保持一致。
+    """
     values = [action.value for action in actions]
     return "、".join(values[:-1]) + " 或 " + values[-1]
 
@@ -186,7 +195,10 @@ def _parse_action(
     actions: tuple[EmptyBlockAction, ...],
     error_message: str,
 ) -> EmptyBlockAction:
-    """把配置文本动作转换为允许共享类型，并拒绝镜像不支持的取值。"""
+    """把配置文本动作转换为允许共享类型，并拒绝镜像不支持的取值。
+
+    类型检查和镜像白名单共同执行，防止合法枚举值被错误用于其他目标镜像。
+    """
     if not isinstance(raw, str):
         raise ValueError(error_message)
     try:

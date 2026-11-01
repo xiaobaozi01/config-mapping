@@ -1,9 +1,9 @@
-"""规则编写入口：托管会话、ANTLR Visitor、范围选择与文本编辑工具。"""
+"""规则编写入口：托管会话、AST Visitor、范围选择与文本编辑工具。"""
 
-from ..antlr.context import CiscoContext
-from ..antlr.generated.CiscoParserListener import CiscoParserListener
-from ..antlr.generated.CiscoParserVisitor import CiscoParserVisitor
-from ..antlr.rewriting import RewriteConflictError, format_fragment
+from impl.common.config_ast import ConfigListener, ConfigVisitor
+from impl.common.config_ast.editor import EditConflictError, format_fragment
+
+from ..ast import CiscoNode
 from ..rewrite_helpers import append_top_level, delete_matching
 from .runtime import (
     CiscoRuleVisitor,
@@ -20,13 +20,13 @@ from .scopes import (
 )
 
 __all__ = [
-    "CiscoContext",
-    "CiscoParserListener",
-    "CiscoParserVisitor",
+    "CiscoNode",
     "CiscoRuleVisitor",
     "CiscoVisitorRule",
+    "ConfigListener",
+    "ConfigVisitor",
+    "EditConflictError",
     "InterfaceScope",
-    "RewriteConflictError",
     "RuleContractError",
     "RuleSession",
     "append_top_level",
