@@ -21,6 +21,15 @@ class InterfaceKind(StrEnum):
     UNKNOWN = "unknown"
 
 
+class BundleMode(StrEnum):
+    """定义聚合成员绑定的协商模式。"""
+
+    ON = "on"
+    ACTIVE = "active"
+    PASSIVE = "passive"
+    UNKNOWN = "unknown"
+
+
 @dataclass(slots=True)
 class InterfaceSpec:
     """描述从原配置提取出的一个接口或逻辑单元。

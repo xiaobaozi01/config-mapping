@@ -18,6 +18,8 @@ from .document import (
     JunosNode,
 )
 
+MAX_VLAN_ID = 4094
+
 
 def interface_specs(document: JunosDocument) -> list[InterfaceSpec]:
     """提取 Junos 接口或 unit 的父子关系、类型及 VLAN 规划信息。
@@ -44,7 +46,7 @@ def interface_specs(document: JunosDocument) -> list[InterfaceSpec]:
                 vlan is None
                 and parent.lower() == "irb"
                 and number.isdigit()
-                and 1 <= int(number) <= 4094
+                and 1 <= int(number) <= MAX_VLAN_ID
             ):
                 vlan = int(number)
             result.append(
@@ -233,11 +235,11 @@ def _expand_vlan_tokens(value: str) -> set[int]:
     for start, end, single in re.findall(r"(?:(\d+)\s*-\s*(\d+))|(\d+)", value):
         if single:
             number = int(single)
-            if 1 <= number <= 4094:
+            if 1 <= number <= MAX_VLAN_ID:
                 result.add(number)
             continue
         lower, upper = int(start), int(end)
-        if 1 <= lower <= upper <= 4094:
+        if 1 <= lower <= upper <= MAX_VLAN_ID:
             result.update(range(lower, upper + 1))
     return result
 
@@ -314,7 +316,7 @@ def _domain_gateways(
     vlan_ids = {
         int(value)
         for value in re.findall(r"\bvlan-id\s+(\d+)\s*;", rendered)
-        if 1 <= int(value) <= 4094
+        if 1 <= int(value) <= MAX_VLAN_ID
     }
     domain_name = parser.base_header(domain.header).split()[0].rstrip(";")
     return interfaces, gateways, vlan_ids, domain_name

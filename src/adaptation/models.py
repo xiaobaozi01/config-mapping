@@ -12,6 +12,9 @@ from impl.common.policies import SimulationAdaptationPolicy, WashingPolicy
 if TYPE_CHECKING:
     from impl.common.contracts import VendorConfiguration
 
+RESERVED_NNI_INTERFACE_COUNT = 3
+MIN_PROFILE_INTERFACE_COUNT = RESERVED_NNI_INTERFACE_COUNT + 1
+
 
 class Vendor(StrEnum):
     """定义转换流程识别的设备厂商及其稳定序列化值。
@@ -52,6 +55,76 @@ class Vendor(StrEnum):
         if normalized in {"huawei", "华为"}:
             return cls.HUAWEI
         return cls.UNKNOWN
+
+    @property
+    def rule_prefix(self) -> str:
+        """返回规则标识和配置目录使用的厂商短名。"""
+        if self is Vendor.CISCO_IOSXR:
+            return "cisco"
+        if self is Vendor.JUNIPER_JUNOS:
+            return "juniper"
+        raise ValueError(f"{self.value} 没有可用规则前缀")
+
+    @property
+    def target_image(self) -> str:
+        """返回厂商默认目标镜像名。"""
+        if self is Vendor.CISCO_IOSXR:
+            return "xrv9000"
+        if self is Vendor.JUNIPER_JUNOS:
+            return "vmx"
+        raise ValueError(f"{self.value} 没有可用目标镜像")
+
+
+class MappingRole(StrEnum):
+    """定义接口映射在拓扑中的业务角色。"""
+
+    NNI = "NNI"
+    NON_NNI = "NON_NNI"
+
+
+class MappingAction(StrEnum):
+    """定义接口映射允许的稳定动作及其序列化值。"""
+
+    MAP = "map"
+    MAP_MEMBER = "map-member"
+    PRESERVE = "preserve"
+    SKIP = "skip"
+    REMOVE = "remove"
+    REMOVE_BARE = "remove-bare"
+
+
+class EventKind(StrEnum):
+    """定义转换报告中的稳定事件分类。"""
+
+    BUNDLE_ADAPTATION = "bundle-adaptation"
+    BUNDLE_ADAPTATION_WARNING = "bundle-adaptation-warning"
+    CLEANING_RULE = "cleaning-rule"
+    CLEANING_RULE_ERROR = "cleaning-rule-error"
+    GROUP_CONFLICT = "group-conflict"
+    GROUP_EXPANSION = "group-expansion"
+    GROUP_IDENTITY_AMBIGUOUS = "group-identity-ambiguous"
+    GROUP_IDENTITY_COVERAGE = "group-identity-coverage"
+    INPUT_NORMALIZATION = "input-normalization"
+    INTERFACE_CLASSIFICATION_WARNING = "interface-classification-warning"
+    INTERFACE_COMPATIBILITY = "interface-compatibility"
+    INTERFACE_COMPATIBILITY_ERROR = "interface-compatibility-error"
+    INTERFACE_COMPATIBILITY_WARNING = "interface-compatibility-warning"
+    INTERFACE_VALIDATION = "interface-validation"
+    INTERFACE_VALIDATION_ERROR = "interface-validation-error"
+    INTERFACE_VALIDATION_WARNING = "interface-validation-warning"
+    INTERNAL_ERROR = "internal-error"
+    NON_NNI_CLEANUP = "non-nni-cleanup"
+    NON_NNI_CLEANUP_ERROR = "non-nni-cleanup-error"
+    NON_NNI_CLEANUP_WARNING = "non-nni-cleanup-warning"
+    PRECONFIGURED_INTERFACE_CLEANUP = "preconfigured-interface-cleanup"
+    PREVIOUS_OUTPUT_ARCHIVED = "previous-output-archived"
+    REDUCE_MEMBER_LINK = "reduce-member-link"
+    REDUNDANT_MEMBER_CLEANUP = "redundant-member-cleanup"
+    REDUNDANT_MEMBER_CLEANUP_ERROR = "redundant-member-cleanup-error"
+    REDUNDANT_MEMBER_CLEANUP_WARNING = "redundant-member-cleanup-warning"
+    SIMULATION_ADAPTATION = "simulation-adaptation"
+    SKIP_LINK = "skip-link"
+    TOPOLOGY_PREFLIGHT = "topology-preflight"
 
 
 @dataclass(slots=True)
@@ -113,18 +186,32 @@ class InterfaceMapping:
 
     device: str
     source_interface: str
-    role: str
-    action: str
+    role: MappingRole
+    action: MappingAction
     target_interface: str | None
     link_rows: list[int] = field(default_factory=list)
     reason: str = ""
+
+    def __post_init__(self) -> None:
+        """校验并规范化接口映射角色和动作。"""
+        try:
+            self.role = MappingRole(self.role)
+        except ValueError as exc:
+            raise ValueError(f"未知接口映射 role: {self.role}") from exc
+        try:
+            self.action = MappingAction(self.action)
+        except ValueError as exc:
+            raise ValueError(f"未知接口映射 action: {self.action}") from exc
 
     def to_dict(self) -> dict[str, Any]:
         """把映射转换为可直接序列化为 JSON 的字典。
 
         统一从数据模型导出，避免报告层手工枚举字段而遗漏后续新增信息。
         """
-        return asdict(self)
+        payload = asdict(self)
+        payload["role"] = self.role.value
+        payload["action"] = self.action.value
+        return payload
 
 
 @dataclass(slots=True)
@@ -148,7 +235,7 @@ class ImageProfile:
 
         最后三个接口始终预留，避免迁移占用控制或实验辅助端口。
         """
-        return self.interfaces[:-3]
+        return self.interfaces[:-RESERVED_NNI_INTERFACE_COUNT]
 
 
 @dataclass(slots=True)
@@ -177,10 +264,10 @@ class DeviceContext:
         result: dict[str, list[str]] = {}
         for item in self.mappings:
             if not item.target_interface or item.action in {
-                "remove",
-                "remove-bare",
-                "skip",
-                "preserve",
+                MappingAction.REMOVE,
+                MappingAction.REMOVE_BARE,
+                MappingAction.SKIP,
+                MappingAction.PRESERVE,
             }:
                 continue
             targets = result.setdefault(item.source_interface, [])
@@ -223,12 +310,17 @@ class ConversionContext:
     # 例如华为设备：只适配链路对端，不读取、不生成自身配置。
     external_devices: set[str] = field(default_factory=set)
 
-    def add_event(self, kind: str, message: str, **details: Any) -> None:
+    def add_event(
+        self, kind: EventKind | str, message: str, **details: Any
+    ) -> None:
         """追加一条带类型和附加上下文的结构化事件。
 
         事件只保存可审计元数据，禁止传入认证秘密，以免报告泄漏生产凭据。
         """
-        event = {"kind": kind, "message": message}
+        event = {
+            "kind": kind.value if isinstance(kind, EventKind) else kind,
+            "message": message,
+        }
         event.update(details)
         self.events.append(event)
 

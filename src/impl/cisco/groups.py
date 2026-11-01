@@ -9,7 +9,7 @@ from dataclasses import dataclass, field
 
 from impl.common.interface import normalized_command as _normalized_command
 from impl.common.outcomes import GroupExpansionOutcome
-from impl.common.policies import WashingPolicy
+from impl.common.policies import GroupIdentityMode, WashingPolicy
 from impl.common.semantic_identity import (
     SemanticDecision,
     find_opaque_ambiguity,
@@ -534,7 +534,8 @@ class CiscoGroupExpander:
         """
         if (
             identity_decision.matched
-            or washing_policy.group_unknown_identity == "preserve"
+            or washing_policy.group_unknown_identity
+            == GroupIdentityMode.PRESERVE
         ):
             return False
         ambiguous_existing_node = find_opaque_ambiguity(
@@ -555,14 +556,15 @@ class CiscoGroupExpander:
             outcome.ambiguities.append(ambiguity_record)
             resolution_message = (
                 "已中止本次 group 展开"
-                if washing_policy.group_unknown_identity == "fail"
+                if washing_policy.group_unknown_identity
+                == GroupIdentityMode.FAIL
                 else "已保留两个值"
             )
             outcome.warnings.append(
                 f"IOS XR 路径 {ambiguity_record['path']} 下的未知命令族 "
                 f"{command_family} 可能存在继承冲突，{resolution_message}"
             )
-        if washing_policy.group_unknown_identity == "fail":
+        if washing_policy.group_unknown_identity == GroupIdentityMode.FAIL:
             outcome.success = False
             return True
         return False

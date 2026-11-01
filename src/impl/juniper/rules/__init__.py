@@ -5,6 +5,7 @@ from impl.common.outcomes import (
     InterfacePruningOutcome,
     SimulationAdaptationOutcome,
 )
+from impl.common.policies import SimulationMode
 from impl.common.rules import (
     AdaptContext,
     FunctionRule,
@@ -38,19 +39,19 @@ SIMULATION_RULES = (
     FunctionRule(
         "juniper.simulate.empty_options",
         simulation.remove_empty_interface_options,
-        lambda ctx: ctx.policy.mode != "off"
+        lambda ctx: ctx.policy.mode != SimulationMode.OFF
         and ctx.policy.remove_physical_interface_knobs,
     ),
     FunctionRule(
         "juniper.simulate.enable_interfaces",
         simulation.enable_data_interfaces,
-        lambda ctx: ctx.policy.mode != "off"
+        lambda ctx: ctx.policy.mode != SimulationMode.OFF
         and ctx.policy.ensure_data_interfaces_enabled,
     ),
     FunctionRule(
         "juniper.simulate.bfd",
         simulation.clamp_bfd_timers,
-        lambda ctx: ctx.policy.mode == "stable",
+        lambda ctx: ctx.policy.mode == SimulationMode.STABLE,
     ),
 )
 
@@ -96,7 +97,7 @@ def adapt_to_simulation(document, policy, data_interfaces):
 
     关闭模式直接返回空结果，避免为不使用模拟参数的镜像创建无意义规则上下文。
     """
-    if policy.mode == "off":
+    if policy.mode == SimulationMode.OFF:
         return SimulationAdaptationOutcome()
     context = SimulationContext(policy, frozenset(data_interfaces))
     return merge_simulation_results(

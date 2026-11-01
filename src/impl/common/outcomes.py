@@ -3,6 +3,15 @@
 from __future__ import annotations
 
 from dataclasses import dataclass, field
+from enum import StrEnum
+
+
+class SimulationChangeAction(StrEnum):
+    """定义模拟适配结果的增删改分类。"""
+
+    ADDED = "added"
+    REPLACED = "replaced"
+    REMOVED = "removed"
 
 
 @dataclass(slots=True)
@@ -67,12 +76,16 @@ class SimulationAdaptationOutcome:
         """
         if count <= 0:
             return
+        try:
+            normalized_action = SimulationChangeAction(action)
+        except ValueError:
+            raise KeyError(action) from None
         buckets = {
-            "added": self.added,
-            "replaced": self.replaced,
-            "removed": self.removed,
+            SimulationChangeAction.ADDED: self.added,
+            SimulationChangeAction.REPLACED: self.replaced,
+            SimulationChangeAction.REMOVED: self.removed,
         }
-        bucket = buckets[action]
+        bucket = buckets[normalized_action]
         bucket[category] = bucket.get(category, 0) + count
 
     @property

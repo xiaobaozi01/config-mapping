@@ -9,8 +9,8 @@ from __future__ import annotations
 from collections.abc import Sequence
 from typing import Protocol, runtime_checkable
 
-from .cleaning import CleaningOperation
-from .interface import InterfaceKind, InterfaceSpec
+from .cleaning import CleaningAction, CleaningOperation
+from .interface import BundleMode, InterfaceKind, InterfaceSpec
 from .outcomes import (
     CleanupOutcome,
     GroupExpansionOutcome,
@@ -125,7 +125,7 @@ class VendorConfiguration(Protocol):
         """
         ...
 
-    def bundle_mode(self, member: str) -> str:
+    def bundle_mode(self, member: str) -> BundleMode:
         """返回聚合成员绑定的协商模式或未知标记。
 
         模式影响跨设备聚合能否安全迁移，无法确认时必须返回未知而不能默认兼容。
@@ -229,7 +229,7 @@ class VendorConfiguration(Protocol):
         self,
         path: tuple[str, ...],
         match: str,
-        action: str,
+        action: CleaningAction,
         value: str | None,
     ) -> int:
         """执行一条清洗规则并返回命中数量。

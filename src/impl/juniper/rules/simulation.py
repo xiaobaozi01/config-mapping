@@ -5,7 +5,10 @@ from __future__ import annotations
 import re
 
 from impl.common.interface import interface_parent
-from impl.common.outcomes import SimulationAdaptationOutcome
+from impl.common.outcomes import (
+    SimulationAdaptationOutcome,
+    SimulationChangeAction,
+)
 from impl.common.policies import SimulationAdaptationPolicy
 
 from ..document import JunosDocument, JunosNode
@@ -65,7 +68,9 @@ def _enable_data_interfaces(document, target_parents, outcome):
             base = document._parser.base_header(child.header).rstrip(";")
             token = base.split(maxsplit=1)[0] if base else ""
             if child.effective and token == "disable":
-                outcome.record("removed", "interface-disable")
+                outcome.record(
+                    SimulationChangeAction.REMOVED, "interface-disable"
+                )
             else:
                 retained.append(child)
         interface.children = retained
@@ -118,7 +123,7 @@ def _clamp_bfd_timers(
                 match = pattern.match(base)
                 if match and int(match.group("value")) < minimum:
                     node.header = f'{match.group("key")} {minimum};'
-                    outcome.record("replaced", category)
+                    outcome.record(SimulationChangeAction.REPLACED, category)
                     break
         if node.children:
             for child in node.children:

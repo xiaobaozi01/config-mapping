@@ -14,12 +14,20 @@ from typing import ClassVar, Protocol
 import yaml
 
 from impl.cisco.document import CiscoDocument
-from impl.common.cleaning import CleaningOperation
+from impl.common.cleaning import CleaningAction, CleaningOperation
 from impl.common.config_paths import config_path
 from impl.common.contracts import VendorConfiguration
 from impl.common.interface import InterfaceKind, interface_parent
+from impl.common.policies import SimulationMode
 
-from .models import ConversionContext, DeviceContext, Vendor
+from .models import (
+    ConversionContext,
+    DeviceContext,
+    EventKind,
+    MappingAction,
+    MappingRole,
+    Vendor,
+)
 
 CLEANING_SCOPES = {
     "document",
@@ -35,13 +43,17 @@ def target_parents(
 
     只纳入成功 NNI 映射的目标口，使清洗范围不会扩散到未参与迁移的原始业务接口。
     """
-    excluded = {"remove", "remove-bare", "skip"} if simulation else {"skip"}
+    excluded = (
+        {MappingAction.REMOVE, MappingAction.REMOVE_BARE, MappingAction.SKIP}
+        if simulation
+        else {MappingAction.SKIP}
+    )
     return frozenset(
         interface_parent(
             device.document.resolve_interface(mapping.target_interface)
         )
         for mapping in device.mappings
-        if mapping.role == "NNI"
+        if mapping.role == MappingRole.NNI
         and mapping.target_interface
         and mapping.action not in excluded
     )
@@ -62,14 +74,17 @@ def resolve_cleaning_scope(
     simulation = scope == "simulation_interfaces"
     if simulation:
         policy = device.profile.simulation_adaptation
-        if policy.mode == "off" or not policy.remove_physical_interface_knobs:
+        if (
+            policy.mode == SimulationMode.OFF
+            or not policy.remove_physical_interface_knobs
+        ):
             return frozenset()
     parents = target_parents(device, simulation=simulation)
     kinds = {InterfaceKind.PHYSICAL, InterfaceKind.GATEWAY}
     return frozenset(
         (
             spec.parent
-            if device.document.vendor == "juniper_junos"
+            if device.document.vendor == Vendor.JUNIPER_JUNOS.value
             else spec.name
         )
         for spec in device.document.interface_specs()
@@ -146,7 +161,7 @@ class ExecutableCleaningRule(Protocol):
         raise NotImplementedError
 
     @property
-    def action(self) -> str:
+    def action(self) -> CleaningAction:
         """返回规则执行的动作类型。
 
         动作决定批量清洗的轮次和模板校验方式，并由统一执行器保持一致。
@@ -199,7 +214,7 @@ class ConfiguredCleaningRule:
     category: str
     path: tuple[str, ...]
     match: str
-    action: str
+    action: CleaningAction
     reason: str
     value: str | None = None
     scope: str = "document"
@@ -250,7 +265,7 @@ class CiscoBannerCleaningRule:
     rule_id: str = "cisco.remove.banner"
     vendor: str = Vendor.CISCO_IOSXR.value
     category: str = "banner"
-    action: str = "delete"
+    action: CleaningAction = CleaningAction.DELETE
     reason: str = "删除生产环境登录提示和设备信息"
     point: CleaningPoint = CleaningPoint.PRE_ANALYSIS
     _START_PATTERN: ClassVar[re.Pattern[str]] = re.compile(
@@ -300,7 +315,7 @@ class AuthenticationCleaningRule:
     rule_id: str
     vendor: str
     category: str = "authentication"
-    action: str = "transform"
+    action: CleaningAction = CleaningAction.TRANSFORM
     reason: str = "替换生产认证并配置实验登录凭据"
     point: CleaningPoint = CleaningPoint.POST_REWRITE
 
@@ -336,21 +351,33 @@ class CleaningRulesHandler:
     # YAML 路径与期望厂商成对声明，用于加载时阻止规则放错镜像目录。
     _RULE_SOURCES = (
         (
-            config_path("rules", "cisco", "xrv9000", "cleaning.yaml"),
+            config_path(
+                "rules",
+                Vendor.CISCO_IOSXR.rule_prefix,
+                Vendor.CISCO_IOSXR.target_image,
+                "cleaning.yaml",
+            ),
             Vendor.CISCO_IOSXR,
         ),
         (
-            config_path("rules", "juniper", "vmx", "cleaning.yaml"),
+            config_path(
+                "rules",
+                Vendor.JUNIPER_JUNOS.rule_prefix,
+                Vendor.JUNIPER_JUNOS.target_image,
+                "cleaning.yaml",
+            ),
             Vendor.JUNIPER_JUNOS,
         ),
     )
     # YAML 使用厂商内局部 id，加载时统一生成稳定、全局唯一的报告 id。
     _VENDOR_PREFIX: ClassVar[dict[str, str]] = {
-        Vendor.CISCO_IOSXR.value: "cisco",
-        Vendor.JUNIPER_JUNOS.value: "juniper",
+        vendor.value: vendor.rule_prefix
+        for vendor in (Vendor.CISCO_IOSXR, Vendor.JUNIPER_JUNOS)
     }
     # 声明式规则仅开放厂商文档已经实现且可统一审计的动作。
-    _ACTIONS: ClassVar[frozenset[str]] = frozenset({"delete", "replace"})
+    _ACTIONS: ClassVar[frozenset[CleaningAction]] = frozenset(
+        {CleaningAction.DELETE, CleaningAction.REPLACE}
+    )
     # 点号分隔命名层级；每段允许小写字母、数字、下划线和中划线。
     _LOCAL_ID_PATTERN = re.compile(r"^[a-z0-9_-]+(?:\.[a-z0-9_-]+)*$")
 
@@ -403,7 +430,9 @@ class CleaningRulesHandler:
             for rule in applicable
             if isinstance(rule, ConfiguredCleaningRule)
         ]
-        configured.sort(key=lambda rule: rule.action != "delete")
+        configured.sort(
+            key=lambda rule: rule.action != CleaningAction.DELETE
+        )
         if not configured:
             return True
         counts = device.document.apply_cleaning_rules(
@@ -451,7 +480,7 @@ class CleaningRulesHandler:
                 )
                 context.errors.append(message)
                 context.add_event(
-                    "cleaning-rule-error",
+                    EventKind.CLEANING_RULE_ERROR,
                     message,
                     device=device_name,
                     rule_id=rule.rule_id,
@@ -479,7 +508,7 @@ class CleaningRulesHandler:
             "device": device_name,
             "rule_id": rule.rule_id,
             "category": rule.category,
-            "action": rule.action,
+            "action": CleaningAction(rule.action).value,
             "point": self.point.value,
             "hits": result.changed,
             "reason": rule.reason,
@@ -489,7 +518,7 @@ class CleaningRulesHandler:
         if result.added_by_type:
             details["added_by_type"] = result.added_by_type
         context.add_event(
-            "cleaning-rule",
+            EventKind.CLEANING_RULE,
             f"设备 {device_name} 命中规则 {rule.rule_id}",
             **details,
         )
@@ -526,9 +555,17 @@ class CleaningRulesHandler:
             raise ValueError(f"清洗规则 {rule_id} 的 enable 必须是布尔值")
         category = cls._required_string(raw, "category", rule_id)
         match = cls._required_string(raw, "match", rule_id)
-        action = cls._required_string(raw, "action", rule_id)
+        action_text = cls._required_string(raw, "action", rule_id)
+        try:
+            action = CleaningAction(action_text)
+        except ValueError as exc:
+            raise ValueError(
+                f"清洗规则 {rule_id} 使用不支持的动作: {action_text}"
+            ) from exc
         if action not in cls._ACTIONS:
-            raise ValueError(f"清洗规则 {rule_id} 使用不支持的动作: {action}")
+            raise ValueError(
+                f"清洗规则 {rule_id} 使用不支持的动作: {action_text}"
+            )
 
         path, value = cls._parse_matcher(raw, rule_id, match, action)
         scope = raw.get("scope", "document")
@@ -618,11 +655,11 @@ class CleaningRulesHandler:
         value = raw.get("value")
         if value is not None and not isinstance(value, str):
             raise ValueError(f"清洗规则 {rule_id} 的 value 必须是字符串")
-        if action == "replace" and value is None:
+        if action == CleaningAction.REPLACE and value is None:
             raise ValueError(
                 f"清洗规则 {rule_id} 的 replace 动作必须提供 value"
             )
-        if action == "replace":
+        if action == CleaningAction.REPLACE:
             try:
                 re.compile(match, re.IGNORECASE).sub(value, "")
             except (re.error, IndexError) as exc:

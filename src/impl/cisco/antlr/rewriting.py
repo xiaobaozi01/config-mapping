@@ -5,6 +5,8 @@ from dataclasses import dataclass
 
 from antlr4.TokenStreamRewriter import TokenStreamRewriter
 
+from impl.common.outcomes import SimulationChangeAction
+
 from .generated.CiscoLexer import CiscoLexer
 from .metadata import retain_block_modes
 from .parsing import CiscoSnapshot
@@ -355,11 +357,11 @@ class RewriteTransaction:
         changes = tuple(
             dict(
                 details,
-                action="removed"
+                action=SimulationChangeAction.REMOVED.value
                 if not text
-                else "added"
+                else SimulationChangeAction.ADDED.value
                 if start > stop
-                else "replaced",
+                else SimulationChangeAction.REPLACED.value,
                 command=context.header,
                 value=text,
                 reason=reason,

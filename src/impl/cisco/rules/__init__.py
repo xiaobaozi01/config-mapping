@@ -8,7 +8,7 @@ from impl.common.outcomes import (
     InterfacePruningOutcome,
     SimulationAdaptationOutcome,
 )
-from impl.common.policies import SimulationAdaptationPolicy
+from impl.common.policies import SimulationAdaptationPolicy, SimulationMode
 from impl.common.rules import (
     AdaptContext,
     ConfigurationRule,
@@ -153,7 +153,7 @@ def adapt_to_simulation(
 
     关闭模式直接返回空结果，避免在不允许适配时构造或执行模拟规则。
     """
-    if policy.mode == "off":
+    if policy.mode == SimulationMode.OFF:
         return SimulationAdaptationOutcome()
     context = SimulationContext(policy, frozenset(data_interfaces))
     return merge_simulation_results(

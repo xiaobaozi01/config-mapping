@@ -12,8 +12,11 @@ from impl.common.interface import interface_parent
 from .models import (
     ConversionContext,
     Device,
+    EventKind,
     InterfaceMapping,
     Link,
+    MappingAction,
+    MappingRole,
     TopologyWorkbook,
     Vendor,
 )
@@ -294,7 +297,7 @@ class TopologyPreflightHandler:
             self._preflight_link(context, link, topology_devices)
 
         context.add_event(
-            "topology-preflight",
+            EventKind.TOPOLOGY_PREFLIGHT,
             "拓扑链路预检完成",
             active_links=sum(
                 1 for link in context.topology.links if link.active
@@ -336,7 +339,7 @@ class TopologyPreflightHandler:
             f"链接表第 {link.row} 行已跳过：{link.skip_reason}"
         )
         context.add_event(
-            "skip-link",
+            EventKind.SKIP_LINK,
             f"跳过链接表第 {link.row} 行",
             row=link.row,
             reason=link.skip_reason,
@@ -370,8 +373,8 @@ class TopologyPreflightHandler:
                     InterfaceMapping(
                         device=device_name,
                         source_interface=reserved,
-                        role="NNI",
-                        action="skip",
+                        role=MappingRole.NNI,
+                        action=MappingAction.SKIP,
                         target_interface=None,
                         link_rows=[link.row],
                         reason=reason,

@@ -3,7 +3,7 @@
 from __future__ import annotations
 
 from .cleaning_rules import target_parents
-from .models import ConversionContext
+from .models import ConversionContext, EventKind
 
 
 class SimulationAdaptationHandler:
@@ -30,12 +30,12 @@ class SimulationAdaptationHandler:
                 policy, data_interfaces
             )
             context.add_event(
-                "simulation-adaptation",
+                EventKind.SIMULATION_ADAPTATION,
                 f"设备 {device_name} 已按 {policy.mode} 模式适配模拟参数",
                 device=device_name,
                 image=device.profile.image,
                 version=device.profile.version,
-                mode=policy.mode,
+                mode=policy.mode.value,
                 target_interfaces=sorted(data_interfaces),
                 change_count=outcome.total,
                 added=outcome.added,

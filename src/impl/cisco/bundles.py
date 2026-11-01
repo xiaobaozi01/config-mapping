@@ -2,12 +2,13 @@
 
 import re
 
+from impl.common.interface import BundleMode
 from impl.common.outcomes import InterfaceAdaptationOutcome
 
 from .interfaces import ensure_parent_interface, find_interface_node
 
 
-def bundle_mode(document, member):
+def bundle_mode(document, member) -> BundleMode:
     """读取聚合成员唯一绑定的 LACP 模式。
 
     地址、VRF、l2transport 或冲突绑定都会令模式不可判定，因此必须返回未知而
@@ -15,7 +16,7 @@ def bundle_mode(document, member):
     """
     block = find_interface_node(document, member)
     if block is None:
-        return "unknown"
+        return BundleMode.UNKNOWN
     bindings = []
     for node in block.walk():
         if re.match(
@@ -23,7 +24,7 @@ def bundle_mode(document, member):
             node.header,
             re.I,
         ):
-            return "unknown"
+            return BundleMode.UNKNOWN
         if re.match(r"^bundle\s+id\b", node.header, re.I):
             match = re.fullmatch(
                 r"bundle\s+id\s+(\d+)(?:\s+mode\s+(on|active|passive))?",
@@ -31,9 +32,14 @@ def bundle_mode(document, member):
                 re.I,
             )
             if not match:
-                return "unknown"
-            bindings.append((match.group(1), (match.group(2) or "on").lower()))
-    return bindings[0][1] if len(set(bindings)) == 1 else "unknown"
+                return BundleMode.UNKNOWN
+            bindings.append(
+                (
+                    match.group(1),
+                    BundleMode((match.group(2) or BundleMode.ON).lower()),
+                )
+            )
+    return bindings[0][1] if len(set(bindings)) == 1 else BundleMode.UNKNOWN
 
 
 def adapt_bundle(document, name):

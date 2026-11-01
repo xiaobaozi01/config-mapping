@@ -17,6 +17,7 @@ from .models import (
     ConversionContext,
     Device,
     DeviceContext,
+    EventKind,
     ImageProfile,
     TopologyWorkbook,
     Vendor,
@@ -27,6 +28,13 @@ from .topology import load_topology, write_adapted_topology
 
 CONFIG_EXTENSIONS = (".cfg", ".conf", ".txt")
 _OUTPUT_MANIFEST = ".generated-artifacts.json"
+GENERATOR_NAME = "gns3-config-adaptor"
+OUTPUT_CONFIGS_DIR = "configs"
+OUTPUT_TOPOLOGY = "topology-adapted.xlsx"
+OUTPUT_README = "README.txt"
+OUTPUT_MAPPING = "interface-mapping.json"
+OUTPUT_REPORT = "report.json"
+PREVIOUS_OUTPUTS_DIR = ".previous-outputs"
 
 
 def _output_path(output_dir: Path, name: str) -> Path:
@@ -70,9 +78,9 @@ def _managed_path(output_dir: Path, name: str) -> Path:
     白名单阻止清单误删用户文件，并限制配置产物只能是 ``configs`` 下的单层文件。
     """
     relative = Path(name)
-    allowed = name in {"topology-adapted.xlsx", "README.txt"} or (
+    allowed = name in {OUTPUT_TOPOLOGY, OUTPUT_README} or (
         len(relative.parts) == 2
-        and relative.parts[0] == "configs"
+        and relative.parts[0] == OUTPUT_CONFIGS_DIR
         and relative.suffix == ".cfg"
         and relative.name not in {".cfg", ".."}
     )
@@ -91,7 +99,7 @@ def _published_files(output_dir: Path) -> set[str]:
         payload = json.loads(manifest.read_text(encoding="utf-8"))
         if (
             not isinstance(payload, dict)
-            or payload.get("generator") != "gns3-config-adaptor"
+            or payload.get("generator") != GENERATOR_NAME
         ):
             raise ValueError("输出目录中的产物清单不是本程序生成的有效清单")
         files = payload.get("files")
@@ -122,7 +130,7 @@ def _archive_outputs(
     ]
     if not existing:
         return
-    archive_root = output_dir / ".previous-outputs"
+    archive_root = output_dir / PREVIOUS_OUTPUTS_DIR
     if archive_root.is_symlink():
         raise ValueError("输出归档目录不能是符号链接")
     archive_root.mkdir(exist_ok=True)
@@ -135,7 +143,7 @@ def _archive_outputs(
     if manifest.is_file():
         shutil.copyfile(manifest, archive / _OUTPUT_MANIFEST)
     context.add_event(
-        "previous-output-archived",
+        EventKind.PREVIOUS_OUTPUT_ARCHIVED,
         "上次或未完成运行的导出产物已撤下并隔离保存",
         archive=str(archive.relative_to(output_dir)),
         files=[name for name, _ in existing],
@@ -206,7 +214,7 @@ def _load_device_context(
     document = parse_document(device.vendor.value, normalized.text)
     events = [
         {
-            "kind": "input-normalization",
+            "kind": EventKind.INPUT_NORMALIZATION.value,
             "message": f"设备 {device.name} 命中输入整理规则 {removal.rule_id}",
             "device": device.name,
             "rule_id": removal.rule_id,
@@ -333,7 +341,7 @@ def convert(
         message = f"{phase}发生内部异常 " f"({type(exc).__name__}): {detail}"
         context.errors.append(message)
         context.add_event(
-            "internal-error",
+            EventKind.INTERNAL_ERROR,
             message,
             phase=phase,
             exception_type=type(exc).__name__,
@@ -378,7 +386,7 @@ def _build_report(
             if key not in {"kind", "message"}
         }
         for event in context.events
-        if event.get("kind") == "group-conflict"
+        if event.get("kind") == EventKind.GROUP_CONFLICT.value
     ]
     return {
         "status": "failed" if context.has_errors else "success",
@@ -403,20 +411,21 @@ def _report_summary(
     simulation_count = sum(
         int(event.get("change_count", 0))
         for event in events
-        if event.get("kind") == "simulation-adaptation"
+        if event.get("kind") == EventKind.SIMULATION_ADAPTATION.value
     )
     ambiguity_count = sum(
-        event.get("kind") == "group-identity-ambiguous" for event in events
+        event.get("kind") == EventKind.GROUP_IDENTITY_AMBIGUOUS.value
+        for event in events
     )
     rule_hits = sum(
         int(event.get("matched", 0))
         for event in events
-        if event.get("kind") == "group-identity-coverage"
+        if event.get("kind") == EventKind.GROUP_IDENTITY_COVERAGE.value
     )
     fallbacks = sum(
         int(event.get("fallback", 0))
         for event in events
-        if event.get("kind") == "group-identity-coverage"
+        if event.get("kind") == EventKind.GROUP_IDENTITY_COVERAGE.value
     )
     identity_total = rule_hits + fallbacks
     return {
@@ -447,7 +456,7 @@ def _cleaning_rule_hits(events: list[dict[str, object]]) -> dict[str, int]:
     """
     result: dict[str, int] = {}
     for event in events:
-        if event.get("kind") != "cleaning-rule":
+        if event.get("kind") != EventKind.CLEANING_RULE.value:
             continue
         category = str(event.get("category", "uncategorized"))
         result[category] = result.get(category, 0) + int(event.get("hits", 0))
@@ -464,8 +473,8 @@ def _write_diagnostics(
     两个文件采用同一原子写入方式，确保失败时不会留下不完整诊断。
     """
     for filename, payload in (
-        ("interface-mapping.json", mapping_payload),
-        ("report.json", report),
+        (OUTPUT_MAPPING, mapping_payload),
+        (OUTPUT_REPORT, report),
     ):
         _write_text(
             output_dir,
@@ -484,19 +493,20 @@ def _publish_configs(
 
     先归档旧产物并记录新清单，使后续任一步骤失败都能识别本次产生的输出。
     """
-    published = {"topology-adapted.xlsx", "README.txt"} | {
-        f"configs/{_safe_output_name(name)}.cfg" for name in rendered_configs
+    published = {OUTPUT_TOPOLOGY, OUTPUT_README} | {
+        f"{OUTPUT_CONFIGS_DIR}/{_safe_output_name(name)}.cfg"
+        for name in rendered_configs
     }
     for name in published:
         _managed_path(output_dir, name)
     _archive_outputs(context, output_dir, previous_files)
     _write_manifest(output_dir, published)
-    configs_dir = output_dir / "configs"
+    configs_dir = output_dir / OUTPUT_CONFIGS_DIR
     configs_dir.mkdir(parents=True, exist_ok=True)
     for device_name, rendered in rendered_configs.items():
         _write_text(
             output_dir,
-            f"configs/{_safe_output_name(device_name)}.cfg",
+            f"{OUTPUT_CONFIGS_DIR}/{_safe_output_name(device_name)}.cfg",
             rendered,
         )
     _replace_topology(context, output_dir)
@@ -508,7 +518,7 @@ def _write_manifest(output_dir: Path, published: set[str]) -> None:
     在发布内容前记录清单，使中途失败时仍能准确撤下可能出现的部分产物。
     """
     payload = {
-        "generator": "gns3-config-adaptor",
+        "generator": GENERATOR_NAME,
         "files": sorted(published),
     }
     _write_text(
@@ -524,7 +534,7 @@ def _replace_topology(context: ConversionContext, output_dir: Path) -> None:
     临时文件与目标同盘保证替换原子性，异常时清理临时产物而不破坏现有拓扑。
     """
     adapted = {
-        name: f"configs/{_safe_output_name(name)}.cfg"
+        name: f"{OUTPUT_CONFIGS_DIR}/{_safe_output_name(name)}.cfg"
         for name in context.devices
     }
     temporary: Path | None = None
@@ -538,7 +548,7 @@ def _replace_topology(context: ConversionContext, output_dir: Path) -> None:
             temporary,
             config_files=adapted,
         )
-        temporary.replace(_output_path(output_dir, "topology-adapted.xlsx"))
+        temporary.replace(_output_path(output_dir, OUTPUT_TOPOLOGY))
     finally:
         if temporary is not None:
             temporary.unlink(missing_ok=True)
@@ -557,12 +567,12 @@ def _write_output_readme(output_dir: Path) -> None:
   密码：{LAB_PASSWORD}
 
 文件说明：
-  topology-adapted.xlsx     已更新接口并移除冗余聚合成员的拓扑
-  configs/                  XRv9000 和 vMX 配置
-  interface-mapping.json    全局接口映射
-  report.json               转换报告（含模拟参数适配明细）
+  {OUTPUT_TOPOLOGY}     已更新接口并移除冗余聚合成员的拓扑
+  {OUTPUT_CONFIGS_DIR}/                  XRv9000 和 vMX 配置
+  {OUTPUT_MAPPING}    全局接口映射
+  {OUTPUT_REPORT}               转换报告（含模拟参数适配明细）
 """
-    _write_text(output_dir, "README.txt", readme)
+    _write_text(output_dir, OUTPUT_README, readme)
 
 
 def write_outputs(context: ConversionContext, output_dir: Path) -> None:

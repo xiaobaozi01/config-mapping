@@ -2,6 +2,7 @@
 
 import re
 
+from impl.common.interface import BundleMode
 from impl.common.outcomes import InterfaceAdaptationOutcome
 
 
@@ -16,21 +17,21 @@ def _walk(document, node):
             yield from _walk(document, child)
 
 
-def bundle_mode(document, member):
+def bundle_mode(document, member) -> BundleMode:
     """返回聚合成员的绑定与协商模式。
 
     模式决定跨设备聚合能否安全迁移，缺失或冲突信息统一返回未知而不做乐观推断。
     """
     node = document._find_interface_node(member)
     if node is None:
-        return "unknown"
+        return BundleMode.UNKNOWN
     bundle_name = _member_bundle(document, node)
     if bundle_name is None:
-        return "unknown"
+        return BundleMode.UNKNOWN
     aggregate = document._find_interface_node(bundle_name)
     if aggregate is None:
-        return "on"
-    return _aggregate_lacp_mode(document, aggregate) or "on"
+        return BundleMode.ON
+    return _aggregate_lacp_mode(document, aggregate) or BundleMode.ON
 
 
 def _member_bundle(document, node) -> str | None:
@@ -50,7 +51,7 @@ def _member_bundle(document, node) -> str | None:
     return bindings[0]
 
 
-def _aggregate_lacp_mode(document, aggregate) -> str | None:
+def _aggregate_lacp_mode(document, aggregate) -> BundleMode | None:
     """从聚合主口读取显式 LACP 模式。
 
     active 与 passive 同时出现说明配置不可判定，因此返回未知而不是任选一种模式。
@@ -73,8 +74,12 @@ def _aggregate_lacp_mode(document, aggregate) -> str | None:
                         if document._parser.is_effective(child)
                     }
                     if {"active", "passive"} <= values:
-                        return "unknown"
-                    return "active" if "active" in values else "passive"
+                        return BundleMode.UNKNOWN
+                    return (
+                        BundleMode.ACTIVE
+                        if "active" in values
+                        else BundleMode.PASSIVE
+                    )
     return None
 
 

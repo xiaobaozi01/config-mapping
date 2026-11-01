@@ -166,7 +166,6 @@ class InterfaceModuleLayoutTest(unittest.TestCase):
         from adaptation import interfaces
 
         for name in (
-            "_report",
             "NonNNICleanupHandler",
             "InterfaceCompatibilityHandler",
             "FinalInterfaceValidationHandler",
@@ -176,6 +175,18 @@ class InterfaceModuleLayoutTest(unittest.TestCase):
                 if hasattr(interfaces, name):
                     self.assertEqual(getattr(interfaces, name).__module__, interfaces.__name__)
         self.assertIsNone(importlib.util.find_spec("adaptation.core_interfaces"))
+
+    def test_interface_outcome_reporting_is_owned_by_interfaces_module(self):
+        from adaptation import interfaces
+
+        for name in ("_report", "_report_diagnostics"):
+            with self.subTest(name=name):
+                self.assertTrue(hasattr(interfaces, name), name)
+                if hasattr(interfaces, name):
+                    self.assertEqual(
+                        getattr(interfaces, name).__module__,
+                        interfaces.__name__,
+                    )
 
 
 class CleaningScopeModuleLayoutTest(unittest.TestCase):

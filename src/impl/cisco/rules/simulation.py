@@ -4,6 +4,7 @@ import re
 
 from impl.common.interface import InterfaceKind, interface_unit
 from impl.common.outcomes import SimulationAdaptationOutcome
+from impl.common.policies import SimulationMode
 
 from .support import (
     CiscoRuleVisitor,
@@ -30,7 +31,7 @@ def enable_interfaces_condition(context):
     只有非关闭模式且显式开启该能力时才执行，避免无关模式产生额外配置。
     """
     return (
-        context.policy.mode != "off"
+        context.policy.mode != SimulationMode.OFF
         and context.policy.ensure_data_interfaces_enabled
     )
 
@@ -40,7 +41,7 @@ def stable_condition(context):
 
     BFD 门限调整只用于稳定模式，兼容模式不得改变已有业务定时器。
     """
-    return context.policy.mode == "stable"
+    return context.policy.mode == SimulationMode.STABLE
 
 
 class EnableInterfacesVisitor(CiscoRuleVisitor):

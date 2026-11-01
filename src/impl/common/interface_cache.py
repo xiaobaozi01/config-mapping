@@ -49,6 +49,7 @@ class _AnalysisNode(Protocol):
 
 _TreeSignature = tuple[tuple[str, bool, bool, int], ...]
 _Result = TypeVar("_Result")
+PARSER_HEADER_CACHE_SIZE = 32_768
 
 
 def _tree_signature(root: _AnalysisNode) -> _TreeSignature:

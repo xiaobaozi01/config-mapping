@@ -5,7 +5,16 @@ from __future__ import annotations
 import re
 from collections.abc import Sequence
 from dataclasses import dataclass
+from enum import StrEnum
 from functools import cache
+
+
+class CleaningAction(StrEnum):
+    """定义声明式与代码清洗规则使用的动作。"""
+
+    DELETE = "delete"
+    REPLACE = "replace"
+    TRANSFORM = "transform"
 
 
 @dataclass(frozen=True, slots=True)
@@ -18,7 +27,7 @@ class CleaningOperation:
 
     path: tuple[str, ...]
     match: str
-    action: str
+    action: CleaningAction
     value: str | None = None
     interface_names: frozenset[str] | None = None
 
@@ -86,7 +95,9 @@ class _CleaningPhase:
     操作列表。
     """
 
-    def __init__(self, action: str, operations: list[_CompiledOperation]):
+    def __init__(
+        self, action: CleaningAction, operations: list[_CompiledOperation]
+    ):
         """创建固定动作轮次并建立空的路径候选缓存。
 
         操作列表在轮次内只读，因此可以安全地按祖先路径缓存筛选结果而不复制规则。
@@ -128,16 +139,23 @@ def compile_cleaning_rules(
     修改；轮次内保留原输入顺序和下标，便于稳定审计。
     """
     paths: dict[tuple[str, ...], _CompiledPath] = {}
-    phases: dict[str, list[_CompiledOperation]] = {"delete": [], "replace": []}
+    phases: dict[CleaningAction, list[_CompiledOperation]] = {
+        CleaningAction.DELETE: [],
+        CleaningAction.REPLACE: [],
+    }
     for index, operation in enumerate(operations):
-        if operation.action not in phases:
-            raise ValueError(f"不支持的清洗动作: {operation.action}")
-        if operation.action == "replace" and operation.value is None:
+        try:
+            action = CleaningAction(operation.action)
+        except ValueError as exc:
+            raise ValueError(f"不支持的清洗动作: {operation.action}") from exc
+        if action not in phases:
+            raise ValueError(f"不支持的清洗动作: {action}")
+        if action == CleaningAction.REPLACE and operation.value is None:
             raise ValueError("replace 清洗操作必须提供 value")
         if operation.value is not None and not isinstance(operation.value, str):
             raise ValueError(f"第 {index + 1} 条清洗操作的 value 必须是字符串")
         pattern = re.compile(operation.match, re.IGNORECASE)
-        if operation.action == "replace":
+        if action == CleaningAction.REPLACE:
             # sub 即使没有命中也会编译替换模板；提前拒绝无效捕获组或转义，
             # 防止删除轮完成后才报错，留下未审计的部分修改。
             try:
@@ -157,7 +175,7 @@ def compile_cleaning_rules(
                 sum(component != "**" for component in operation.path),
                 None if "**" in operation.path else len(operation.path),
             )
-        phases[operation.action].append(
+        phases[action].append(
             _CompiledOperation(
                 index,
                 paths[operation.path],

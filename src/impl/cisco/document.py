@@ -6,10 +6,23 @@ import re
 from collections.abc import Iterable, Sequence
 from functools import lru_cache
 
-from impl.common.cleaning import CleaningOperation, compile_cleaning_rules
+from impl.common.cleaning import (
+    CleaningAction,
+    CleaningOperation,
+    compile_cleaning_rules,
+)
 from impl.common.contracts import VendorConfiguration
-from impl.common.interface import InterfaceKind, InterfaceSpec, interface_parent
-from impl.common.interface_cache import copy_interface_specs
+from impl.common.empty_blocks import EmptyBlockAction
+from impl.common.interface import (
+    BundleMode,
+    InterfaceKind,
+    InterfaceSpec,
+    interface_parent,
+)
+from impl.common.interface_cache import (
+    PARSER_HEADER_CACHE_SIZE,
+    copy_interface_specs,
+)
 from impl.common.outcomes import (
     CleanupOutcome,
     GroupExpansionOutcome,
@@ -167,16 +180,18 @@ class _CiscoHeaderParser:
 
         每个文档独立持有缓存，使不同配置之间不会互相影响命中结果。
         """
-        self.canonical_interface = lru_cache(maxsize=32_768)(
+        self.canonical_interface = lru_cache(maxsize=PARSER_HEADER_CACHE_SIZE)(
             canonical_cisco_interface
         )
-        self.interface_kind = lru_cache(maxsize=32_768)(
+        self.interface_kind = lru_cache(maxsize=PARSER_HEADER_CACHE_SIZE)(
             _resolved_interface_kind
         )
-        self.interface_name = lru_cache(maxsize=32_768)(
+        self.interface_name = lru_cache(maxsize=PARSER_HEADER_CACHE_SIZE)(
             _interface_name_from_header
         )
-        self.l2transport = lru_cache(maxsize=32_768)(_is_l2transport_header)
+        self.l2transport = lru_cache(maxsize=PARSER_HEADER_CACHE_SIZE)(
+            _is_l2transport_header
+        )
 
     def __deepcopy__(self, _memo: dict[int, object]) -> _CiscoHeaderParser:
         """为复制后的文档创建空解析缓存。
@@ -410,7 +425,7 @@ class CiscoDocument(VendorConfiguration):
         """
         self._interfaces()._merge_duplicate_interface(self, preferred)
 
-    def bundle_mode(self, member: str) -> str:
+    def bundle_mode(self, member: str) -> BundleMode:
         """返回聚合成员的协商模式或未知标记。
 
         模式与其他单值业务冲突时无法安全复制，因此不能默认成静态聚合。
@@ -526,12 +541,19 @@ class CiscoDocument(VendorConfiguration):
 
         add_lab_account(self)
 
-    def apply_cleaning_rule(self, path, match, action, value):
+    def apply_cleaning_rule(
+        self,
+        path: tuple[str, ...],
+        match: str,
+        action: CleaningAction,
+        value: str | None,
+    ) -> int:
         """执行一条声明式清洗操作并返回命中数。
 
         单条调用复用批量编译器，确保作用域、动作顺序和错误处理一致。
         """
-        if action == "replace" and value is None:
+        action = CleaningAction(action)
+        if action == CleaningAction.REPLACE and value is None:
             value = ""
         return self.apply_cleaning_rules(
             [CleaningOperation(path, match, action, value)]
@@ -668,7 +690,9 @@ def _omit_empty_block(node, ancestors, policy):
         _omit_empty_block(child, path, policy) for child in node.nodes
     )
     return (
-        node.is_block and children_empty and policy.action_for(path) == "omit"
+        node.is_block
+        and children_empty
+        and policy.action_for(path) == EmptyBlockAction.OMIT
     )
 
 
@@ -705,7 +729,7 @@ def _clean_phase(transaction, node, ancestors, interface, phase, hits):
         if not operation.pattern.search(header):
             continue
         hits[operation.index] += 1
-        if phase.action == "delete":
+        if phase.action == CleaningAction.DELETE:
             transaction.delete(node, "声明式清洗删除")
             return
         header = operation.pattern.sub(operation.value or "", header)

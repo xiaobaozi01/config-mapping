@@ -6,7 +6,7 @@ from collections import defaultdict
 
 from impl.common.interface import interface_parent
 
-from .models import ConversionContext
+from .models import ConversionContext, EventKind
 
 
 class GroupExpansionHandler:
@@ -54,20 +54,20 @@ class GroupExpansionHandler:
         device.warnings.extend(outcome.warnings)
         for message in outcome.events:
             context.add_event(
-                "group-expansion",
+                EventKind.GROUP_EXPANSION,
                 f"设备 {device_name}: {message}",
                 device=device_name,
             )
         for conflict in outcome.conflicts:
             context.add_event(
-                "group-conflict",
+                EventKind.GROUP_CONFLICT,
                 f"设备 {device_name} 的 group 配置冲突已按继承优先级处理",
                 device=device_name,
                 **conflict,
             )
         for ambiguity in outcome.ambiguities:
             context.add_event(
-                "group-identity-ambiguous",
+                EventKind.GROUP_IDENTITY_AMBIGUOUS,
                 f"设备 {device_name} 存在规则未覆盖的潜在 group 语义冲突",
                 device=device_name,
                 **ambiguity,
@@ -75,7 +75,7 @@ class GroupExpansionHandler:
         identity_total = outcome.identity_rule_hits + outcome.identity_fallbacks
         if identity_total:
             context.add_event(
-                "group-identity-coverage",
+                EventKind.GROUP_IDENTITY_COVERAGE,
                 f"设备 {device_name} 的 group 语义规则命中统计",
                 device=device_name,
                 matched=outcome.identity_rule_hits,

@@ -5,6 +5,7 @@ from impl.common.outcomes import (
     InterfacePruningOutcome,
     SimulationAdaptationOutcome,
 )
+from impl.common.policies import SimulationMode
 
 from .support import (
     CiscoRuleVisitor,
@@ -137,7 +138,7 @@ def demo_enable_condition(context):
     关闭模式或禁用接口启用能力时不运行示例，保持与其他模拟规则一致。
     """
     return (
-        context.policy.mode != "off"
+        context.policy.mode != SimulationMode.OFF
         and context.policy.ensure_data_interfaces_enabled
     )
 

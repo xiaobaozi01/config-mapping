@@ -3,6 +3,7 @@
 import re
 
 from impl.common.interface import (
+    BundleMode,
     InterfaceKind,
     interface_parent,
     interface_unit,
@@ -373,7 +374,10 @@ class InterfaceTypesVisitor(CiscoRuleVisitor):
         document, outcome = self.session.document, self.session.result
         name = block.interface_name
         kind = document.interface_kind(name)
-        if name in self.members and document.bundle_mode(name) == "unknown":
+        if (
+            name in self.members
+            and document.bundle_mode(name) == BundleMode.UNKNOWN
+        ):
             outcome.errors.append(f"聚合成员 {name} 含非法业务或冲突绑定")
         l2, unit = _is_l2(block), interface_unit(name)
         if kind == InterfaceKind.GATEWAY and (l2 or unit is not None):

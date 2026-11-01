@@ -17,7 +17,7 @@ from impl.common.interface import (
     normalized_command as _normalized_command,
 )
 from impl.common.outcomes import GroupExpansionOutcome
-from impl.common.policies import WashingPolicy
+from impl.common.policies import GroupIdentityMode, WashingPolicy
 from impl.common.semantic_identity import (
     SemanticDecision,
     find_opaque_ambiguity,
@@ -317,7 +317,7 @@ class JunosGroupExpander:
         ):
             return
         conflict = {
-            "vendor": "juniper_junos",
+            "vendor": JunosDocument.vendor,
             "path": " / ".join(target_path) or "<root>",
             "key": identity_key,
             "winner_source": winner_node.origin,
@@ -566,7 +566,8 @@ class JunosGroupExpander:
         """
         if (
             identity_decision.matched
-            or washing_policy.group_unknown_identity == "preserve"
+            or washing_policy.group_unknown_identity
+            == GroupIdentityMode.PRESERVE
         ):
             return False
         ambiguous_existing_statement = find_opaque_ambiguity(
@@ -583,7 +584,9 @@ class JunosGroupExpander:
             target_path,
         )
         _record_ambiguity(outcome, ambiguity_record, washing_policy)
-        should_reject = washing_policy.group_unknown_identity == "fail"
+        should_reject = (
+            washing_policy.group_unknown_identity == GroupIdentityMode.FAIL
+        )
         if should_reject:
             outcome.success = False
         return should_reject
@@ -605,7 +608,7 @@ class JunosGroupExpander:
             else ""
         )
         return {
-            "vendor": "juniper_junos",
+            "vendor": JunosDocument.vendor,
             "path": " / ".join(target_path) or "<root>",
             "family": command_family,
             "existing_source": existing_statement.origin,
@@ -1734,7 +1737,7 @@ def _record_ambiguity(
         return
     outcome.ambiguities.append(record)
     resolution = "已中止本次 group 展开"
-    if washing_policy.group_unknown_identity != "fail":
+    if washing_policy.group_unknown_identity != GroupIdentityMode.FAIL:
         resolution = "已保留两个值"
     outcome.warnings.append(
         f"Junos 路径 {record['path']} 下的未知语句族 "

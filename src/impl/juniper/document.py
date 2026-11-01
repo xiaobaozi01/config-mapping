@@ -8,11 +8,22 @@ from collections.abc import Iterable, Sequence
 from dataclasses import dataclass
 from functools import lru_cache
 
-from impl.common.cleaning import CleaningOperation, compile_cleaning_rules
+from impl.common.cleaning import (
+    CleaningAction,
+    CleaningOperation,
+    compile_cleaning_rules,
+)
 from impl.common.contracts import VendorConfiguration
+from impl.common.empty_blocks import EmptyBlockAction
 from impl.common.errors import require_invariant
-from impl.common.interface import InterfaceKind, InterfaceSpec, interface_parent
+from impl.common.interface import (
+    BundleMode,
+    InterfaceKind,
+    InterfaceSpec,
+    interface_parent,
+)
 from impl.common.interface_cache import (
+    PARSER_HEADER_CACHE_SIZE,
     InterfaceAnalysisCache,
     copy_interface_specs,
 )
@@ -217,17 +228,27 @@ class _JunosHeaderParser:
 
         缓存容量与接口和策略规模匹配，重复遍历时仍保持可预测内存上限。
         """
-        self.canonical_interface = lru_cache(maxsize=32_768)(
+        self.canonical_interface = lru_cache(maxsize=PARSER_HEADER_CACHE_SIZE)(
             canonical_junos_interface
         )
-        self.interface_kind = lru_cache(maxsize=32_768)(
+        self.interface_kind = lru_cache(maxsize=PARSER_HEADER_CACHE_SIZE)(
             _resolved_interface_kind
         )
-        self.header_prefixes = lru_cache(maxsize=32_768)(_parse_header_prefixes)
-        self.is_unit = lru_cache(maxsize=32_768)(_is_unit_header)
-        self.unit_number = lru_cache(maxsize=32_768)(_unit_number_from_header)
-        self.vlan = lru_cache(maxsize=32_768)(_vlan_from_header)
-        self.inner_vlan = lru_cache(maxsize=32_768)(_inner_vlan_from_header)
+        self.header_prefixes = lru_cache(maxsize=PARSER_HEADER_CACHE_SIZE)(
+            _parse_header_prefixes
+        )
+        self.is_unit = lru_cache(maxsize=PARSER_HEADER_CACHE_SIZE)(
+            _is_unit_header
+        )
+        self.unit_number = lru_cache(maxsize=PARSER_HEADER_CACHE_SIZE)(
+            _unit_number_from_header
+        )
+        self.vlan = lru_cache(maxsize=PARSER_HEADER_CACHE_SIZE)(
+            _vlan_from_header
+        )
+        self.inner_vlan = lru_cache(maxsize=PARSER_HEADER_CACHE_SIZE)(
+            _inner_vlan_from_header
+        )
 
     def __deepcopy__(self, _memo: dict[int, object]) -> _JunosHeaderParser:
         """为复制后的文档创建空 header 缓存。
@@ -889,7 +910,7 @@ class JunosDocument(VendorConfiguration):
         """
         self._interfaces().ensure_parent_interface(self, name)
 
-    def bundle_mode(self, member: str) -> str:
+    def bundle_mode(self, member: str) -> BundleMode:
         """读取聚合成员的原协商方式。
 
         无法确认成员绑定或 LACP 模式时返回 unknown，使迁移流程选择保守失败。
@@ -1002,14 +1023,15 @@ class JunosDocument(VendorConfiguration):
         self,
         path: tuple[str, ...],
         match: str,
-        action: str,
+        action: CleaningAction,
         value: str | None,
     ) -> int:
         """通过批量执行器运行一条清洗操作。
 
         单条入口复用批量编译和审计路径，避免维护两套匹配语义。
         """
-        if action == "replace" and value is None:
+        action = CleaningAction(action)
+        if action == CleaningAction.REPLACE and value is None:
             value = ""
         return self.apply_cleaning_rules(
             [CleaningOperation(path, match, action, value)]
@@ -1098,7 +1120,7 @@ class JunosDocument(VendorConfiguration):
             if not operation.pattern.search(header):
                 continue
             hits[operation.index] += 1
-            if phase.action == "delete":
+            if phase.action == CleaningAction.DELETE:
                 node.active = False
                 return True
             node.header = operation.pattern.sub(
@@ -1202,9 +1224,9 @@ class JunosDocument(VendorConfiguration):
         if not node.declared_in_source:
             return ""
         action = vmx_empty_block_policy().action_for(path)
-        if action == "omit":
+        if action == EmptyBlockAction.OMIT:
             return ""
-        if action == "semicolon":
+        if action == EmptyBlockAction.SEMICOLON:
             statement = indent + self._parser.output_header(node.header) + ";"
             if node.comment:
                 statement += " " + node.comment

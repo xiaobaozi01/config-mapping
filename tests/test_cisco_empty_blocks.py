@@ -8,15 +8,25 @@ from unittest.mock import patch
 import yaml
 
 from impl.cisco.document import CiscoDocument
-from impl.common.empty_blocks import EmptyBlockPolicy as CommonEmptyBlockPolicy
 from impl.cisco.empty_blocks import (
     EmptyBlockPolicy,
     load_empty_block_policy,
     xrv9000_empty_block_policy,
 )
+from impl.common.empty_blocks import EmptyBlockAction
+from impl.common.empty_blocks import EmptyBlockPolicy as CommonEmptyBlockPolicy
 
 
 class CiscoEmptyBlockRulesTest(unittest.TestCase):
+    def test_cisco_actions_use_the_shared_empty_block_action_type(self):
+        self.assertIs(
+            xrv9000_empty_block_policy().default, EmptyBlockAction.KEEP
+        )
+
+    def test_policy_rejects_unknown_direct_action(self):
+        with self.assertRaisesRegex(ValueError, "action"):
+            CommonEmptyBlockPolicy("invented", ())
+
     def test_default_policy_preserves_empty_blocks(self):
         policy = xrv9000_empty_block_policy()
         self.assertEqual(policy.default, "keep")

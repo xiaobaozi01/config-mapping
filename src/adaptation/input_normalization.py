@@ -15,15 +15,21 @@ from .models import Vendor
 
 _RULE_PATHS = {
     Vendor.CISCO_IOSXR: config_path(
-        "rules", "cisco", "xrv9000", "input_normalization.yaml"
+        "rules",
+        Vendor.CISCO_IOSXR.rule_prefix,
+        Vendor.CISCO_IOSXR.target_image,
+        "input_normalization.yaml",
     ),
     Vendor.JUNIPER_JUNOS: config_path(
-        "rules", "juniper", "vmx", "input_normalization.yaml"
+        "rules",
+        Vendor.JUNIPER_JUNOS.rule_prefix,
+        Vendor.JUNIPER_JUNOS.target_image,
+        "input_normalization.yaml",
     ),
 }
 _VENDOR_PREFIX = {
-    Vendor.CISCO_IOSXR: "cisco",
-    Vendor.JUNIPER_JUNOS: "juniper",
+    vendor: vendor.rule_prefix
+    for vendor in (Vendor.CISCO_IOSXR, Vendor.JUNIPER_JUNOS)
 }
 
 

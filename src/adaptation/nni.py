@@ -5,10 +5,19 @@ from __future__ import annotations
 from collections import defaultdict
 from dataclasses import dataclass
 
-from impl.common.interface import InterfaceKind, interface_parent
+from impl.common.interface import BundleMode, InterfaceKind, interface_parent
 
 from .interfaces import _report
-from .models import ConversionContext, InterfaceMapping, Link
+from .models import (
+    MIN_PROFILE_INTERFACE_COUNT,
+    RESERVED_NNI_INTERFACE_COUNT,
+    ConversionContext,
+    EventKind,
+    InterfaceMapping,
+    Link,
+    MappingAction,
+    MappingRole,
+)
 from .profiles import normalize_data_interfaces
 
 
@@ -365,9 +374,9 @@ class NNIHandler:
             doc = context.devices[name].document
             member = analysis.resolved[(link.row, name)]
             bundle = analysis.bundles[(link.row, name)]
-            mode = doc.bundle_mode(member) if bundle else "on"
+            mode = doc.bundle_mode(member) if bundle else BundleMode.ON
             modes.append(mode)
-            if mode == "unknown":
+            if mode == BundleMode.UNKNOWN:
                 context.errors.append(
                     f"设备 {name} 成员 {member} 的聚合绑定或协商方式无法安全识别"
                 )
@@ -386,8 +395,11 @@ class NNIHandler:
                     f"协商方式 {mode} 未核验"
                 )
         if len(modes) == 2 and (
-            ("on" in modes and any(mode != "on" for mode in modes))
-            or modes == ["passive", "passive"]
+            (
+                BundleMode.ON in modes
+                and any(mode != BundleMode.ON for mode in modes)
+            )
+            or modes == [BundleMode.PASSIVE, BundleMode.PASSIVE]
         ):
             context.errors.append(
                 f"链接表第 {link.row} 行两端聚合协商方式不兼容: {modes}"
@@ -423,7 +435,7 @@ class NNIHandler:
                     device.document.resolve_interface(mapping.source_interface)
                 )
                 for mapping in device.mappings
-                if mapping.action == "skip"
+                if mapping.action == MappingAction.SKIP
             )
             members = members_by_device[name]
             protected[name].update(
@@ -520,7 +532,7 @@ class NNIHandler:
             link.active = False
             link.skip_reason = f"聚合成员缩减，保留第 {keep} 行"
             context.add_event(
-                "reduce-member-link",
+                EventKind.REDUCE_MEMBER_LINK,
                 f"删除聚合冗余成员链路第 {row} 行",
                 row=row,
                 retained_row=keep,
@@ -595,7 +607,9 @@ class NNIHandler:
         device = context.devices[device_name]
         outcome = device.document.prune_interface_dependencies(removed)
         device.removed_interfaces.update(removed)
-        _report(context, device_name, "redundant-member-cleanup", outcome)
+        _report(
+            context, device_name, EventKind.REDUNDANT_MEMBER_CLEANUP, outcome
+        )
         return not outcome.errors
 
     @staticmethod
@@ -613,8 +627,12 @@ class NNIHandler:
                 InterfaceMapping(
                     device=device_name,
                     source_interface=source + suffix,
-                    role="NNI",
-                    action="map-member" if plan.bundles else "map",
+                    role=MappingRole.NNI,
+                    action=(
+                        MappingAction.MAP_MEMBER
+                        if plan.bundles
+                        else MappingAction.MAP
+                    ),
                     target_interface=target_name,
                     link_rows=list(plan.link_rows),
                     reason="聚合物理成员映射，逻辑聚合保留"
@@ -635,11 +653,11 @@ def _available_targets(
     available: dict[str, list[str]] = {}
     for name, device in context.devices.items():
         try:
-            if len(device.profile.interfaces) < 4:
+            if len(device.profile.interfaces) < MIN_PROFILE_INTERFACE_COUNT:
                 raise ValueError("镜像接口列表至少需要四个接口")
             targets = normalize_data_interfaces(
                 device.device.vendor, device.profile.interfaces
-            )[:-3]
+            )[:-RESERVED_NNI_INTERFACE_COUNT]
         except ValueError as exc:
             message = f"设备 {name} 的 NNI 目标接口无效: {exc}"
             device.errors.append(message)
@@ -766,8 +784,8 @@ def _record_removed_members(
             InterfaceMapping(
                 device=device_name,
                 source_interface=member,
-                role="NNI",
-                action="remove",
+                role=MappingRole.NNI,
+                action=MappingAction.REMOVE,
                 target_interface=None,
                 reason="缩减冗余聚合成员",
             )
@@ -791,8 +809,8 @@ def _record_preserved_bundles(
                 InterfaceMapping(
                     device=device_name,
                     source_interface=name,
-                    role="NNI",
-                    action="preserve",
+                    role=MappingRole.NNI,
+                    action=MappingAction.PRESERVE,
                     target_interface=name,
                     reason="保留聚合业务接口类型和引用",
                 )
@@ -802,14 +820,14 @@ def _record_preserved_bundles(
         device.warnings.extend(outcome.warnings)
         for warning in outcome.warnings:
             context.add_event(
-                "bundle-adaptation-warning",
+                EventKind.BUNDLE_ADAPTATION_WARNING,
                 warning,
                 device=device_name,
                 interface=bundle,
             )
         for change in outcome.changes:
             context.add_event(
-                "bundle-adaptation",
+                EventKind.BUNDLE_ADAPTATION,
                 f"设备 {device_name} 调整聚合门限",
                 device=device_name,
                 **change,

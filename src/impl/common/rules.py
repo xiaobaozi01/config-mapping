@@ -10,6 +10,7 @@ from .outcomes import (
     InterfaceAdaptationOutcome,
     InterfacePruningOutcome,
     SimulationAdaptationOutcome,
+    SimulationChangeAction,
 )
 from .policies import SimulationAdaptationPolicy
 
@@ -230,7 +231,7 @@ def merge_simulation_results(
     """
     outcome = SimulationAdaptationOutcome()
     for rule_id, result in results:
-        for action in ("added", "replaced", "removed"):
+        for action in SimulationChangeAction:
             for category, count in getattr(result, action).items():
                 outcome.record(action, category, count)
         if result.total:

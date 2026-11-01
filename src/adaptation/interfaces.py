@@ -9,19 +9,23 @@ from impl.common.interface import InterfaceKind, interface_parent
 from impl.common.outcomes import InterfaceAdaptationOutcome
 
 from .cleaning_rules import target_parents
-from .models import ConversionContext, InterfaceMapping, Vendor
+from .models import (
+    ConversionContext,
+    EventKind,
+    InterfaceMapping,
+    MappingAction,
+    MappingRole,
+    Vendor,
+)
 
 
 def _report(
     context: ConversionContext,
     name: str,
-    kind: str,
+    kind: EventKind,
     outcome: InterfaceAdaptationOutcome,
 ) -> None:
-    """把厂商接口处理结果写入设备状态和全局结构化事件。
-
-    统一补充目标接口来源，使报告能够从目标反向追踪源接口，并集中处理诊断格式。
-    """
+    """把厂商接口处理结果写入设备状态和全局结构化事件。"""
     device = context.devices[name]
     device.errors.extend(
         f"设备 {name}: {message}" for message in outcome.errors
@@ -43,22 +47,25 @@ def _report(
             details.setdefault("target_interface", target)
         context.add_event(
             kind,
-            f"设备 {name}: {change.get('reason', kind)}",
+            f"设备 {name}: {change.get('reason', kind.value)}",
             device=name,
             **details,
         )
     _report_diagnostics(context, name, kind, outcome)
 
 
-def _report_diagnostics(context, name, kind, outcome):
-    """把规则级错误和告警转换为带来源 ID 的处理器事件。
-
-    同一消息可能由多条规则产生，聚合规则 ID 可保留诊断来源并避免重复事件。
-    """
+def _report_diagnostics(
+    context: ConversionContext,
+    name: str,
+    kind: EventKind,
+    outcome: InterfaceAdaptationOutcome,
+) -> None:
+    """把规则级错误和告警转换为带来源 ID 的处理器事件。"""
     for level, messages in (
         ("error", outcome.errors),
         ("warning", outcome.warnings),
     ):
+        event_kind = EventKind(f"{kind.value}-{level}")
         for message in messages:
             rule_ids = list(
                 dict.fromkeys(
@@ -68,7 +75,7 @@ def _report_diagnostics(context, name, kind, outcome):
                 )
             )
             context.add_event(
-                f"{kind}-{level}",
+                event_kind,
                 message,
                 device=name,
                 rule_ids=rule_ids,
@@ -100,7 +107,7 @@ class PreconfiguredInterfaceCleanupHandler:
             transaction.commit()
             if removed:
                 context.add_event(
-                    "preconfigured-interface-cleanup",
+                    EventKind.PRECONFIGURED_INTERFACE_CLEANUP,
                     f"设备 {device_name} 已忽略未实例化的预配置接口",
                     device=device_name,
                     removed_by_type={"preconfigured-interface": removed},
@@ -139,12 +146,12 @@ class InterfaceClassificationHandler:
                 )
                 device.warnings.append(message)
                 context.add_event(
-                    "interface-classification-warning",
+                    EventKind.INTERFACE_CLASSIFICATION_WARNING,
                     message,
                     device=device_name,
                     interface=interface,
                     classification=InterfaceKind.UNKNOWN.value,
-                    action="preserve",
+                    action=MappingAction.PRESERVE.value,
                 )
 
 
@@ -175,13 +182,13 @@ class NonNNICleanupHandler:
                     InterfaceMapping(
                         device=name,
                         source_interface=interface,
-                        role="NON_NNI",
-                        action="remove",
+                        role=MappingRole.NON_NNI,
+                        action=MappingAction.REMOVE,
                         target_interface=None,
                         reason="非 NNI 接口不参与核心路由实验",
                     )
                 )
-            _report(context, name, "non-nni-cleanup", outcome)
+            _report(context, name, EventKind.NON_NNI_CLEANUP, outcome)
 
 
 class ReferenceRewriteHandler:
@@ -220,7 +227,7 @@ class InterfaceCompatibilityHandler:
             outcome = device.document.adapt_interfaces(
                 set(target_parents(device))
             )
-            _report(context, name, "interface-compatibility", outcome)
+            _report(context, name, EventKind.INTERFACE_COMPATIBILITY, outcome)
 
 
 class FinalInterfaceValidationHandler:
@@ -239,10 +246,11 @@ class FinalInterfaceValidationHandler:
             removed = device.removed_interfaces | {
                 mapping.source_interface
                 for mapping in device.mappings
-                if mapping.role == "NNI"
-                and mapping.action not in {"skip", "preserve"}
+                if mapping.role == MappingRole.NNI
+                and mapping.action
+                not in {MappingAction.SKIP, MappingAction.PRESERVE}
             }
             outcome = device.document.validate_interfaces(
                 set(target_parents(device)), removed
             )
-            _report(context, name, "interface-validation", outcome)
+            _report(context, name, EventKind.INTERFACE_VALIDATION, outcome)

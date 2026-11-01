@@ -7,6 +7,7 @@ from pathlib import Path
 
 from impl.common.config_paths import config_path
 from impl.common.empty_blocks import (
+    EmptyBlockAction,
     EmptyBlockPolicy,
 )
 from impl.common.empty_blocks import (
@@ -14,7 +15,7 @@ from impl.common.empty_blocks import (
 )
 
 _RULE_FILE = config_path("rules", "cisco", "xrv9000", "empty_blocks.yaml")
-_ACTIONS = ("omit", "keep")
+_ACTIONS = (EmptyBlockAction.OMIT, EmptyBlockAction.KEEP)
 
 
 def load_empty_block_policy(path: Path) -> EmptyBlockPolicy:

@@ -8,10 +8,14 @@ from pathlib import Path
 import yaml
 
 from impl.common.interface import InterfaceKind, interface_parent
-from impl.common.policies import SimulationAdaptationPolicy
+from impl.common.policies import SimulationAdaptationPolicy, SimulationMode
 
 from .factory import parse_document
-from .models import ImageProfile, Vendor
+from .models import (
+    MIN_PROFILE_INTERFACE_COUNT,
+    ImageProfile,
+    Vendor,
+)
 
 # 未提供 YAML 时使用的默认值；倒数第三个数据口空置，最后两个预留。
 DEFAULT_INTERFACES = {
@@ -20,8 +24,8 @@ DEFAULT_INTERFACES = {
 }
 
 DEFAULT_IMAGES = {
-    Vendor.CISCO_IOSXR: "xrv9000",
-    Vendor.JUNIPER_JUNOS: "vmx",
+    vendor: vendor.target_image
+    for vendor in (Vendor.CISCO_IOSXR, Vendor.JUNIPER_JUNOS)
 }
 
 _SIMULATION_ADAPTATION_KEYS = {
@@ -97,15 +101,17 @@ def _parse_simulation_values(
 
     将限制值集中在 profile 加载阶段，使所有设备采用同一镜像安全边界。
     """
-    mode = raw.get("mode", "stable")
+    mode = raw.get("mode", SimulationMode.STABLE)
     # PyYAML 按 YAML 1.1 会把未加引号的 ``off`` 解析为 False。
     if mode is False:
-        mode = "off"
-    if mode not in {"off", "compatible", "stable"}:
+        mode = SimulationMode.OFF
+    try:
+        mode = SimulationMode(mode)
+    except ValueError as exc:
         raise ValueError(
             f"{vendor.value}: simulation_adaptation.mode "
             "必须是 off、compatible 或 stable"
-        )
+        ) from exc
 
     values: dict[str, object] = {"mode": mode}
     for key in (
@@ -165,7 +171,7 @@ def load_profiles(path: Path | None) -> dict[Vendor, ImageProfile]:
         interfaces = (
             list(configured) if configured else list(DEFAULT_INTERFACES[vendor])
         )
-        if len(interfaces) < 4:
+        if len(interfaces) < MIN_PROFILE_INTERFACE_COUNT:
             raise ValueError(f"{vendor.value} 镜像接口列表至少需要四个接口")
         interfaces = normalize_data_interfaces(vendor, interfaces)
         image = item.get("image", DEFAULT_IMAGES[vendor])
