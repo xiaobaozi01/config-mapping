@@ -134,6 +134,26 @@ class ManagedPruningFailureTest(unittest.TestCase):
 
 
 class ManagedPruningResultTest(unittest.TestCase):
+    def test_deletion_triggers_share_interface_dependency_cascade(self):
+        full = CiscoDocument(FULL_SOURCE)
+        member = CiscoDocument(MEMBER_SOURCE)
+        with patch.object(pruning, "InterfaceDependencyCascade") as cascade:
+            pruning.NON_NNI_RULE.apply(
+                full,
+                PruneContext(frozenset({"Gi0/0/0/0"})),
+            )
+            pruning.MEMBER_SOURCES_RULE.apply(
+                member,
+                PruneContext(
+                    frozenset(),
+                    frozenset({REMOVED}),
+                    remove_non_nni=False,
+                ),
+            )
+
+        self.assertEqual(cascade.call_count, 2)
+        self.assertEqual(cascade.return_value.run.call_count, 2)
+
     def test_full_prune_keeps_business_reports_and_does_not_share_device_state(self):
         first, second = CiscoDocument(FULL_SOURCE), CiscoDocument(FULL_SOURCE)
         lost = first.prune_non_nni({"Gi0/0/0/0"})

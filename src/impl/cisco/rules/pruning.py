@@ -699,7 +699,7 @@ class _CiscoPruner:
         self.prune_domains()
         self.prune_p2p()
         self.prune_interfaces()
-        _BgpSourcePruner(
+        InterfaceDependencyCascade(
             self.document,
             self.removed,
             self.removed_sources,
@@ -707,7 +707,47 @@ class _CiscoPruner:
             self.outcome,
             self.record,
         ).run()
-        self.prune_monitor_sessions()
+
+
+class InterfaceDependencyCascade:
+    """清理接口删除后共享的 BGP 本地源与 monitor-session 依赖。
+
+    完整非 NNI 和聚合成员缩减只负责确定删除集合；本类保证两者从该集合开始使用
+    相同的分析顺序和结果写入逻辑。地址映射由入口按原有语义提供，不在内核中重算。
+    """
+
+    def __init__(
+        self,
+        document,
+        removed_interfaces,
+        removed_addresses,
+        retained_addresses,
+        outcome,
+        record,
+    ):
+        """保存删除集合、地址作用域和审计回调。"""
+        self.document = document
+        self.removed_interfaces = removed_interfaces
+        self.removed_addresses = removed_addresses
+        self.retained_addresses = retained_addresses
+        self.outcome = outcome
+        self.record = record
+
+    def run(self):
+        """依次清理 BGP 本地源和监控会话。"""
+        _BgpSourcePruner(
+            self.document,
+            self.removed_interfaces,
+            self.removed_addresses,
+            self.retained_addresses,
+            self.outcome,
+            self.record,
+        ).run()
+        monitor = _CiscoPruner(
+            self.document, set(), self.outcome, self.record
+        )
+        monitor.removed = set(self.removed_interfaces)
+        monitor.prune_monitor_sessions()
 
 
 class PruningVisitor(CiscoRuleVisitor):
@@ -784,18 +824,18 @@ class MemberSourcesVisitor(PruningVisitor):
     """
 
     def visitConfiguration(self, root):
-        """从配置根启动 BGP 成员源和镜像会话清理。
+        """通过共享依赖级联内核清理已删除成员。
 
         删除集合直接取规则上下文，确保只处理调用方指定的成员。
         """
-        worker = _CiscoPruner(
-            self.session.document, set(), self.session.result, self.record
-        )
-        worker.removed = set(self.session.context.removed_interfaces)
-        _BgpSourcePruner(
-            worker.document, worker.removed, {}, {}, worker.outcome, self.record
+        InterfaceDependencyCascade(
+            self.session.document,
+            self.session.context.removed_interfaces,
+            {},
+            {},
+            self.session.result,
+            self.record,
         ).run()
-        worker.prune_monitor_sessions()
 
 
 class InterfaceBindingsVisitor(PruningVisitor):
