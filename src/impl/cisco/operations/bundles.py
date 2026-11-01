@@ -5,7 +5,8 @@ import re
 from impl.common.domain.interface import BundleMode
 from impl.common.domain.outcomes import InterfaceAdaptationOutcome
 
-from .interfaces import ensure_parent_interface, find_interface_node
+from .interfaces.access import find_interface_node
+from .interfaces.transform import ensure_parent_interface
 
 
 def bundle_mode(document, member) -> BundleMode:

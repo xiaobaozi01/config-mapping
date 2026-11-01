@@ -26,7 +26,7 @@ def select_interfaces(
 
     先统一父口再比较类型，使接口别名不会绕过规则范围，同时避免修改无关接口。
     """
-    from ..operations.interfaces import interface_nodes
+    from ..operations.interfaces.access import interface_nodes
 
     parents = {
         interface_parent(document.interfaces.analysis.resolve_interface(name))
@@ -71,7 +71,7 @@ def compatibility_interfaces_scope(document, context):
 
     网关引用可能位于目标接口之外，额外纳入 BVI 可保证兼容性校验覆盖完整业务链。
     """
-    from ..operations.interfaces import interface_nodes
+    from ..operations.interfaces.access import interface_nodes
 
     parents = {
         interface_parent(document.interfaces.analysis.resolve_interface(name))

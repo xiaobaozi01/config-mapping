@@ -14,13 +14,15 @@ from impl.common.domain.interface import (
 from impl.common.domain.outcomes import InterfacePruningOutcome
 from impl.common.rules import merge_interface_results
 
-from ..operations.interfaces import (
-    _collect_active_vlans,
-    _expand_vlan_tokens,
+from ..operations.interfaces.access import (
     interface_name,
     interface_nodes,
     unit_nodes,
     unit_number,
+)
+from ..operations.interfaces.business import (
+    collect_active_vlans,
+    expand_vlan_tokens,
 )
 from .compatibility import _validate_pruned_references, _walk
 
@@ -182,7 +184,7 @@ class _JunosPruner:
             return self.vlan_cache[key]
         names = self.discarded_names if discarded else self.kept_names
         scoped = {name for name in names if scope in self.owners(name)}
-        ids, names_for_vlans = _collect_active_vlans(
+        ids, names_for_vlans = collect_active_vlans(
             self.document, scoped, self.specs
         )
         for name in scoped:
@@ -193,7 +195,7 @@ class _JunosPruner:
                 match = re.fullmatch(r"members\s+(.+)", path[-1])
                 if match and "vlan" in path[:-1]:
                     payload = match.group(1)
-                    ids.update(_expand_vlan_tokens(payload))
+                    ids.update(expand_vlan_tokens(payload))
                     names_for_vlans.update(
                         re.findall(r"[A-Za-z_][A-Za-z0-9_.-]*", payload)
                     )

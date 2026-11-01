@@ -12,7 +12,7 @@ from impl.common.domain.outcomes import (
 from impl.common.domain.policies import SimulationAdaptationPolicy
 
 from ..document import JuniperNode, JunosDocument
-from ..operations.interfaces import interface_name, interface_nodes
+from ..operations.interfaces.access import interface_name, interface_nodes
 
 
 def adapt_to_simulation(

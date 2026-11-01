@@ -246,16 +246,16 @@ flowchart TB
 
     subgraph Cisco[Cisco 实现]
         CiscoParser[impl/cisco/document.py]
-        CiscoGroups[impl/cisco/operations/groups.py]
-        CiscoInterfaces[impl/cisco/operations/interfaces.py]
+        CiscoGroups[impl/cisco/operations/groups/expander.py]
+        CiscoInterfaces[impl/cisco/operations/interfaces/]
         CiscoCleaning[impl/cisco/operations/cleaning.py]
         CiscoSimulation[impl/cisco/rules/simulation.py]
     end
 
     subgraph Juniper[Juniper 实现]
         JunosParser[impl/juniper/document.py]
-        JunosGroups[impl/juniper/operations/groups.py]
-        JunosInterfaces[impl/juniper/operations/interfaces.py]
+        JunosGroups[impl/juniper/operations/groups/expander.py]
+        JunosInterfaces[impl/juniper/operations/interfaces/]
         JunosCleaning[impl/juniper/operations/cleaning.py]
         JunosSimulation[impl/juniper/rules/simulation.py]
     end
@@ -302,8 +302,8 @@ flowchart TB
 | `impl/common/rules/`、`impl/common/support/` | 规则引擎、路径清洗、缓存和基础设施 | 修改公共能力时读 |
 | `impl/cisco/document.py、impl/juniper/document.py` | 组合语法、业务操作和镜像支持的稳定 Facade | 第二阶段读 |
 | `impl/cisco/syntax/、impl/juniper/syntax/` | Parser、AST、Writer 和语法级辅助能力 | 阅读解析与编辑时先读 |
-| `impl/cisco/operations/groups.py、impl/juniper/operations/groups.py` | 厂商 Group 事务式展开 | 专项阅读 |
-| `impl/cisco/operations/interfaces.py、impl/juniper/operations/interfaces.py` | 业务接口分析和配置树修改 | 专项阅读 |
+| `impl/cisco/operations/groups/`、`impl/juniper/operations/groups/` | Group 选择器、定义、合并、展开与发布 | 专项阅读 |
+| `impl/cisco/operations/interfaces/`、`impl/juniper/operations/interfaces/` | 接口访问、规格分析、业务闭包和配置树修改 | 专项阅读 |
 | `impl/cisco/operations/cleaning.py、impl/juniper/operations/cleaning.py` | 强制管理面清洗 | 专项阅读 |
 | `impl/cisco/rules/simulation.py、impl/juniper/rules/simulation.py` | 镜像运行参数适配 | 专项阅读 |
 | `adaptation/topology.py` | Excel 读写和列别名处理 | 输入问题时读 |
@@ -321,7 +321,9 @@ flowchart TB
 - `ConversionContext` 等是 dataclass：它们表达一次转换过程中的领域数据。
 - `plan_nni_components()` 是函数：输入链路和聚合关系，输出不可变计划，不持有状态。
 - `plan_nni_components()` 是函数：输入链路和聚合关系，稳定地产生组件计划。
-- `impl/cisco/operations/interfaces.py、impl/juniper/operations/interfaces.py`、`cleaning.py`、`simulation.py` 使用模块函数：这些操作依赖传入的 Document，但自身不需要额外对象生命周期。
+- 厂商 `operations/interfaces/` 包按 `access`、`analysis`、`business`、`transform`、
+  `capabilities` 分工；规则和 support 依赖具体子模块，包级 `__init__.py` 只提供
+  公共兼容导出。接口操作依赖传入的 Document，但能力类自身不持有长期树状态。
 
 ## 6. 贯穿流程的核心数据
 
@@ -765,7 +767,7 @@ flowchart TD
 
 ### 16.2 增加一种业务接口识别依据
 
-1. 修改 `<厂商>/interfaces.py` 的业务闭包分析。
+1. 修改 `<厂商>/operations/interfaces/business.py` 的业务闭包分析。
 2. 确认它是否会激活 BVI/IRB 网关。
 3. 同时添加“NNI 仍依赖网关”和“仅非 NNI 依赖网关”的测试，避免误删或误保留。
 
@@ -884,7 +886,9 @@ git diff --check
 1. 按上面的 30 分钟路径阅读。
 2. 详细阅读 `NNIHandler`、`NonNNICleanupHandler`。
 3. 阅读 NNI、非 NNI 清理及接口兼容模块。
-4. 只选择自己更熟悉的一个厂商，阅读其 parser 和 `<厂商>/interfaces.py`。
+4. 只选择自己更熟悉的一个厂商，阅读其 parser 和
+   `<厂商>/operations/interfaces/` 中的 `access.py`、`analysis.py`、
+   `business.py` 与 `transform.py`。
 5. 本地运行一个 fixture，并对照输出 mapping/report。
 
 如果准备开始开发：

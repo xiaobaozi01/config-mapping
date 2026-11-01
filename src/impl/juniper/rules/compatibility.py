@@ -14,7 +14,7 @@ from impl.common.domain.outcomes import (
     InterfacePruningOutcome,
 )
 
-from ..operations.interfaces import (
+from ..operations.interfaces.access import (
     interface_name,
     interface_nodes,
     unit_nodes,

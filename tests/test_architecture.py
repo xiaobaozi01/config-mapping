@@ -259,7 +259,7 @@ class ProjectConfigLayoutTest(unittest.TestCase):
                 )
 
 
-class InterfaceModuleLayoutTest(unittest.TestCase):
+class InterfacePackageLayoutTest(unittest.TestCase):
 
     def test_interface_handlers_are_owned_by_interfaces_module(self):
         from adaptation import interfaces
@@ -576,16 +576,16 @@ class CapabilityImplementationContractTest(unittest.TestCase):
 
         from impl.cisco.operations.bundles import CiscoBundleOperations
         from impl.cisco.operations.cleaning import CiscoCleaningOperations
+        from impl.cisco.operations.compatibility import (
+            CiscoCompatibilityOperations,
+        )
         from impl.cisco.operations.groups import CiscoGroupOperations
         from impl.cisco.operations.interfaces import (
             CiscoInterfaceAnalysis,
             CiscoInterfaceTransform,
         )
-        from impl.cisco.operations.references import CiscoReferenceOperations
-        from impl.cisco.operations.compatibility import (
-            CiscoCompatibilityOperations,
-        )
         from impl.cisco.operations.pruning import CiscoPruningOperations
+        from impl.cisco.operations.references import CiscoReferenceOperations
         from impl.cisco.operations.simulation import (
             CiscoSimulationOperations,
         )
@@ -595,16 +595,16 @@ class CapabilityImplementationContractTest(unittest.TestCase):
         from impl.common.domain import capabilities
         from impl.juniper.operations.bundles import JunosBundleOperations
         from impl.juniper.operations.cleaning import JunosCleaningOperations
+        from impl.juniper.operations.compatibility import (
+            JunosCompatibilityOperations,
+        )
         from impl.juniper.operations.groups import JunosGroupOperations
         from impl.juniper.operations.interfaces import (
             JunosInterfaceAnalysis,
             JunosInterfaceTransform,
         )
-        from impl.juniper.operations.references import JunosReferenceOperations
-        from impl.juniper.operations.compatibility import (
-            JunosCompatibilityOperations,
-        )
         from impl.juniper.operations.pruning import JunosPruningOperations
+        from impl.juniper.operations.references import JunosReferenceOperations
         from impl.juniper.operations.simulation import (
             JunosSimulationOperations,
         )
@@ -665,11 +665,11 @@ class CapabilityImplementationContractTest(unittest.TestCase):
         from impl.cisco.rules import compatibility as cisco_rule_compat
         from impl.cisco.rules import pruning as cisco_rule_pruning
         from impl.cisco.rules import simulation as cisco_rule_simulation
+        from impl.juniper import rules as junos_rule_root
         from impl.juniper.operations import compatibility as junos_compat
         from impl.juniper.operations import pruning as junos_pruning
         from impl.juniper.operations import simulation as junos_simulation
         from impl.juniper.operations import validation as junos_validation
-        from impl.juniper import rules as junos_rule_root
         from impl.juniper.rules import pruning as junos_rule_pruning
         from impl.juniper.rules import simulation as junos_rule_simulation
 
@@ -775,6 +775,201 @@ class DocumentSurfaceTest(unittest.TestCase):
         from impl.common.domain.capabilities import VendorDocument
 
         self.assertIs(VendorConfiguration, VendorDocument)
+
+
+class InterfaceModuleLayoutTest(unittest.TestCase):
+    def test_interface_packages_have_required_modules(self):
+        modules = (
+            "impl.cisco.operations.interfaces.access",
+            "impl.cisco.operations.interfaces.analysis",
+            "impl.cisco.operations.interfaces.business",
+            "impl.cisco.operations.interfaces.capabilities",
+            "impl.cisco.operations.interfaces.transform",
+            "impl.juniper.operations.interfaces.access",
+            "impl.juniper.operations.interfaces.analysis",
+            "impl.juniper.operations.interfaces.business",
+            "impl.juniper.operations.interfaces.capabilities",
+            "impl.juniper.operations.interfaces.transform",
+        )
+        for module in modules:
+            with self.subTest(module=module):
+                self.assertIsNotNone(importlib.util.find_spec(module))
+
+    def test_interface_single_files_are_removed(self):
+        project_root = Path(__file__).parents[1]
+        for vendor in ("cisco", "juniper"):
+            with self.subTest(vendor=vendor):
+                path = (
+                    project_root
+                    / "src"
+                    / "impl"
+                    / vendor
+                    / "operations"
+                    / "interfaces.py"
+                )
+                self.assertFalse(path.exists())
+
+    def test_interface_submodule_dependencies_point_inward(self):
+        project_root = Path(__file__).parents[1]
+        forbidden = {
+            "access": {"analysis", "business", "transform"},
+            "business": {"analysis", "transform"},
+            "analysis": {"transform"},
+            "transform": {"analysis"},
+        }
+        for vendor in ("cisco", "juniper"):
+            package = (
+                project_root
+                / "src"
+                / "impl"
+                / vendor
+                / "operations"
+                / "interfaces"
+            )
+            for module_name, blocked in forbidden.items():
+                path = package / f"{module_name}.py"
+                tree = ast.parse(path.read_text(encoding="utf-8"))
+                imported = {
+                    alias.name
+                    for node in ast.walk(tree)
+                    if isinstance(node, ast.ImportFrom) and node.level == 1
+                    for alias in node.names
+                }
+                with self.subTest(vendor=vendor, module=module_name):
+                    self.assertFalse(imported & blocked)
+
+    def test_capability_classes_remain_compatible(self):
+        from impl.cisco.operations.interfaces import (
+            CiscoInterfaceAnalysis,
+            CiscoInterfaceTransform,
+        )
+        from impl.juniper.operations.interfaces import (
+            JunosInterfaceAnalysis,
+            JunosInterfaceTransform,
+        )
+
+        self.assertEqual(
+            CiscoInterfaceAnalysis.__module__,
+            "impl.cisco.operations.interfaces.analysis",
+        )
+        self.assertEqual(
+            CiscoInterfaceTransform.__module__,
+            "impl.cisco.operations.interfaces.transform",
+        )
+        self.assertEqual(
+            JunosInterfaceAnalysis.__module__,
+            "impl.juniper.operations.interfaces.analysis",
+        )
+        self.assertEqual(
+            JunosInterfaceTransform.__module__,
+            "impl.juniper.operations.interfaces.transform",
+        )
+
+
+class GroupModuleLayoutTest(unittest.TestCase):
+    def test_group_packages_have_required_modules(self):
+        modules = (
+            "impl.cisco.operations.groups.models",
+            "impl.cisco.operations.groups.selectors",
+            "impl.cisco.operations.groups.definitions",
+            "impl.cisco.operations.groups.merger",
+            "impl.cisco.operations.groups.expander",
+            "impl.cisco.operations.groups.publishing",
+            "impl.cisco.operations.groups.capabilities",
+            "impl.juniper.operations.groups.models",
+            "impl.juniper.operations.groups.selectors",
+            "impl.juniper.operations.groups.definitions",
+            "impl.juniper.operations.groups.merger",
+            "impl.juniper.operations.groups.expander",
+            "impl.juniper.operations.groups.capabilities",
+        )
+        for module in modules:
+            with self.subTest(module=module):
+                self.assertIsNotNone(importlib.util.find_spec(module))
+
+    def test_group_single_files_are_removed(self):
+        project_root = Path(__file__).parents[1]
+        for vendor in ("cisco", "juniper"):
+            with self.subTest(vendor=vendor):
+                path = (
+                    project_root
+                    / "src"
+                    / "impl"
+                    / vendor
+                    / "operations"
+                    / "groups.py"
+                )
+                self.assertFalse(path.exists())
+
+    def test_group_submodule_dependencies_point_inward(self):
+        project_root = Path(__file__).parents[1]
+        forbidden = {
+            "models": {
+                "selectors",
+                "definitions",
+                "merger",
+                "expander",
+                "capabilities",
+            },
+            "selectors": {
+                "definitions",
+                "merger",
+                "expander",
+                "capabilities",
+            },
+            "definitions": {"merger", "expander", "capabilities"},
+            "merger": {"definitions", "expander", "capabilities"},
+            "publishing": {"definitions", "merger", "expander", "capabilities"},
+        }
+        for vendor in ("cisco", "juniper"):
+            package = (
+                project_root
+                / "src"
+                / "impl"
+                / vendor
+                / "operations"
+                / "groups"
+            )
+            for module_name, blocked in forbidden.items():
+                path = package / f"{module_name}.py"
+                if not path.exists():
+                    continue
+                tree = ast.parse(path.read_text(encoding="utf-8"))
+                imported = {
+                    alias.name
+                    for node in ast.walk(tree)
+                    if isinstance(node, ast.ImportFrom) and node.level == 1
+                    for alias in node.names
+                }
+                with self.subTest(vendor=vendor, module=module_name):
+                    self.assertFalse(imported & blocked)
+
+    def test_group_capability_classes_remain_compatible(self):
+        from impl.cisco.operations.groups import (
+            CiscoGroupExpander,
+            CiscoGroupOperations,
+        )
+        from impl.juniper.operations.groups import (
+            JunosGroupExpander,
+            JunosGroupOperations,
+        )
+
+        self.assertEqual(
+            CiscoGroupExpander.__module__,
+            "impl.cisco.operations.groups.expander",
+        )
+        self.assertEqual(
+            CiscoGroupOperations.__module__,
+            "impl.cisco.operations.groups.capabilities",
+        )
+        self.assertEqual(
+            JunosGroupExpander.__module__,
+            "impl.juniper.operations.groups.expander",
+        )
+        self.assertEqual(
+            JunosGroupOperations.__module__,
+            "impl.juniper.operations.groups.capabilities",
+        )
 
 
 if __name__ == "__main__":

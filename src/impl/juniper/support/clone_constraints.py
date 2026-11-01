@@ -8,7 +8,8 @@ from typing import TYPE_CHECKING
 from impl.common.domain.interface import referenced_interface_names
 from impl.common.domain.outcomes import InterfaceAdaptationOutcome
 
-from ..operations.interfaces import find_interface_node, logical_names_under
+from ..operations.interfaces.access import find_interface_node
+from ..operations.interfaces.analysis import logical_names_under
 
 if TYPE_CHECKING:
     from ..document import JuniperNode, JunosDocument

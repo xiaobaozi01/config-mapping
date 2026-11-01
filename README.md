@@ -12,6 +12,7 @@ group 展开是事务式的，并遵循显式配置、嵌套层级和 group 列�
 
 - `impl/cisco/syntax/`、`impl/cisco/operations/`、`impl/cisco/support/`：IOS XR 语法、业务操作和镜像约束；XRv9000 规则仍位于 `impl/cisco/rules/`。
 - `impl/juniper/syntax/`、`impl/juniper/operations/`、`impl/juniper/support/`：Junos 语法、业务操作和镜像约束；vMX 规则仍位于 `impl/juniper/rules/`。
+- `impl/<vendor>/operations/interfaces/`：按 `access`、`analysis`、`business`、`transform` 和 `capabilities` 拆分接口能力。
 - `impl/common/config_ast/`：两家厂商共享的 AST、遍历、Editor 和 Writer 协议。
 - `impl/common/domain/`、`impl/common/rules/`、`impl/common/support/`：公共领域数据、规则引擎、路径清洗及基础设施能力。
 - `impl/common/domain/capabilities/`：Document 核心协议，以及接口、聚合、Group、清洗、裁剪、兼容、校验、引用和模拟等窄能力协议。

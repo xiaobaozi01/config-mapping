@@ -8,7 +8,8 @@ from typing import TYPE_CHECKING
 from impl.common.domain.interface import interface_parent
 from impl.common.domain.outcomes import InterfaceAdaptationOutcome
 
-from ..operations.interfaces import interface_nodes, logical_names_under
+from ..operations.interfaces.access import interface_nodes
+from ..operations.interfaces.analysis import logical_names_under
 from ..syntax.semantics import _CISCO_INTERFACE_TOKEN
 
 if TYPE_CHECKING:

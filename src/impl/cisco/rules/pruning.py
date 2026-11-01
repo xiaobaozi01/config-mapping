@@ -17,7 +17,7 @@ from ..document import (
     CiscoNode,
     canonical_cisco_interface,
 )
-from ..operations.interfaces import interface_nodes
+from ..operations.interfaces.access import interface_nodes
 from ..syntax.semantics import _CISCO_INTERFACE_TOKEN
 from .support import CiscoRuleVisitor, CiscoVisitorRule, document_scope
 

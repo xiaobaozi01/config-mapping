@@ -9,11 +9,15 @@ from unittest.mock import patch
 
 from cisco_support import append_child, delete_context, replace_header
 
-from impl.cisco.operations import interfaces as cisco_interfaces
 from impl.cisco.document import CiscoDocument
+from impl.cisco.operations import interfaces as cisco_interfaces
+from impl.cisco.operations.interfaces import analysis as cisco_analysis
+from impl.cisco.operations.interfaces import business as cisco_business
 from impl.common.domain.interface import InterfaceKind, InterfaceSpec
-from impl.juniper.operations import interfaces as junos_interfaces
 from impl.juniper.document import JunosDocument
+from impl.juniper.operations import interfaces as junos_interfaces
+from impl.juniper.operations.interfaces import analysis as junos_analysis
+from impl.juniper.operations.interfaces import business as junos_business
 from impl.juniper.syntax.ast import top_block
 
 CISCO = (
@@ -95,16 +99,18 @@ class InterfaceAnalysisCacheTest(unittest.TestCase):
     def test_deepcopied_document_rebuilds_analysis_without_affecting_original(
         self,
     ):
-        for cls, module, text, source in [
-            (CiscoDocument, cisco_interfaces, CISCO, "GigabitEthernet0/0/0/1"),
-            (JunosDocument, junos_interfaces, JUNOS, "ge-0/0/1"),
+        for cls, analysis, text, source in [
+            (CiscoDocument, cisco_analysis, CISCO, "GigabitEthernet0/0/0/1"),
+            (JunosDocument, junos_analysis, JUNOS, "ge-0/0/1"),
         ]:
             with self.subTest(vendor=cls.vendor):
                 original = cls(text)
                 expected = analyze(original)
                 cloned = copy.deepcopy(original)
                 with patch.object(
-                    module, "interface_specs", wraps=module.interface_specs
+                    analysis,
+                    "interface_specs",
+                    wraps=analysis.interface_specs,
                 ) as collect:
                     cloned.interfaces.analysis.business_interface_names()
                     self.assertEqual(analyze(cloned), expected)
@@ -118,17 +124,17 @@ class InterfaceAnalysisCacheTest(unittest.TestCase):
                 self.assertEqual(analyze(original), expected)
 
     def test_failed_collection_is_not_cached_and_can_retry(self):
-        for cls, module, text in [
-            (CiscoDocument, cisco_interfaces, CISCO),
-            (JunosDocument, junos_interfaces, JUNOS),
+        for cls, business, text in [
+            (CiscoDocument, cisco_business, CISCO),
+            (JunosDocument, junos_business, JUNOS),
         ]:
             with self.subTest(vendor=cls.vendor):
                 document = cls(text)
-                collect = module.business_interface_names
+                collect = business.business_interface_names
                 expected = collect(document)
                 with (
                     patch.object(
-                        module,
+                        business,
                         "business_interface_names",
                         side_effect=RuntimeError("failed"),
                     ),
@@ -136,7 +142,7 @@ class InterfaceAnalysisCacheTest(unittest.TestCase):
                 ):
                     document.interfaces.analysis.business_interface_names()
                 with patch.object(
-                    module, "business_interface_names", wraps=collect
+                    business, "business_interface_names", wraps=collect
                 ) as retry:
                     self.assertEqual(
                         document.interfaces.analysis.business_interface_names(),
@@ -149,23 +155,27 @@ class InterfaceAnalysisCacheTest(unittest.TestCase):
                     retry.assert_called_once_with(document)
 
     def test_repeated_queries_and_business_analysis_reuse_specs(self):
-        for cls, module, text in [
-            (CiscoDocument, cisco_interfaces, CISCO),
-            (JunosDocument, junos_interfaces, JUNOS),
+        for cls, analysis, business, text in [
+            (CiscoDocument, cisco_analysis, cisco_business, CISCO),
+            (JunosDocument, junos_analysis, junos_business, JUNOS),
         ]:
             with self.subTest(vendor=cls.vendor):
                 document = cls(text)
                 with (
                     patch.object(
-                        module, "interface_specs", wraps=module.interface_specs
+                        analysis,
+                        "interface_specs",
+                        wraps=analysis.interface_specs,
                     ) as specs,
                     patch.object(
-                        module, "bundle_members", wraps=module.bundle_members
+                        analysis,
+                        "bundle_members",
+                        wraps=analysis.bundle_members,
                     ) as members,
                     patch.object(
-                        module,
+                        business,
                         "business_interface_names",
-                        wraps=module.business_interface_names,
+                        wraps=business.business_interface_names,
                     ) as business,
                 ):
                     expected = analyze(document)
@@ -196,16 +206,16 @@ class InterfaceAnalysisCacheTest(unittest.TestCase):
                 self.assertEqual(analyze(document), expected)
 
     def test_empty_results_are_cached(self):
-        for cls, module in [
-            (CiscoDocument, cisco_interfaces),
-            (JunosDocument, junos_interfaces),
+        for cls, business in [
+            (CiscoDocument, cisco_business),
+            (JunosDocument, junos_business),
         ]:
             with self.subTest(vendor=cls.vendor):
                 document = cls("")
                 with patch.object(
-                    module,
+                    business,
                     "business_interface_names",
-                    wraps=module.business_interface_names,
+                    wraps=business.business_interface_names,
                 ) as collect:
                     self.assertEqual(
                         document.interfaces.analysis.business_interface_names(),
@@ -700,11 +710,11 @@ class JunosActiveVlanIndexTest(unittest.TestCase):
             for unit in (1, 2)
         ]
         with patch.object(
-            junos_interfaces,
+            junos_business,
             "interface_nodes",
-            wraps=junos_interfaces.interface_nodes,
+            wraps=junos_business.interface_nodes,
         ) as scan:
-            vlans, names = junos_interfaces._collect_active_vlans(
+            vlans, names = junos_business.collect_active_vlans(
                 document, {spec.name for spec in specs}, specs
             )
             scan.assert_called_once_with(document)
