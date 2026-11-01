@@ -9,7 +9,6 @@ from adaptation.cleaning_rules import CleaningRulesHandler
 from impl.cisco.document import CiscoDocument
 from impl.juniper.document import JunosDocument
 
-
 FIXTURES = Path(__file__).parent / "fixtures" / "type_constraints"
 
 
@@ -94,7 +93,7 @@ class TypeConstraintCleaningTest(unittest.TestCase):
         """路由协议内的 BFD 配置不受影响。"""
         doc = CiscoDocument((FIXTURES / "iosxr.cfg").read_text())
         for rule in CleaningRulesHandler._configured_rules():
-            if rule.enable and rule.scope == "document":
+            if rule.enable and rule.vendor == "cisco_iosxr":
                 rule.apply(doc)
         output = doc.render()
 
@@ -136,7 +135,7 @@ class TypeConstraintCleaningTest(unittest.TestCase):
         """路由协议内的 BFD 配置不受影响。"""
         doc = JunosDocument((FIXTURES / "junos.cfg").read_text())
         for rule in CleaningRulesHandler._configured_rules():
-            if rule.enable and rule.scope == "document":
+            if rule.enable and rule.vendor == "juniper_junos":
                 rule.apply(doc)
         output = doc.render()
 

@@ -1,19 +1,24 @@
 """目标接口类型约束的离线验证；不代替实际 XRv9000 commit 检查。"""
 
 import importlib.util
-from cisco_support import append_child, delete_context
-from pathlib import Path
 import unittest
+from pathlib import Path
 
+from cisco_support import append_child, delete_context
 from cleaning_support import clean_hardware
 
+from impl.cisco.document import CiscoDocument
+from impl.cisco.interfaces import (
+    clone_interface_tree,
+    ensure_parent_interface,
+    find_interface_node,
+)
 from impl.cisco.rules import (
     adapt_interfaces,
+)
+from impl.cisco.rules import (
     validate_compatibility as validate_interfaces,
 )
-from impl.cisco.document import CiscoDocument
-from impl.cisco.interfaces import clone_interface_tree, ensure_parent_interface, find_interface_node
-
 
 FIXTURES = Path(__file__).parent / "fixtures" / "interface_compatibility"
 TARGETS = {"GigabitEthernet0/0/0/0", "GigabitEthernet0/0/0/1.200"}
@@ -58,7 +63,7 @@ class CiscoCompatibilityTest(unittest.TestCase):
         self.assertIn("rewrite ingress tag pop 1 symmetric", rendered)
         self.assertIn("routed interface BVI300", rendered)
         self.assertIn("unknown-platform-feature preserve-this", rendered)
-        self.assertEqual(rendered.count("speed 10000"), 1)
+        self.assertNotIn("speed 10000", rendered)
         validation = validate_interfaces(document, TARGETS)
         self.assertFalse(validation.errors, validation.errors)
         self.assertEqual(len(validation.warnings), 1)

@@ -17,8 +17,7 @@ from impl.cisco.document import CiscoDocument
 from impl.common.cleaning import CleaningAction, CleaningOperation
 from impl.common.config_paths import config_path
 from impl.common.contracts import VendorConfiguration
-from impl.common.interface import InterfaceKind, interface_parent
-from impl.common.policies import SimulationMode
+from impl.common.interface import interface_parent
 
 from .models import (
     ConversionContext,
@@ -28,12 +27,6 @@ from .models import (
     MappingRole,
     Vendor,
 )
-
-CLEANING_SCOPES = {
-    "document",
-    "compatibility_interfaces",
-    "simulation_interfaces",
-}
 
 
 def target_parents(
@@ -56,39 +49,6 @@ def target_parents(
         if mapping.role == MappingRole.NNI
         and mapping.target_interface
         and mapping.action not in excluded
-    )
-
-
-def resolve_cleaning_scope(
-    scope: str, device: DeviceContext
-) -> frozenset[str] | None:
-    """把清洗范围名称解析为厂商文档可执行的接口集合。
-
-    文档范围返回空值表示全局清洗，接口范围则从最终映射推导父口，避免规则依赖原始
-    接口名称或旧拓扑位置。
-    """
-    if scope == "document":
-        return None
-    if scope not in CLEANING_SCOPES:
-        raise ValueError(f"不支持的清洗范围: {scope}")
-    simulation = scope == "simulation_interfaces"
-    if simulation:
-        policy = device.profile.simulation_adaptation
-        if (
-            policy.mode == SimulationMode.OFF
-            or not policy.remove_physical_interface_knobs
-        ):
-            return frozenset()
-    parents = target_parents(device, simulation=simulation)
-    kinds = {InterfaceKind.PHYSICAL, InterfaceKind.GATEWAY}
-    return frozenset(
-        (
-            spec.parent
-            if device.document.vendor == Vendor.JUNIPER_JUNOS.value
-            else spec.name
-        )
-        for spec in device.document.interface_specs()
-        if spec.parent in parents and (simulation or spec.kind in kinds)
     )
 
 
@@ -217,7 +177,6 @@ class ConfiguredCleaningRule:
     action: CleaningAction
     reason: str
     value: str | None = None
-    scope: str = "document"
 
     @property
     def point(self) -> CleaningPoint:
@@ -241,10 +200,6 @@ class ConfiguredCleaningRule:
         匹配和 AST 修改留在厂商实现中，规则对象只负责携带数据并把命中数转换为统一
         结果，避免流程层理解 Cisco 与 Junos 的树结构差异。
         """
-        if self.scope != "document":
-            raise ValueError(
-                "命名范围规则需要通过 CleaningRulesHandler 提供接口上下文"
-            )
         hits = document.apply_cleaning_rule(
             self.path,
             self.match,
@@ -442,7 +397,6 @@ class CleaningRulesHandler:
                     rule.match,
                     rule.action,
                     rule.value,
-                    resolve_cleaning_scope(rule.scope, device),
                 )
                 for rule in configured
             ]
@@ -568,9 +522,6 @@ class CleaningRulesHandler:
             )
 
         path, value = cls._parse_matcher(raw, rule_id, match, action)
-        scope = raw.get("scope", "document")
-        if not isinstance(scope, str) or scope not in CLEANING_SCOPES:
-            raise ValueError(f"清洗规则 {rule_id} 包含未知 scope: {scope}")
         reason = cls._required_string(raw, "reason", rule_id)
 
         cls._validate_fields(raw, rule_id)
@@ -584,7 +535,6 @@ class CleaningRulesHandler:
             action=action,
             reason=reason,
             value=value,
-            scope=scope,
         )
 
     @classmethod
@@ -603,7 +553,6 @@ class CleaningRulesHandler:
             "action",
             "reason",
             "value",
-            "scope",
         }
         unknown = sorted(set(raw) - allowed)
         if unknown:

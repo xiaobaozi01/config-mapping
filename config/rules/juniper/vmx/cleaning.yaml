@@ -200,7 +200,6 @@ rules:
     vendor: juniper_junos
     enable: true
     category: physical-interface-knob
-    scope: simulation_interfaces
     path:
       - '^interfaces$'
       - '*'
@@ -212,7 +211,6 @@ rules:
     vendor: juniper_junos
     enable: true
     category: physical-interface-knob
-    scope: simulation_interfaces
     path:
       - '^interfaces$'
       - '*'

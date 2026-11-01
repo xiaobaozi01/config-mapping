@@ -14,7 +14,8 @@ profiles:
       - GigabitEthernet0/0/0/6
       - GigabitEthernet0/0/0/7
     simulation_adaptation:
-      # "off"：不调整模拟参数；compatible：启用目标口并去硬件参数；stable：另放宽激进 BFD。
+      # "off"：不调整模拟参数；compatible：启用目标口；stable：另放宽激进 BFD。
+      # 硬件属性由 Cleaning 对所有保留接口无条件清理，不受此 mode 控制。
       # 接口类型兼容与最终校验始终执行，不受此 mode 控制。
       mode: stable
       ensure_data_interfaces_enabled: true

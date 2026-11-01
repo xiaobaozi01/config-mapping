@@ -14,7 +14,6 @@ from impl.cisco.document import CiscoDocument
 from impl.common.policies import SimulationAdaptationPolicy
 from impl.juniper.document import JunosDocument
 
-
 FIXTURES = Path(__file__).parent / "fixtures"
 PROJECT_ROOT = Path(__file__).resolve().parent.parent
 
@@ -26,7 +25,7 @@ def simulation_config(name: str) -> str:
 
 class SimulationAdaptationTest(unittest.TestCase):
     def test_iosxr_simulation_adaptation_is_scoped_and_idempotent(self):
-        """只调整映射目标口，并放宽已存在的激进 BFD 参数。"""
+        """硬件属性全局清理，模拟适配只调整映射目标口。"""
         policy = SimulationAdaptationPolicy()
         document = CiscoDocument(simulation_config("iosxr.cfg"))
         clean_hardware(document, {"GigabitEthernet0/0/0/0"}, policy)
@@ -34,7 +33,7 @@ class SimulationAdaptationTest(unittest.TestCase):
         rendered = document.render()
 
         self.assertNotIn("carrier-delay", rendered)
-        self.assertEqual(rendered.count("speed 10000"), 1)
+        self.assertNotIn("speed 10000", rendered)
         self.assertEqual(rendered.count("\n shutdown"), 1)
         self.assertEqual(rendered.count("no shutdown"), 1)
         self.assertNotIn("bfd minimum-interval 50", rendered)
@@ -49,7 +48,7 @@ class SimulationAdaptationTest(unittest.TestCase):
         self.assertEqual(second.total, 0)
 
     def test_junos_simulation_adaptation_is_scoped_and_idempotent(self):
-        """Junos 目标口清除物理属性，非目标口保持不变。"""
+        """Junos 硬件属性全局清理，模拟适配只调整映射目标口。"""
         policy = SimulationAdaptationPolicy()
         document = JunosDocument(simulation_config("junos.cfg"))
         clean_hardware(document, {"ge-0/0/0"}, policy)
@@ -57,7 +56,7 @@ class SimulationAdaptationTest(unittest.TestCase):
         rendered = document.render()
 
         self.assertNotIn("gigether-options", rendered)
-        self.assertEqual(rendered.count("speed 10g;"), 1)
+        self.assertNotIn("speed 10g;", rendered)
         self.assertEqual(rendered.count("disable;"), 1)
         self.assertIn("minimum-interval 300;", rendered)
         self.assertIn("minimum-receive-interval 300;", rendered)

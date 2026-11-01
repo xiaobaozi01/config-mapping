@@ -199,16 +199,17 @@ class InterfaceModuleLayoutTest(unittest.TestCase):
                     )
 
 
-class CleaningScopeModuleLayoutTest(unittest.TestCase):
-    def test_cleaning_scope_helpers_are_owned_by_cleaning_rules(self):
+class CleaningTargetModuleLayoutTest(unittest.TestCase):
+    def test_cleaning_target_helpers_are_owned_by_cleaning_rules(self):
         from adaptation import cleaning_rules
 
-        self.assertTrue(hasattr(cleaning_rules, "CLEANING_SCOPES"))
-        for name in ("target_parents", "resolve_cleaning_scope"):
-            with self.subTest(name=name):
-                self.assertTrue(hasattr(cleaning_rules, name), name)
-                if hasattr(cleaning_rules, name):
-                    self.assertEqual(getattr(cleaning_rules, name).__module__, cleaning_rules.__name__)
+        self.assertTrue(hasattr(cleaning_rules, "target_parents"))
+        self.assertEqual(
+            cleaning_rules.target_parents.__module__,
+            cleaning_rules.__name__,
+        )
+        self.assertFalse(hasattr(cleaning_rules, "CLEANING_SCOPES"))
+        self.assertFalse(hasattr(cleaning_rules, "resolve_cleaning_scope"))
         self.assertIsNone(importlib.util.find_spec("adaptation.cleaning_scopes"))
 
 

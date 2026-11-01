@@ -1,13 +1,13 @@
 """四类模板经真实文档入口执行；示例从不进入默认注册表。"""
 
 import unittest
-from cisco_support import replace_header
 from dataclasses import replace
 from pathlib import Path
 from types import SimpleNamespace
 from unittest.mock import patch
 
 import yaml
+from cisco_support import replace_header
 
 from adaptation.cleaning_rules import CleaningPoint, CleaningRulesHandler
 from adaptation.models import Vendor
@@ -17,7 +17,12 @@ from impl.cisco.interfaces import find_interface_node
 from impl.cisco.rules import examples
 from impl.common.outcomes import InterfacePruningOutcome
 from impl.common.policies import SimulationAdaptationPolicy
-from impl.common.rules import AdaptContext, FunctionRule, execute_rules, execute_prune_rules
+from impl.common.rules import (
+    AdaptContext,
+    FunctionRule,
+    execute_prune_rules,
+    execute_rules,
+)
 
 FIXTURES = Path(__file__).parent / "fixtures" / "rule_extensions"
 
@@ -42,7 +47,7 @@ class RuleTemplateTest(unittest.TestCase):
         context = SimpleNamespace(devices={"DEMO": device}, events=[])
         context.add_event = lambda kind, message, **details: context.events.append(details)
         handler.process(context)
-        self.assertEqual(document.render().count("RULE_DEMO_REMOVE"), 1)
+        self.assertEqual(document.render().count("RULE_DEMO_REMOVE"), 0)
         self.assertEqual(context.events[0]["rule_id"], rule.rule_id)
         context.events.clear()
         handler.process(context)

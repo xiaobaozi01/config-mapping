@@ -46,7 +46,6 @@ impl/cisco/rules/
   vendor: cisco_iosxr
   enable: true
   category: example
-  scope: compatibility_interfaces
   path:
     - '^interface\b'
     - '**'
@@ -55,17 +54,11 @@ impl/cisco/rules/
   reason: '目标镜像不使用此功能'
 ```
 
-`scope` 可省略，默认 `document`。支持值：
+声明式清洗规则只使用 `path + match + action`，不感知 NNI 映射、目标接口闭包或模拟 Profile。`path` 限定配置位置；如果需要只处理目标接口，应使用下面的代码型 `CiscoVisitorRule` 并用 selector 限定范围。
 
-- `document`：对整份配置应用 `path`，与原规则行为一致。
-- `compatibility_interfaces`：目标父口闭包内的物理接口和 BVI，包含物理子接口，不包含 Bundle-Ether。
-- `simulation_interfaces`：模拟适配目标数据口；模式非 `off` 且 `remove_physical_interface_knobs` 为 true 时生效。Junos 按父接口选择。
+匹配按先删除后替换、同轮首条命中执行。关闭一条删除规则不会自动关闭最终校验；残留不兼容配置仍可能导致转换失败。
 
-命名范围由 Handler 根据设备映射和策略解析，不由 YAML 自行推导拓扑。空接口集合不匹配任何节点。无设备上下文时，不能直接调用命名范围规则的 `apply(document)`；应通过 `CleaningRulesHandler` 执行。
-
-匹配仍按先删除后替换、同轮首条命中执行。`path` 限定配置位置，`scope` 限定接口集合，两者必须同时满足。关闭一条删除规则不会自动关闭最终校验；残留不兼容配置仍可能导致转换失败。
-
-硬件属性删除现在只由 YAML 执行。Cisco 的兼容清洗与模拟清洗分别保留原匹配条件，可能需要同时关闭这两条规则才能完全保留硬件命令。Junos 分别匹配父口直接属性和 options 内部属性，不删除 `802.3ad` 或 LACP；模拟规则只整理清洗后空的 options。
+硬件属性删除现在只由 YAML 执行。Cisco 使用一条规则清理所有保留接口上的正反硬件命令；Junos 用两条路径分别匹配父口直接属性和 options 内部属性，不删除 `802.3ad` 或 LACP。硬件清理不受模拟模式控制；模拟规则只整理清理后变空的 options。
 
 ## 新增接口适配或校验
 
@@ -144,7 +137,7 @@ def visitNode(self, block):
 
 注册项的 `selector(document, context)` 从当前快照返回互不重叠的访问根；外来、过期、重复或祖先与后代同时入选会报协议错误。`document_scope` 选择整份文档；`InterfaceScope` 声明目标字段、子接口范围和允许类型，复用接口缩写规范化。它按目标父口选择范围，即目标是子接口时也先归一为父口。空接口集合不匹配任何接口，不创建 Visitor。
 
-兼容校验使用专门的 `compatibility_interfaces_scope`，沿用目标父口闭包及文档中全部 BVI 的范围；它与 YAML 的同名业务范围有各自既有约定。BFD 按全局协议子命令范围访问，接口启用按目标数据口访问。新增规则应选择业务所需范围，不能一律遍历整份文档。访问范围不是编辑沙箱；ethertype 迁移会向源接口范围之外的父接口插入片段。
+兼容校验使用专门的 `compatibility_interfaces_scope`，沿用目标父口闭包及文档中全部 BVI 的范围。BFD 按全局协议子命令范围访问，接口启用按目标数据口访问。新增代码规则应选择业务所需范围，不能一律遍历整份文档。访问范围不是编辑沙箱；ethertype 迁移会向源接口范围之外的父接口插入片段。
 
 编辑入口提供 `replace_header`、`replace_subtree`、`delete`、`insert_before`、`insert_after`、`append_child`；参数使用 Context 和文本，不创建可变 CiscoNode。每项操作必须有原因，详情不能覆盖 rule_id 等框架审计字段。顶层创建用 `append_top_level(session.edits, session.document, text, reason)`，保持 end/commit 在配置末尾。移动通过删除源、把 `source.text` 插入目标表达，框架调整片段缩进。
 
@@ -168,7 +161,7 @@ Cisco 五类内置注册集合全部登记 `CiscoVisitorRule` 常量；新增 Ci
 
 ## 从模板新增一条规则
 
-1. 简单删除或替换复制 [`rule-templates/cleaning.yaml`](rule-templates/cleaning.yaml) 的列表项到实际镜像 cleaning.yaml，填写匹配路径、scope、动作及原因。模板文件本身不会加载。
+1. 简单删除或替换复制 [`rule-templates/cleaning.yaml`](rule-templates/cleaning.yaml) 的列表项到实际镜像 cleaning.yaml，填写匹配路径、动作及原因。模板文件本身不会加载。
 2. 代码规则从 `rules/examples.py` 选择 Visitor、选择器及 `CiscoVisitorRule` 常量，复制到 `impl/cisco/rules/<业务名>.py`；替换 RULE_DEMO 合成条件与业务动作。
 3. 在 `impl/cisco/rules/__init__.py` 显式导入新模块，在对应元组加入 `module.NEW_RULE`。放置位置决定顺序，尤其依赖裁剪应位于产生删除集合的规则之后；条件用具名函数声明，不使用 lambda。
 4. 若希望校验同时参与独立兼容校验和最终校验，加入 COMPATIBILITY_VALIDATION_RULES；仅针对最终状态的校验加入 VALIDATION_RULES 的附加部分，避免在两个集合中重复登记。

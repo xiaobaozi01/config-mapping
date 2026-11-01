@@ -126,7 +126,7 @@ CleaningRulesHandler(pre_analysis) -> TopologyPreflightHandler -> GroupExpansion
 1. `SimulationAdaptationHandler` 在接口迁移、引用更新和认证清洗后运行，根据设备的镜像 Profile 调用厂商文档实现。
 2. `simulation_adaptation.mode` 支持：
    - `off`：不执行参数适配；
-   - `compatible`：只启用已映射的数据口并清理目标口上的物理硬件属性；
+   - `compatible`：只启用已映射的数据口；物理硬件属性已由 Cleaning 全局清理；
    - `stable`（默认）：在 `compatible` 基础上，将已经存在且过于激进的 BFD interval 和 multiplier 提高到 Profile 指定的安全下限。
 3. 参数适配不得凭空开启 BFD，不得默认缩短 OSPF、IS-IS、BGP 等业务协议定时器，也不得修改未参与映射的数据口。
 4. 参数适配必须幂等；每台设备的镜像、模式、目标接口和分类修改数量写入 `report.json`。

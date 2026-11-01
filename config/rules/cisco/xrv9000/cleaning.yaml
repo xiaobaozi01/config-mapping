@@ -146,22 +146,9 @@ rules:
     vendor: cisco_iosxr
     enable: true
     category: physical-interface-knob
-    scope: compatibility_interfaces
     path:
       - '^interface\b'
       - '**'
     match: '^(?:no\s+)?(?:speed|duplex|negotiation|fec|transceiver|carrier-delay|dampening)\b'
-    action: delete
-    reason: '删除目标镜像不适用的接口硬件属性'
-
-  - id: remove.interface.hardware.simulation.0
-    vendor: cisco_iosxr
-    enable: true
-    category: physical-interface-knob
-    scope: simulation_interfaces
-    path:
-      - '^interface\b'
-      - '**'
-    match: '^(?:speed|duplex|negotiation|fec|transceiver|carrier-delay|dampening)\b'
     action: delete
     reason: '删除目标镜像不适用的接口硬件属性'

@@ -629,7 +629,7 @@ ge-0/0/0 {
 
 #### 保留 ae 及 unit
 
-物理成员映射为目标 ge 口，保留其 `802.3ad aeN` 绑定；ae 及所有 unit、地址、封装和引用保持。模拟适配不得整块删除 `gigether-options`、`ether-options`、`aggregated-ether-options`，只清理已确认的硬件叶子。门限适配和跨对端限制与 Cisco 相同。
+物理成员映射为目标 ge 口，保留其 `802.3ad aeN` 绑定；ae 及所有 unit、地址、封装和引用保持。硬件叶子由声明式 Cleaning 全局清理；模拟适配只省略已经变空的 `gigether-options`、`ether-options`、`aggregated-ether-options`，不得删除仍含 `802.3ad` 或 LACP 的容器。门限适配和跨对端限制与 Cisco 相同。
 
 ### 8.4 Junos 非 NNI 清理
 
@@ -726,10 +726,10 @@ simulation_adaptation:
 ```
 
 - `off`：关闭本阶段的接口启用和 BFD 调整；独立接口兼容阶段仍清理已确认不兼容的命令。YAML 中建议写成 `"off"`，避免被解析为布尔值。
-- `compatible`：保证已映射的数据父接口启用，并删除这些目标口上的 speed、duplex、FEC、协商、链路防抖等物理设备属性。
+- `compatible`：保证已映射的数据父接口启用；硬件属性已由 Cleaning 全局删除。
 - `stable`：包含 compatible 行为，并只对配置中已经存在的 BFD interval/multiplier 执行下限钳制。
 
-适配不会为原本未启用 BFD 的协议或接口新增 BFD，也不会默认修改 OSPF、IS-IS、BGP 的 hello/hold/SPF 等业务定时器。非映射接口不参与接口属性清理。`remove_physical_interface_knobs` 仅控制模拟阶段，不能关闭 Cisco 目标接口的强制兼容处理。处理结果按设备写入 `report.json` 的 `simulation-adaptation` 事件；重复执行不会继续产生变更。
+适配不会为原本未启用 BFD 的协议或接口新增 BFD，也不会默认修改 OSPF、IS-IS、BGP 的 hello/hold/SPF 等业务定时器。接口硬件属性属于目标镜像兼容要求，由声明式 Cleaning 对所有保留接口无条件删除；`remove_physical_interface_knobs` 只控制剩余模拟阶段清理，不能恢复硬件属性。处理结果按设备写入 `report.json` 的 `simulation-adaptation` 事件；重复执行不会继续产生变更。
 
 ## 9. 全局接口引用更新
 

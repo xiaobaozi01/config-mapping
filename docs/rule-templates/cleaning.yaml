@@ -5,7 +5,6 @@ rules:
     vendor: cisco_iosxr
     enable: true
     category: demo
-    scope: compatibility_interfaces
     path:
       - '^interface\b'
     match: '^description RULE_DEMO_REMOVE$'
