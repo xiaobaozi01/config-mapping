@@ -1,10 +1,18 @@
 """物理拓扑只列成员口时，逻辑聚合业务完整保留。"""
-from pathlib import Path
 import unittest
+from pathlib import Path
+
 from adaptation.factory import parse_document
-from adaptation.models import ConversionContext, Device, DeviceContext, Link, TopologyWorkbook, Vendor
-from adaptation.profiles import load_profiles
+from adaptation.models import (
+    ConversionContext,
+    Device,
+    DeviceContext,
+    Link,
+    TopologyWorkbook,
+    Vendor,
+)
 from adaptation.pipeline import build_default_pipeline
+from adaptation.profiles import load_profiles
 
 FIXTURES = Path(__file__).parent / 'fixtures' / 'preserve_bundles'
 
@@ -31,6 +39,44 @@ def context_for(vendor, split_peer=False, filename_override=None):
     loaded = {device.name: DeviceContext(device, FIXTURES/filename, parse_document(vendor.value, (FIXTURES/filename).read_text()), profiles[vendor]) for device in devices}
     return ConversionContext(topology, loaded)
 
+
+def _context_with_unbundled_peer_member():
+    context = context_for(Vendor.CISCO_IOSXR)
+    third_a = 'HundredGigE0/0/0/2'
+    third_b = 'HundredGigE0/0/0/2'
+    context.topology.links.append(
+        Link(4, 'link-4', 'A', third_a, 'B', third_b)
+    )
+    a_path = FIXTURES / 'iosxr.cfg'
+    a_source = a_path.read_text().replace(
+        'interface Bundle-Ether10\n',
+        'interface HundredGigE0/0/0/2\n'
+        ' bundle id 10 mode on\n'
+        '!\n'
+        'interface Bundle-Ether10\n',
+        1,
+    )
+    context.devices['A'].document = parse_document(
+        Vendor.CISCO_IOSXR.value, a_source
+    )
+    b_source = a_path.read_text().replace(
+        'interface HundredGigE0/0/0/1\n'
+        ' bundle id 10 mode on\n'
+        '!\n',
+        'interface HundredGigE0/0/0/1\n'
+        ' bundle id 10 mode on\n'
+        '!\n'
+        'interface HundredGigE0/0/0/2\n'
+        ' description INDEPENDENT\n'
+        '!\n',
+        1,
+    )
+    context.devices['B'].document = parse_document(
+        Vendor.CISCO_IOSXR.value, b_source
+    )
+    return context
+
+
 class PreserveBundleTest(unittest.TestCase):
     def test_cisco_main_subinterfaces_and_protocols_survive_with_one_member(self):
         context = context_for(Vendor.CISCO_IOSXR)
@@ -53,6 +99,37 @@ class PreserveBundleTest(unittest.TestCase):
         self.assertEqual(sum(link.active for link in context.topology.links), 1)
         self.assertTrue(any(mapping.action == 'preserve' for mapping in device.mappings))
         self.assertTrue(any(event['kind'] == 'bundle-adaptation' for event in context.events))
+
+    def test_unbundled_peer_member_remains_a_separate_mixed_link(self):
+        context = _context_with_unbundled_peer_member()
+        third_a = 'HundredGigE0/0/0/2'
+        third_b = 'HundredGigE0/0/0/2'
+
+        build_default_pipeline().execute(context)
+
+        device = context.devices['A']
+        self.assertFalse(context.has_errors, context.errors + device.errors)
+        self.assertTrue(any(
+            '非对称混合链路' in warning
+            and 'HundredGigE0/0/0/2' in warning
+            for warning in context.warnings
+        ))
+        self.assertEqual(
+            [link.row for link in context.topology.links if link.active],
+            [2, 4],
+        )
+        self.assertEqual(len(device.document.bundle_members()), 2)
+        self.assertEqual(len(context.devices['B'].document.bundle_members()), 1)
+        self.assertTrue(any(
+            mapping.source_interface == third_a
+            and mapping.action == 'map-member'
+            for mapping in device.mappings
+        ))
+        self.assertTrue(any(
+            mapping.source_interface == third_b
+            and mapping.action == 'map'
+            for mapping in context.devices['B'].mappings
+        ))
 
     def test_junos_binding_and_ae_units_survive_stable_simulation(self):
         context = context_for(Vendor.JUNIPER_JUNOS)

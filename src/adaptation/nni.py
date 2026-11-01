@@ -99,7 +99,7 @@ def plan_nni_components(
     by_row = {link.row: link for link in links}
     component_rows: dict[int, tuple[int, ...]] = {}
     redundant_rows: dict[int, int] = {}
-    warnings: list[str] = []
+    warnings: list[str] = _validate_peer_bundle_fanout(links, bundles)
     for rows in components.values():
         keep, ordered_rows, warning, redundant = _plan_component(
             rows,
@@ -114,25 +114,81 @@ def plan_nni_components(
     return NniComponentPlan(component_rows, redundant_rows, tuple(warnings))
 
 
+def _validate_peer_bundle_fanout(
+    links: list[Link],
+    bundles: BundleLookup,
+) -> list[str]:
+    """检查同一 Bundle 是否连接到同一对端的多个 Bundle。
+
+    已确认聚合按两端 Bundle 对分组后，单端 Bundle 的扇出不会再被组件内一致性
+    检查发现。这里补做关系级校验，同时让跨设备扇出继续由跨对端逻辑处理。
+    """
+    peers_by_bundle: dict[tuple[str, str], set[tuple[str, str]]] = defaultdict(
+        set
+    )
+    for link in links:
+        memberships = sorted(
+            (device_name, bundles[(link.row, device_name)])
+            for device_name, _ in link.endpoints()
+            if (link.row, device_name) in bundles
+            and bundles[(link.row, device_name)] is not None
+        )
+        if len(memberships) != 2:
+            continue
+        left, right = memberships
+        peers_by_bundle[left].add(right)
+        peers_by_bundle[right].add(left)
+
+    warnings: list[str] = []
+    for (device_name, bundle), peers in sorted(peers_by_bundle.items()):
+        peer_bundles: dict[str, set[str]] = defaultdict(set)
+        for peer, peer_bundle in peers:
+            peer_bundles[peer].add(peer_bundle)
+        if len(peer_bundles) != 1:
+            continue
+        peer, remote_bundles = next(iter(peer_bundles.items()))
+        if len(remote_bundles) <= 1:
+            continue
+        rendered = ", ".join(
+            f"{peer}:{remote_bundle}" for remote_bundle in sorted(remote_bundles)
+        )
+        warnings.append(
+            f"设备 {device_name} 聚合 {bundle} 同时连接到同一对端的多个聚合: "
+            f"{rendered}"
+        )
+    return warnings
+
+
 def _component_memberships(
     links: list[Link],
     bundles: BundleLookup,
 ) -> dict[int, list[int]]:
-    """计算共享 bundle 的链路行组件。
+    """计算已确认聚合关系和未知外部聚合的链路行组件。
 
-    同时按两端设备和聚合名建立关系，使传递关联的成员进入同一连通块。
+    两端配置均已读取时，只有两端都有 bundle 才形成已确认聚合关系；一端为
+    普通物理口的链路不能被另一端的本地 bundle 扩展进聚合组件。外部对端没有
+    配置时仍按本端 bundle 建组，交由后续阶段拒绝未经对端确认的压缩。
     """
     union = _UnionFind([link.row for link in links])
-    rows_by_bundle: dict[tuple[tuple[str, str], str, str], list[int]] = (
-        defaultdict(list)
-    )
+    rows_by_relation: dict[
+        tuple[tuple[str, str], tuple[tuple[str, str], ...]], list[int]
+    ] = defaultdict(list)
     for link in links:
         pair = tuple(sorted((link.a_device, link.z_device)))
-        for device_name, _ in link.endpoints():
-            bundle = bundles.get((link.row, device_name))
-            if bundle:
-                rows_by_bundle[(*pair, device_name, bundle)].append(link.row)
-    for rows in rows_by_bundle.values():
+        endpoints = [
+            (device_name, bundles[(link.row, device_name)])
+            for device_name, _ in link.endpoints()
+            if (link.row, device_name) in bundles
+        ]
+        bundles_present = [bundle for _, bundle in endpoints if bundle]
+        if len(endpoints) == 2 and len(bundles_present) == 2:
+            membership = tuple(sorted(endpoints))
+        elif len(endpoints) == 1 and len(bundles_present) == 1:
+            membership = tuple(endpoints)
+        else:
+            continue
+        rows_by_relation[(pair, membership)].append(link.row)
+    for rows in rows_by_relation.values():
         for row in rows[1:]:
             union.union(rows[0], row)
     components: dict[int, list[int]] = defaultdict(list)
@@ -394,6 +450,7 @@ class NNIHandler:
                     f"设备 {name} 聚合 {bundle} 对端未参与配置转换，"
                     f"协商方式 {mode} 未核验"
                 )
+        NNIHandler._record_mixed_bundle_warning(context, link, analysis, modes)
         if len(modes) == 2 and (
             (
                 BundleMode.ON in modes
@@ -404,6 +461,38 @@ class NNIHandler:
             context.errors.append(
                 f"链接表第 {link.row} 行两端聚合协商方式不兼容: {modes}"
             )
+
+    @staticmethod
+    def _record_mixed_bundle_warning(
+        context: ConversionContext,
+        link: Link,
+        analysis: _NniAnalysis,
+        modes: list[BundleMode],
+    ) -> None:
+        """报告静态模式下单端 Bundle、对端普通口的混合链路。"""
+        if len(modes) != 2 or any(mode != BundleMode.ON for mode in modes):
+            return
+        bundled = [
+            (name, analysis.resolved[(link.row, name)], bundle)
+            for name, _ in link.endpoints()
+            if name in context.devices
+            and (bundle := analysis.bundles[(link.row, name)])
+        ]
+        unbundled = [
+            (name, analysis.resolved[(link.row, name)])
+            for name, _ in link.endpoints()
+            if name in context.devices
+            and analysis.bundles[(link.row, name)] is None
+        ]
+        if len(bundled) != 1 or len(unbundled) != 1:
+            return
+        bundled_name, bundled_member, bundle = bundled[0]
+        unbundled_name, unbundled_member = unbundled[0]
+        context.warnings.append(
+            f"链接表第 {link.row} 行：设备 {bundled_name} 的 "
+            f"{bundled_member} 属于聚合 {bundle}，但设备 {unbundled_name} 的 "
+            f"{unbundled_member} 未聚合；该链路按非对称混合链路保留"
+        )
 
     @staticmethod
     def _skipped_protection(

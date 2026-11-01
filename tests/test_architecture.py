@@ -55,6 +55,48 @@ class NniPlanningTest(unittest.TestCase):
         self.assertFalse(plan.redundant_rows)
         self.assertFalse(plan.warnings)
 
+    def test_unbundled_peer_link_does_not_expand_confirmed_bundle_subgroup(self):
+        links = [
+            Link(2, "link-2", "A", "Gi0", "B", "Gi0"),
+            Link(3, "link-3", "A", "Gi1", "B", "Gi1"),
+            Link(4, "link-4", "A", "Gi2", "B", "Gi2"),
+        ]
+        bundles = {
+            (2, "A"): "Bundle-Ether10",
+            (3, "A"): "Bundle-Ether10",
+            (4, "A"): "Bundle-Ether10",
+            (2, "B"): "Bundle-Ether20",
+            (3, "B"): "Bundle-Ether20",
+            (4, "B"): None,
+        }
+
+        plan = plan_nni_components(links, bundles)
+
+        self.assertEqual(plan.component_rows, {2: (2, 3), 4: (4,)})
+        self.assertEqual(plan.redundant_rows, {3: 2})
+        self.assertFalse(plan.warnings)
+
+    def test_local_bundle_connected_to_multiple_peer_bundles_is_rejected(self):
+        links = [
+            Link(2, "link-2", "A", "Gi0", "B", "Gi0"),
+            Link(3, "link-3", "A", "Gi1", "B", "Gi1"),
+        ]
+        bundles = {
+            (2, "A"): "Bundle-Ether10",
+            (3, "A"): "Bundle-Ether10",
+            (2, "B"): "Bundle-Ether20",
+            (3, "B"): "Bundle-Ether30",
+        }
+
+        plan = plan_nni_components(links, bundles)
+
+        self.assertEqual(plan.component_rows, {2: (2,), 3: (3,)})
+        self.assertFalse(plan.redundant_rows)
+        self.assertEqual(len(plan.warnings), 1)
+        self.assertIn("Bundle-Ether10", plan.warnings[0])
+        self.assertIn("Bundle-Ether20", plan.warnings[0])
+        self.assertIn("Bundle-Ether30", plan.warnings[0])
+
 
 class ConversionPipelineTest(unittest.TestCase):
     def test_default_pipeline_cleans_before_mapping_and_validates_last(self):
