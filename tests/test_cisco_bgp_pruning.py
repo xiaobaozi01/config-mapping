@@ -70,10 +70,49 @@ class CiscoBgpPruningTest(unittest.TestCase):
         self.assertIn("local-address 198.51.100.1", output)
         self.assertNotIn("neighbor 2001:db8::2", output)
 
-    def test_multiple_inherited_sources_fail_instead_of_guessing(self):
+    def test_multiple_inherited_sources_are_preserved_with_warning(self):
         document = load("iosxr_bgp_source_conflicts.cfg")
         result = document.prune_non_nni({"Gi0/0/0/0"})
-        self.assertTrue(any("有效本地源冲突" in error and "neighbor 10.0.0.2" in error for error in result.errors))
+        self.assertFalse(result.errors)
+        self.assertTrue(
+            any(
+                "无法确定" in warning and "neighbor 10.0.0.2" in warning
+                for warning in result.warnings
+            )
+        )
+        self.assertIn("neighbor 10.0.0.2", document.render())
+
+    def test_missing_duplicate_and_cyclic_templates_are_preserved_with_warnings(
+        self,
+    ):
+        cases = {
+            "missing": (
+                "router bgp 65000\n neighbor 10.0.0.2\n"
+                "  use neighbor-group MISSING\n!\nend\n",
+                "neighbor 10.0.0.2",
+            ),
+            "duplicate": (
+                "router bgp 65000\n"
+                " neighbor-group DUP\n  update-source Loopback0\n !\n"
+                " neighbor-group DUP\n  update-source Loopback1\n !\n"
+                " neighbor 10.0.0.2\n  use neighbor-group DUP\n!\nend\n",
+                "neighbor 10.0.0.2",
+            ),
+            "cycle": (
+                "router bgp 65000\n"
+                " neighbor-group A\n  use neighbor-group B\n !\n"
+                " neighbor-group B\n  use neighbor-group A\n !\n"
+                " neighbor 10.0.0.2\n  use neighbor-group A\n!\nend\n",
+                "neighbor 10.0.0.2",
+            ),
+        }
+        for name, (source, retained) in cases.items():
+            with self.subTest(name=name):
+                document = CiscoDocument(source)
+                result = document.prune_non_nni(set())
+                self.assertFalse(result.errors)
+                self.assertTrue(result.warnings)
+                self.assertIn(retained, document.render())
 
     def test_explicit_neighbor_source_overrides_different_inherited_defaults(self):
         document = load("iosxr_bgp_override_conflicting_defaults.cfg")

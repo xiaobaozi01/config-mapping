@@ -7,6 +7,7 @@ from enum import StrEnum
 from pathlib import Path
 from typing import TYPE_CHECKING, Any
 
+from impl.common.outcomes import DeferredInterfaceReference
 from impl.common.policies import SimulationAdaptationPolicy, WashingPolicy
 
 if TYPE_CHECKING:
@@ -251,6 +252,9 @@ class DeviceContext:
     profile: ImageProfile
     mappings: list[InterfaceMapping] = field(default_factory=list)
     removed_interfaces: set[str] = field(default_factory=set)
+    deferred_interface_references: set[DeferredInterfaceReference] = field(
+        default_factory=set
+    )
     warnings: list[str] = field(default_factory=list)
     errors: list[str] = field(default_factory=list)
 

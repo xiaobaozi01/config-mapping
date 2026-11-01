@@ -607,6 +607,9 @@ class NNIHandler:
         device = context.devices[device_name]
         outcome = device.document.prune_interface_dependencies(removed)
         device.removed_interfaces.update(removed)
+        device.deferred_interface_references.update(
+            outcome.deferred_interface_references
+        )
         _report(
             context, device_name, EventKind.REDUNDANT_MEMBER_CLEANUP, outcome
         )

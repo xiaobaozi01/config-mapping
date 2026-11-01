@@ -80,10 +80,7 @@ class CoreInterfacePipelineTest(unittest.TestCase):
             old_config = (output / "configs" / "R1.cfg").read_bytes()
             user_file = output / "configs" / "user-notes.cfg"
             user_file.write_text("user owned content")
-            shutil.copyfile(
-                FIXTURES / "core_pruning" / "iosxr_unknown.cfg",
-                configs / "R1.cfg",
-            )
+            (configs / "R1.cfg").write_text("end-group\n")
 
             failed = convert(topology, configs, output)
 
@@ -128,10 +125,42 @@ class CoreInterfacePipelineTest(unittest.TestCase):
             self.assertTrue(any("设备 R1" in error for error in report["errors"]))
             return report
 
-    def test_unknown_removed_interface_dependency_stops_before_nni_mapping(self):
-        report = self.run_failure(FIXTURES / "core_pruning" / "iosxr_unknown.cfg")
-        self.assertTrue(any("custom-service FOO" in error for error in report["errors"]))
-        self.assertFalse(any(event["kind"] == "simulation-adaptation" for event in report["events"]))
+    def test_unknown_removed_interface_dependency_is_warned_and_output(self):
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            configs = root / "configs"
+            shutil.copytree(FIXTURES / "iosxr_bundle" / "configs", configs)
+            config_path = configs / "R1.cfg"
+            config_path.write_text(
+                config_path.read_text().replace(
+                    "\nend\n",
+                    "\ninterface GigabitEthernet0/0/0/99\n"
+                    " ipv4 address 203.0.113.1 255.255.255.0\n"
+                    "!\n"
+                    "custom-service FOO\n"
+                    " bind-interface GigabitEthernet0/0/0/99\n"
+                    "!\n"
+                    "end\n",
+                    1,
+                )
+            )
+            output = root / "output"
+            context = convert(
+                FIXTURES / "iosxr_bundle" / "topology.xlsx",
+                configs,
+                output,
+            )
+
+            self.assertFalse(context.has_errors)
+            report = json.loads((output / "report.json").read_text())
+            self.assertEqual(report["status"], "success")
+            self.assertTrue(
+                any("custom-service FOO" in warning for warning in report["warnings"])
+            )
+            self.assertIn(
+                "custom-service FOO",
+                (output / "configs" / "R1.cfg").read_text(),
+            )
 
     def test_conflicting_target_interface_properties_fail_final_validation(self):
         report = self.run_failure(FIXTURES / "interface_compatibility" / "iosxr_scalar_conflicts.cfg")

@@ -7,6 +7,7 @@ from dataclasses import dataclass, field, replace
 from typing import Generic, Protocol, TypeVar
 
 from .outcomes import (
+    DeferredInterfaceReference,
     InterfaceAdaptationOutcome,
     InterfacePruningOutcome,
     SimulationAdaptationOutcome,
@@ -57,6 +58,9 @@ class ValidationContext:
 
     target_interfaces: frozenset[str]
     removed_interfaces: frozenset[str] = frozenset()
+    deferred_interface_references: frozenset[DeferredInterfaceReference] = (
+        frozenset()
+    )
 
 
 @dataclass(frozen=True, slots=True)
@@ -217,6 +221,10 @@ def merge_interface_results(
         ):
             outcome.removed_interfaces.update(result.removed_interfaces)
             outcome.removed_addresses.update(result.removed_addresses)
+            outcome.deferred_interface_references.update(
+                replace(reference, rule_id=rule_id)
+                for reference in result.deferred_interface_references
+            )
     outcome.errors = list(dict.fromkeys(outcome.errors))
     outcome.warnings = list(dict.fromkeys(outcome.warnings))
     return outcome

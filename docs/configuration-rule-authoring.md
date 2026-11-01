@@ -35,7 +35,7 @@ impl/cisco/rules/
 
 `from impl.cisco import rules` 访问同一套注册表与执行入口。新增业务模块直接放在此包内，再在 `__init__.py` 登记。共享协议仍位于 `impl/common/rules.py`。
 
-接口删除的多级依赖按具体对象建模。Cisco `rules/pruning.py` 的 `TRACK_DEPENDENCIES_RULE` 以 `cisco.prune.track_dependencies` 注册到 `PRUNE_RULES`，通过 `TrackDependenciesVisitor` 处理“被删除接口 → line-protocol track → VRRP track object”链：只解除对象跟踪，保留 VRRP 组的其他配置。发现未知消费者或不明确的 track 定义时停止自动删除并报错；它不属于固定命令清洗。普通非 NNI 裁剪和冗余成员清理都执行同一个 `PRUNE_RULES` 注册表；移除该条目会同时停止这两个入口的 track 裁剪。
+接口删除的多级依赖按具体对象建模。Cisco `rules/pruning.py` 的 `TRACK_DEPENDENCIES_RULE` 以 `cisco.prune.track_dependencies` 注册到 `PRUNE_RULES`，通过 `TrackDependenciesVisitor` 处理“被删除接口 → line-protocol track → VRRP track object”链：只解除对象跟踪，保留 VRRP 组的其他配置。发现未知消费者或不明确的 track 定义时停止自动删除、保留原配置并记录 warning；它不属于固定命令清洗。普通非 NNI 裁剪和冗余成员清理都执行同一个 `PRUNE_RULES` 注册表；移除该条目会同时停止这两个入口的 track 裁剪。
 
 ## 新增固定清洗
 

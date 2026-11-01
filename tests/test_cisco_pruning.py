@@ -65,10 +65,37 @@ class CiscoPruningTest(unittest.TestCase):
     def test_unknown_dependency_fails_with_path_and_alias_resolved_interface(self):
         doc = document("iosxr_unknown.cfg")
         result = doc.prune_non_nni({"GigabitEthernet0/0/0/0"})
-        self.assertEqual(len(result.errors), 1)
-        self.assertIn("custom-service FOO / bind-interface Gi0/0/0/2", result.errors[0])
-        self.assertIn("GigabitEthernet0/0/0/2", result.errors[0])
+        self.assertFalse(result.errors)
+        self.assertTrue(
+            any(
+                "custom-service FOO / bind-interface" in warning
+                and "GigabitEthernet0/0/0/2" in warning
+                for warning in result.warnings
+            )
+        )
+        self.assertIn("custom-service FOO", doc.render())
         self.assertIn("description GigabitEthernet0/0/0/2", doc.render())
+        self.assertEqual(
+            {
+                (item.path, item.interface)
+                for item in result.deferred_interface_references
+            },
+            {
+                (
+                    (
+                        "custom-service FOO",
+                        "bind-interface Gi0/0/0/2",
+                    ),
+                    "GigabitEthernet0/0/0/2",
+                )
+            },
+        )
+        validation = doc.validate_interfaces(
+            set(),
+            result.removed_interfaces,
+            result.deferred_interface_references,
+        )
+        self.assertFalse(validation.errors)
 
     def test_deleted_source_name_reused_as_nni_target_has_no_stale_configuration(self):
         doc = document("iosxr_collision.cfg")
@@ -100,10 +127,50 @@ class CiscoPruningTest(unittest.TestCase):
     def test_tunnel_is_preserved_but_unreferenced_line_track_is_removed(self):
         doc = document("iosxr_ambiguous_objects.cfg")
         outcome = doc.prune_non_nni({"Gi0/0/0/0"})
-        self.assertEqual(len(outcome.errors), 1, outcome.errors)
-        self.assertTrue(any("tunnel source" in error for error in outcome.errors))
+        self.assertFalse(outcome.errors, outcome.errors)
+        self.assertTrue(any("tunnel source" in warning for warning in outcome.warnings))
+        validation = doc.validate_interfaces(
+            set(),
+            outcome.removed_interfaces,
+            outcome.deferred_interface_references,
+        )
+        self.assertFalse(validation.errors)
         self.assertIn("interface tunnel-ip1000", doc.render())
         self.assertNotIn("track WATCH-LINK", doc.render())
+
+    def test_duplicate_track_definitions_are_preserved_with_warning(self):
+        doc = CiscoDocument(
+            "interface GigabitEthernet0/0/0/1\n"
+            "!\n"
+            "track LOST\n type line-protocol state\n"
+            "  interface GigabitEthernet0/0/0/1\n"
+            "!\n"
+            "track LOST\n type line-protocol state\n"
+            "  interface GigabitEthernet0/0/0/1\n"
+            "!\n"
+            "end\n"
+        )
+        outcome = doc.prune_non_nni(set())
+        self.assertFalse(outcome.errors)
+        self.assertTrue(any("track LOST" in warning for warning in outcome.warnings))
+        self.assertEqual(doc.render().count("track LOST"), 2)
+        validation = doc.validate_interfaces(
+            set(),
+            outcome.removed_interfaces,
+            outcome.deferred_interface_references,
+        )
+        self.assertFalse(validation.errors)
+
+    def test_unmarked_removed_interface_reference_still_fails_validation(self):
+        doc = CiscoDocument(
+            "custom-service FOO\n"
+            " bind-interface GigabitEthernet0/0/0/2\n"
+        )
+        outcome = doc.validate_interfaces(
+            set(),
+            {"GigabitEthernet0/0/0/2"},
+        )
+        self.assertTrue(outcome.errors)
 
 
 

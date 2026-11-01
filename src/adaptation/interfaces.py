@@ -177,6 +177,9 @@ class NonNNICleanupHandler:
             }
             outcome = device.document.prune_non_nni(protected)
             device.removed_interfaces.update(outcome.removed_interfaces)
+            device.deferred_interface_references.update(
+                outcome.deferred_interface_references
+            )
             for interface in sorted(outcome.removed_interfaces):
                 device.mappings.append(
                     InterfaceMapping(
@@ -251,6 +254,8 @@ class FinalInterfaceValidationHandler:
                 not in {MappingAction.SKIP, MappingAction.PRESERVE}
             }
             outcome = device.document.validate_interfaces(
-                set(target_parents(device)), removed
+                set(target_parents(device)),
+                removed,
+                device.deferred_interface_references,
             )
             _report(context, name, EventKind.INTERFACE_VALIDATION, outcome)

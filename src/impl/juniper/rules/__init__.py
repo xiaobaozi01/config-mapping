@@ -80,13 +80,20 @@ def adapt_interfaces(document, target_interfaces):
     )
 
 
-def validate_interfaces(document, target_interfaces, removed_interfaces):
+def validate_interfaces(
+    document,
+    target_interfaces,
+    removed_interfaces,
+    deferred_interface_references=(),
+):
     """执行 Junos 接口和删除引用校验。
 
     目标与删除集合共同构成只读校验上下文，避免验证阶段修改配置。
     """
     context = ValidationContext(
-        frozenset(target_interfaces), frozenset(removed_interfaces)
+        frozenset(target_interfaces),
+        frozenset(removed_interfaces),
+        frozenset(deferred_interface_references),
     )
     results = execute_rules(VALIDATION_RULES, document, context)
     return merge_interface_results(results, InterfaceAdaptationOutcome())

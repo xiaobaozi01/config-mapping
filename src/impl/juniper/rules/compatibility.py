@@ -6,7 +6,10 @@ import re
 from typing import TYPE_CHECKING
 
 from impl.common.interface import referenced_interface_names
-from impl.common.outcomes import InterfacePruningOutcome
+from impl.common.outcomes import (
+    DeferredInterfaceReference,
+    InterfacePruningOutcome,
+)
 
 if TYPE_CHECKING:
     from ..document import JunosDocument, JunosNode
@@ -27,7 +30,9 @@ def _walk(document: JunosDocument, node: JunosNode, path: tuple[str, ...] = ()):
 
 
 def validate_pruned_references(
-    document: JunosDocument, removed: set[str]
+    document: JunosDocument,
+    removed: set[str],
+    deferred_interface_references=(),
 ) -> InterfacePruningOutcome:
     """只读复核最终配置中的已删除接口引用和网关定义。
 
@@ -37,11 +42,19 @@ def validate_pruned_references(
     actual_names.update(
         document._interface_name(node) for node in document._interface_nodes()
     )
-    return _validate_pruned_references(document, removed - actual_names)
+    return _validate_pruned_references(
+        document,
+        removed - actual_names,
+        deferred_interface_references,
+    )
 
 
 def _validate_reference_bindings(
-    document: JunosDocument, removed: set[str]
+    document: JunosDocument,
+    removed: set[str],
+    deferred_interface_references=(),
+    *,
+    defer_unknown=False,
 ) -> InterfacePruningOutcome:
     """使用给定删除集合检查引用绑定和网关角色。
 
@@ -49,17 +62,37 @@ def _validate_reference_bindings(
     """
     result = InterfacePruningOutcome()
     actual_names = {spec.name for spec in document.interface_specs()}
+    deferred = {
+        (reference.path, reference.interface)
+        for reference in deferred_interface_references
+    }
     for node, path in _walk(document, document.root):
         header = document._parser.base_header(node.header)
         if header.startswith("description "):
             continue
         # 全局 interfaces 容器本身不是引用，已移除定义不会出现在有效遍历中。
         refs = referenced_interface_names(header, removed)
-        if refs:
-            result.errors.append(
-                f"未知活动接口引用：{' / '.join(path)} 引用了已删除接口 "
-                f"{', '.join(sorted(refs))}"
-            )
+        unexpected = {name for name in refs if (path, name) not in deferred}
+        if unexpected:
+            if defer_unknown:
+                result.warnings.append(
+                    f"接口引用无法确定，已保留原配置等待人工确认："
+                    f"{' / '.join(path)} 引用了已删除接口 "
+                    f"{', '.join(sorted(unexpected))}"
+                )
+                result.deferred_interface_references.update(
+                    DeferredInterfaceReference(
+                        path=path,
+                        interface=name,
+                        reason="未知 Junos 接口引用，保留原配置",
+                    )
+                    for name in unexpected
+                )
+            else:
+                result.errors.append(
+                    f"未知活动接口引用：{' / '.join(path)} 引用了已删除接口 "
+                    f"{', '.join(sorted(unexpected))}"
+                )
         gateway = re.fullmatch(
             r"(?:routing-interface|l3-interface)\s+(\S+)", header.rstrip(";")
         )
@@ -113,12 +146,23 @@ def validate_units(document, context):
     return result
 
 
-def _validate_pruned_references(document, removed):
+def _validate_pruned_references(
+    document,
+    removed,
+    deferred_interface_references=(),
+    *,
+    defer_unknown=False,
+):
     """合并引用绑定和逻辑单元检查。
 
     两类问题都属于最终配置完整性，集中返回可让裁剪流程一次报告全部错误。
     """
-    result = _validate_reference_bindings(document, removed)
+    result = _validate_reference_bindings(
+        document,
+        removed,
+        deferred_interface_references,
+        defer_unknown=defer_unknown,
+    )
     result.errors.extend(validate_units(document, None).errors)
     return result
 
@@ -133,5 +177,7 @@ def validate_reference_bindings(document, context):
         document._interface_name(node) for node in document._interface_nodes()
     )
     return _validate_reference_bindings(
-        document, set(context.removed_interfaces) - actual
+        document,
+        set(context.removed_interfaces) - actual,
+        context.deferred_interface_references,
     )

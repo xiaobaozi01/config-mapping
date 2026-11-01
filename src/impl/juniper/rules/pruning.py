@@ -592,8 +592,16 @@ class _JunosPruner:
         self.prune_vpws()
         self.prune_bgp()
         self.clean(self.document.root)
-        self.result.errors.extend(
-            _validate_pruned_references(self.document, self.removed).errors
+        validation = _validate_pruned_references(
+            self.document,
+            self.removed,
+            self.result.deferred_interface_references,
+            defer_unknown=True,
+        )
+        self.result.errors.extend(validation.errors)
+        self.result.warnings.extend(validation.warnings)
+        self.result.deferred_interface_references.update(
+            validation.deferred_interface_references
         )
         return self.result
 
@@ -620,8 +628,16 @@ def prune_interface_dependencies(document, removed_interfaces):
         document.resolve_interface(name) for name in removed_interfaces
     )
     worker.clean(document.root)
-    worker.result.errors.extend(
-        _validate_pruned_references(document, worker.removed).errors
+    validation = _validate_pruned_references(
+        document,
+        worker.removed,
+        worker.result.deferred_interface_references,
+        defer_unknown=True,
+    )
+    worker.result.errors.extend(validation.errors)
+    worker.result.warnings.extend(validation.warnings)
+    worker.result.deferred_interface_references.update(
+        validation.deferred_interface_references
     )
     return merge_interface_results(
         [("juniper.prune.member_dependencies", worker.result)],

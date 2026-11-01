@@ -25,6 +25,7 @@ from impl.common.interface_cache import (
 )
 from impl.common.outcomes import (
     CleanupOutcome,
+    DeferredInterfaceReference,
     GroupExpansionOutcome,
     InterfaceAdaptationOutcome,
     InterfacePruningOutcome,
@@ -497,7 +498,12 @@ class CiscoDocument(VendorConfiguration):
         return adapt_interfaces(self, target_interfaces)
 
     def validate_interfaces(
-        self, target_interfaces: set[str], removed_interfaces: set[str]
+        self,
+        target_interfaces: set[str],
+        removed_interfaces: set[str],
+        deferred_interface_references: Iterable[
+            DeferredInterfaceReference
+        ] = (),
     ) -> InterfaceAdaptationOutcome:
         """执行最终接口约束和删除引用校验。
 
@@ -505,7 +511,12 @@ class CiscoDocument(VendorConfiguration):
         """
         from .rules import validate_interfaces
 
-        return validate_interfaces(self, target_interfaces, removed_interfaces)
+        return validate_interfaces(
+            self,
+            target_interfaces,
+            removed_interfaces,
+            deferred_interface_references,
+        )
 
     def adapt_to_simulation(
         self,

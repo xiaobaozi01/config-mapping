@@ -119,6 +119,20 @@ class InterfaceAdaptationOutcome:
     diagnostics: list[dict[str, str]] = field(default_factory=list)
 
 
+@dataclass(frozen=True, slots=True)
+class DeferredInterfaceReference:
+    """记录因无法安全推断而保留的已删除接口引用。
+
+    精确保存配置路径和接口名，使最终校验只豁免 prune 已明确告警的对象，
+    不会按接口名全局放行其他残留引用。
+    """
+
+    path: tuple[str, ...]
+    interface: str
+    reason: str
+    rule_id: str = ""
+
+
 @dataclass(slots=True)
 class InterfacePruningOutcome(InterfaceAdaptationOutcome):
     """保存接口裁剪阶段删除的接口和地址。
@@ -128,3 +142,6 @@ class InterfacePruningOutcome(InterfaceAdaptationOutcome):
 
     removed_interfaces: set[str] = field(default_factory=set)
     removed_addresses: set[str] = field(default_factory=set)
+    deferred_interface_references: set[DeferredInterfaceReference] = field(
+        default_factory=set
+    )

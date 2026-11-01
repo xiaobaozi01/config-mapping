@@ -75,36 +75,62 @@ class ManagedPruningFailureTest(unittest.TestCase):
                 self.assertIs(document.snapshot, snapshot)
                 self.assertEqual((staged.changes, staged.removed_interfaces, staged.removed_addresses), ([], set(), set()))
 
-    def test_bgp_analysis_error_discards_full_prune_and_deleted_object_sets(self):
+    def test_bgp_ambiguity_keeps_input_but_does_not_block_other_pruning(self):
         source = FULL_SOURCE + "router bgp 65001\n neighbor 192.0.2.3\n  use neighbor-group MISSING\n"
         document = CiscoDocument(source)
         snapshot = document.snapshot
         result = document.prune_non_nni({"Gi0/0/0/0"})
-        self.assertTrue(any("缺失的 neighbor-group MISSING" in error for error in result.errors))
-        self.assertIs(document.snapshot, snapshot)
-        self.assertEqual((result.changes, result.removed_interfaces, result.removed_addresses), ([], set(), set()))
-        self.assertEqual(result.diagnostics[0]["rule_id"], "cisco.prune.non_nni")
+        self.assertFalse(result.errors)
+        self.assertIsNot(document.snapshot, snapshot)
+        self.assertEqual(result.removed_interfaces, {REMOVED})
+        self.assertEqual(result.removed_addresses, {"192.0.2.1"})
+        self.assertTrue(result.changes)
+        self.assertTrue(result.warnings)
+        self.assertNotIn("neighbor 192.0.2.2", document.render())
+        self.assertIn("neighbor 192.0.2.3", document.render())
 
-    def test_unknown_track_consumer_cancels_other_valid_track_deletions(self):
+    def test_unknown_track_consumer_is_preserved_with_warning(self):
         source = TRACK_SOURCE + (
             "track UNKNOWN\n type line-protocol state\n  interface Gi0/0/0/2\n"
             "custom-service FOO\n track object UNKNOWN\n"
         )
         document = CiscoDocument(source)
-        snapshot = document.snapshot
         context = PruneContext(frozenset(), frozenset({REMOVED}))
         result = pruning.TRACK_DEPENDENCIES_RULE.apply(document, context)
-        self.assertTrue(any("custom-service FOO / track object UNKNOWN" in error for error in result.errors))
-        self.assertEqual(result.changes, [])
-        self.assertIs(document.snapshot, snapshot)
+        self.assertFalse(result.errors)
+        self.assertTrue(
+            any(
+                "custom-service FOO / track object UNKNOWN" in warning
+                for warning in result.warnings
+            )
+        )
+        self.assertTrue(result.changes)
+        output = document.render()
+        self.assertNotIn("track LOST", output)
+        self.assertIn("track UNKNOWN", output)
+        self.assertIn("custom-service FOO", output)
+        validation = document.validate_interfaces(
+            set(),
+            {REMOVED},
+            result.deferred_interface_references,
+        )
+        self.assertFalse(validation.errors)
 
-    def test_bindings_error_discards_known_binding_deletions_in_same_rule(self):
+    def test_unknown_binding_is_preserved_with_warning(self):
         document = CiscoDocument(BINDING_SOURCE + "custom-service FOO\n bind-interface Gi0/0/0/2\n")
-        snapshot = document.snapshot
         result = pruning.INTERFACE_BINDINGS_RULE.apply(document, PruneContext(frozenset(), frozenset({REMOVED})))
-        self.assertTrue(result.errors)
-        self.assertEqual(result.changes, [])
-        self.assertIs(document.snapshot, snapshot)
+        self.assertFalse(result.errors)
+        self.assertTrue(result.warnings)
+        self.assertTrue(result.changes)
+        output = document.render()
+        self.assertNotIn("cost 99", output)
+        self.assertIn("custom-service FOO", output)
+        validation = document.validate_interfaces(
+            set(),
+            {REMOVED},
+            result.deferred_interface_references,
+        )
+        self.assertFalse(validation.errors)
 
 
 class ManagedPruningResultTest(unittest.TestCase):

@@ -7,7 +7,10 @@ import re
 from contextlib import suppress
 
 from impl.common.interface import InterfaceKind, interface_parent
-from impl.common.outcomes import InterfacePruningOutcome
+from impl.common.outcomes import (
+    DeferredInterfaceReference,
+    InterfacePruningOutcome,
+)
 
 from ..document import (
     _CISCO_INTERFACE_TOKEN,
@@ -38,6 +41,19 @@ def interface_references(text: str, names: set[str]) -> set[str]:
         for match in _CISCO_INTERFACE_TOKEN.finditer(text)
         if canonical_cisco_interface(match.group()).lower() in indexed
     }
+
+
+def _defer_interface_references(outcome, path, references, reason):
+    """记录最终校验允许保留的精确接口引用。
+
+    路径和接口名同时匹配才构成豁免，避免同名接口在其他位置形成未告警的悬空配置。
+    """
+    outcome.deferred_interface_references.update(
+        DeferredInterfaceReference(
+            path=tuple(path), interface=name, reason=reason
+        )
+        for name in references
+    )
 
 
 def _addresses(block: CiscoContext) -> set[str]:
@@ -96,6 +112,35 @@ class _BgpSourcePruner:
         self.retained_addresses = retained_addresses
         self.outcome = outcome
         self.record = record
+
+    def _preserve_uncertain(self, identity, reason):
+        """保留无法确定继承关系的 BGP 对象并记录人工确认项。
+
+        输入配置由设备生成，重复、缺失或循环可能来自本解析器尚未覆盖的继承规则；
+        prune 不能据此判定输入非法，更不能删除可能仍有效的业务。
+        """
+        self.uncertain.add(identity)
+        _, path, _ = self.sessions[identity]
+        message = (
+            f"BGP 配置无法确定，已保留原配置等待人工确认: "
+            f"{' / '.join(path)}; {reason}"
+        )
+        if message not in self.outcome.warnings:
+            self.outcome.warnings.append(message)
+        for statement_ids in self.direct[identity].values():
+            for statement_id in statement_ids:
+                _, statement_path, source = self.statements[statement_id]
+                if source[0] != "interface":
+                    continue
+                references = interface_references(
+                    source[1], self.removed_interfaces
+                )
+                _defer_interface_references(
+                    self.outcome,
+                    statement_path,
+                    references,
+                    f"BGP 本地源继承无法确定: {reason}",
+                )
 
     def vrf_for(self, path: tuple[str, ...]) -> str:
         """返回命令路径中最近的 VRF 名称。
@@ -209,12 +254,12 @@ class _BgpSourcePruner:
     def link_templates(self):
         """把会话的 use 引用解析为模板依赖边。
 
-        缺失或重复定义会记录错误，防止基于不确定继承关系清理配置。
+        缺失或重复定义会使当前会话及候选模板进入保留集合，避免猜测清理。
         """
         self.edges: dict[int, list[int]] = {
             identity: [] for identity in self.sessions
         }
-        self.errors: set[str] = set()
+        self.uncertain: set[int] = set()
         for identity, references in self.uses.items():
             _, path, _ = self.sessions[identity]
             for kind, name in references:
@@ -230,15 +275,16 @@ class _BgpSourcePruner:
                     and path[: len(scope)] == scope
                 ]
                 if not candidates:
-                    self.errors.add(
-                        f"BGP 本地源继承无法解析: {' / '.join(path)} 引用缺失的 {kind} {name}"
+                    self._preserve_uncertain(
+                        identity, f"引用缺失的 {kind} {name}"
                     )
                     continue
                 _, ids = max(candidates, key=lambda item: len(item[0]))
                 if len(ids) != 1:
-                    self.errors.add(
-                        f"BGP 本地源继承无法确定: {' / '.join(path)} 引用重复的 {kind} {name}"
+                    self._preserve_uncertain(
+                        identity, f"引用重复的 {kind} {name}"
                     )
+                    self.uncertain.update(ids)
                     continue
                 self.edges[identity].append(ids[0])
 
@@ -251,22 +297,23 @@ class _BgpSourcePruner:
         """
         if identity in self.resolved:
             return self.resolved[identity]
-        _, path, _ = self.sessions[identity]
+        _, _, _ = self.sessions[identity]
         if identity in visiting:
-            self.errors.add(f"BGP 本地源继承存在循环: {' / '.join(path)}")
+            self.uncertain.update(visiting)
+            self._preserve_uncertain(identity, "本地源模板继承存在循环")
             return {}
         # 本层显式值优先于模板；不能因模板失效而删除显式使用健康源的邻居。
         values = {key: set(ids) for key, ids in self.direct[identity].items()}
         if not values:
             for target in self.edges[identity]:
+                if target in self.uncertain:
+                    self.uncertain.add(identity)
                 for key, ids in self.effective(
                     target, visiting | {identity}
                 ).items():
                     values.setdefault(key, set()).update(ids)
         if len(values) > 1:
-            self.errors.add(
-                f"BGP 有效本地源冲突，无法安全裁剪: {' / '.join(path)}"
-            )
+            self._preserve_uncertain(identity, "继承得到多个本地源")
         self.resolved[identity] = values
         return values
 
@@ -294,6 +341,12 @@ class _BgpSourcePruner:
         affected_templates: set[int] = set()
         for identity, (node, path, template) in self.sessions.items():
             values = self.resolved[identity]
+            if identity in self.uncertain:
+                required.add(identity)
+                if not template:
+                    for ids in values.values():
+                        used_statements.update(ids)
+                continue
             lost = any(
                 self.source_lost(source, self.vrf_for(path))
                 for source in values
@@ -362,7 +415,7 @@ class _BgpSourcePruner:
         """
         for identity in required:
             _, _, template = self.sessions[identity]
-            if not template:
+            if not template or identity in self.uncertain:
                 continue
             for source, ids in self.direct[identity].items():
                 for statement_id in ids:
@@ -393,9 +446,6 @@ class _BgpSourcePruner:
             self.resolved = {}
             for identity in self.sessions:
                 self.effective(identity, set())
-            if self.errors:
-                self.outcome.errors.extend(sorted(self.errors))
-                continue
             self.prune_sessions()
 
 
@@ -608,9 +658,15 @@ class _CiscoPruner:
                         refs,
                     )
                     continue
-                self.outcome.errors.append(
-                    f"无法安全裁剪活动接口依赖: {' / '.join(current)}; "
-                    f"接口 {', '.join(sorted(refs))}"
+                self.outcome.warnings.append(
+                    f"接口引用无法确定，已保留原配置等待人工确认: "
+                    f"{' / '.join(current)}; 接口 {', '.join(sorted(refs))}"
+                )
+                _defer_interface_references(
+                    self.outcome,
+                    current,
+                    refs,
+                    "接口引用语法无法确定，保留原配置",
                 )
             self.clean(node.nodes, current)
 
@@ -838,11 +894,11 @@ def _is_vrrp_use(header, path, name):
 def _track_uses(name, definitions, commands):
     """收集指定 track 的已知和未知消费者。
 
-    只有 VRRP 引用可自动解除；其他消费者保留依赖并报错，防止留下悬空配置。
+    只有 VRRP 引用可自动解除；其他消费者使整个 track 保留并告警。
     """
     pattern = re.compile(r"(?<![\w.-])" + re.escape(name) + r"(?![\w.-])")
     known = []
-    errors = []
+    warnings = []
     for node, path in commands:
         if any(node is definition for definition in definitions):
             continue
@@ -853,10 +909,19 @@ def _track_uses(name, definitions, commands):
         if _is_vrrp_use(node.header, path, name):
             known.append((node, path))
         else:
-            errors.append(
-                f"无法安全裁剪 track {name} 的活动依赖: {' / '.join(path)}"
+            warnings.append(
+                f"track {name} 存在无法确定的消费者，已保留原配置等待人工确认: "
+                f"{' / '.join(path)}"
             )
-    return known, errors
+    return known, warnings
+
+
+def _defer_track_references(outcome, nodes, interfaces, reason):
+    """记录保留 track 定义中仍指向已删除接口的精确引用。"""
+    for node in nodes:
+        for child, path in _walk([node]):
+            references = interface_references(child.header, interfaces)
+            _defer_interface_references(outcome, path, references, reason)
 
 
 class TrackDependenciesVisitor(PruningVisitor):
@@ -879,6 +944,7 @@ class TrackDependenciesVisitor(PruningVisitor):
                 match := re.fullmatch(r"track\s+(\S+)", node.header, re.I)
             ):
                 definitions.setdefault(match.group(1), []).append(node)
+
         for name, nodes in definitions.items():
             targets = [_tracked_interface(document, node) for node in nodes]
             lost = {
@@ -893,13 +959,25 @@ class TrackDependenciesVisitor(PruningVisitor):
             if not lost:
                 continue
             if len(nodes) != 1:
-                outcome.errors.append(
-                    f"track {name} 存在重复定义，不能安全级联裁剪"
+                outcome.warnings.append(
+                    f"track {name} 存在重复定义，已保留原配置等待人工确认"
+                )
+                _defer_track_references(
+                    outcome,
+                    nodes,
+                    removed_interfaces,
+                    f"track {name} 存在重复定义",
                 )
                 continue
-            uses, unknown = _track_uses(name, nodes, commands)
-            if unknown:
-                outcome.errors.extend(unknown)
+            uses, warnings = _track_uses(name, nodes, commands)
+            if warnings:
+                outcome.warnings.extend(warnings)
+                _defer_track_references(
+                    outcome,
+                    nodes,
+                    removed_interfaces,
+                    f"track {name} 存在无法确定的消费者",
+                )
                 continue
             self.record(
                 nodes[0],

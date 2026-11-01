@@ -4,6 +4,7 @@ from collections.abc import Iterable
 from typing import TypeAlias
 
 from impl.common.outcomes import (
+    DeferredInterfaceReference,
     InterfaceAdaptationOutcome,
     InterfacePruningOutcome,
     SimulationAdaptationOutcome,
@@ -130,13 +131,16 @@ def validate_interfaces(
     document: CiscoDocument,
     target_interfaces: Iterable[str],
     removed_interfaces: Iterable[str],
+    deferred_interface_references: Iterable[DeferredInterfaceReference] = (),
 ) -> InterfaceAdaptationOutcome:
     """执行完整接口和目标引用校验。
 
     同时传入目标与已删除集合，使最终规则能识别残留引用和接口类型冲突。
     """
     context = ValidationContext(
-        frozenset(target_interfaces), frozenset(removed_interfaces)
+        frozenset(target_interfaces),
+        frozenset(removed_interfaces),
+        frozenset(deferred_interface_references),
     )
     return merge_interface_results(
         execute_rules(VALIDATION_RULES, document, context),

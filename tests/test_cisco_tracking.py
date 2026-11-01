@@ -75,9 +75,22 @@ class CiscoTrackingTest(unittest.TestCase):
         extra = CiscoDocument("custom-service FOO\n track object LOST-LINK\n!\n")
         insert_before(document, document.root.nodes[0], extra.source)
         outcome = document.prune_non_nni({"Gi0/0/0/0"})
-        self.assertTrue(any("custom-service FOO / track object LOST-LINK" in error for error in outcome.errors))
+        self.assertFalse(outcome.errors)
+        self.assertTrue(
+            any(
+                "custom-service FOO / track object LOST-LINK" in warning
+                for warning in outcome.warnings
+            )
+        )
         self.assertTrue(top_node(document, "track LOST-LINK").active)
         self.assertIn("track object LOST-LINK 30", document.render())
+        self.assertFalse(
+            document.validate_interfaces(
+                set(),
+                outcome.removed_interfaces,
+                outcome.deferred_interface_references,
+            ).errors
+        )
 
     def test_unsupported_track_type_and_duplicate_definitions_are_not_deleted(self):
         for duplicate in [False, True]:
@@ -89,7 +102,8 @@ class CiscoTrackingTest(unittest.TestCase):
                 else:
                     replace_header(document, node.nodes[0], "type unsupported-state")
                 outcome = document.prune_non_nni({"Gi0/0/0/0"})
-                self.assertTrue(outcome.errors)
+                self.assertFalse(outcome.errors)
+                self.assertTrue(outcome.warnings)
                 self.assertTrue(node.active)
                 self.assertIn("track object LOST-LINK 30", document.render())
 
@@ -127,7 +141,8 @@ class CiscoTrackingTest(unittest.TestCase):
                         outcome = document.prune_interface_dependencies({"TenGigE0/0/0/67"})
                     else:
                         outcome = document.prune_non_nni({"Gi0/0/0/0"})
-                self.assertTrue(outcome.errors)
+                self.assertFalse(outcome.errors)
+                self.assertTrue(outcome.warnings)
                 self.assertTrue(top_node(document, "track LOST-LINK").active)
                 self.assertIn("track object LOST-LINK 30", document.render())
                 self.assertNotIn("cisco.prune.track_dependencies", {item["rule_id"] for item in outcome.changes})

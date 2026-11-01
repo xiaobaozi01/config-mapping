@@ -200,7 +200,7 @@ Excel 的物理成员可能只承载 `bundle id` 或 `802.3ad`，地址、封装
 
 聚合缩减还会在 NNI 阶段删除冗余物理成员。此时再次清理这些成员的已知接口依赖，再落位新目标口，避免旧成员名被目标重用时混淆新旧引用。清理结果记录为 `redundant-member-cleanup`。Cisco 已知绑定包括路由协议、MPLS、RSVP、EVPN、DHCP relay 和带内管理接口；镜像目的接口被删除时移除对应镜像会话。桥组、桥域名称即使与 BVI 名相同也不作为接口引用。
 
-依赖裁剪按已建模的命令和路径处理，不保证覆盖全部厂商语法。单一 `type line-protocol state` track 的监控接口被删除时，删除该 track 定义和所有 VRRP `track object` 语句，保留 VRRP 组、优先级及地址。该行为以 `cisco.prune.track_dependencies` 注册在 `PRUNE_RULES` 中；非 NNI 裁剪和 NNI 冗余成员缩减共用此注册表。前序规则产生删除集合，track 规则清理对象依赖，最后由接口绑定规则清理其他已知引用。监控接口只是改名时，保留 track 对象和 VRRP 跟踪关系，只改写接口引用。存在未知消费者、重复定义或不支持的 track 类型时保留相关对象并报错；隧道仍不自动级联删除。`end` 后存在配置、业务聚合无可解析成员仍属于失败条件，不通过忽略错误继续输出。
+依赖裁剪按已建模的命令和路径处理，不保证覆盖全部厂商语法。单一 `type line-protocol state` track 的监控接口被删除时，删除该 track 定义和所有 VRRP `track object` 语句，保留 VRRP 组、优先级及地址。该行为以 `cisco.prune.track_dependencies` 注册在 `PRUNE_RULES` 中；非 NNI 裁剪和 NNI 冗余成员缩减共用此注册表。前序规则产生删除集合，track 规则清理对象依赖，最后由接口绑定规则清理其他已知引用。监控接口只是改名时，保留 track 对象和 VRRP 跟踪关系，只改写接口引用。存在未知消费者、重复定义或不支持的 track 类型时保留相关对象并记录 warning；隧道仍不自动级联删除。最终校验只豁免 prune 已记录的精确路径和接口引用，其他悬空引用继续报错。
 
 ## 6. 公共 Group 处理原则
 

@@ -975,7 +975,10 @@ class JunosDocument(VendorConfiguration):
         return adapt_interfaces(self, target_interfaces)
 
     def validate_interfaces(
-        self, target_interfaces: set[str], removed_interfaces: set[str]
+        self,
+        target_interfaces: set[str],
+        removed_interfaces: set[str],
+        deferred_interface_references=(),
     ) -> InterfaceAdaptationOutcome:
         """执行最终接口引用、网关和 unit 约束检查。
 
@@ -983,7 +986,12 @@ class JunosDocument(VendorConfiguration):
         """
         from .rules import validate_interfaces
 
-        return validate_interfaces(self, target_interfaces, removed_interfaces)
+        return validate_interfaces(
+            self,
+            target_interfaces,
+            removed_interfaces,
+            deferred_interface_references,
+        )
 
     def adapt_to_simulation(
         self,

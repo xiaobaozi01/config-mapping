@@ -504,6 +504,10 @@ class RemovedReferencesVisitor(CiscoRuleVisitor):
         }
         defined.update(interface_parent(name) for name in list(defined) if name)
         self.deleted = session.context.removed_interfaces - defined
+        self.deferred = {
+            (reference.path, reference.interface)
+            for reference in session.context.deferred_interface_references
+        }
 
     def visitNode(self, node):
         """检查当前命令中的残留接口引用。
@@ -518,10 +522,14 @@ class RemovedReferencesVisitor(CiscoRuleVisitor):
             refs = interface_references(node.header, self.deleted)
             if refs:
                 path = (*node.path, node.header)
-                self.session.result.errors.append(
-                    f"残留已删除接口引用: {' / '.join(path)}; "
-                    f"接口 {', '.join(sorted(refs))}"
-                )
+                unexpected = {
+                    name for name in refs if (path, name) not in self.deferred
+                }
+                if unexpected:
+                    self.session.result.errors.append(
+                        f"残留已删除接口引用: {' / '.join(path)}; "
+                        f"接口 {', '.join(sorted(unexpected))}"
+                    )
         return self.visitChildren(node)
 
 

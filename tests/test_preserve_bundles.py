@@ -141,6 +141,36 @@ class PreserveBundleTest(unittest.TestCase):
                 self.assertTrue(any('MC-LAG' in error for error in context.errors))
                 self.assertFalse(any(mapping.action in {'map-member', 'preserve'} for mapping in context.mappings))
 
+    def test_unknown_removed_physical_reference_is_deferred_through_pipeline(
+        self,
+    ):
+        context = context_for(Vendor.CISCO_IOSXR)
+        document = context.devices['A'].document
+        transaction = document.rewrite()
+        terminal = next(
+            node
+            for node in document.root.nodes
+            if node.header.lower() == "end"
+        )
+        transaction.insert_before(
+            terminal,
+            "interface GigabitEthernet0/0/0/99\n"
+            " ipv4 address 203.0.113.1 255.255.255.0\n"
+            "!\n"
+            "custom-service FOO\n"
+            " bind-interface GigabitEthernet0/0/0/99\n"
+            "!\n",
+            "add deferred reference regression",
+        )
+        transaction.commit()
+
+        build_default_pipeline().execute(context)
+
+        device = context.devices['A']
+        self.assertFalse(context.has_errors, context.errors + device.errors)
+        self.assertTrue(device.deferred_interface_references)
+        self.assertIn("custom-service FOO", device.document.render())
+
     def test_redundant_member_references_are_pruned_at_nni_removal(self):
         cases = [
             (Vendor.CISCO_IOSXR, "iosxr_member_references.cfg", "HundredGigE0/0/0/1"),

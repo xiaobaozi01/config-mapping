@@ -7,7 +7,10 @@ import unittest
 from impl.juniper import rules as juniper_rules
 from impl.juniper.document import JunosDocument
 from impl.juniper.rules.compatibility import validate_pruned_references
-from impl.juniper.rules.pruning import prune_non_nni
+from impl.juniper.rules.pruning import (
+    prune_interface_dependencies,
+    prune_non_nni,
+)
 
 
 FIXTURES = Path(__file__).parent / "fixtures" / "interfaces"
@@ -54,12 +57,49 @@ class JunosNniPruningTest(unittest.TestCase):
         for retained in ("10.10.10.3", "10.10.10.4", "route 10.12.0.0/24", "route 10.13.0.0/24", "SHARED-VRF", "SHARED-POLICY", "vrf-target target:64500:1", "scheduler-map KEEP", "interface ge-0/0/20.0", "MIXED-VPWS", "local 901"):
             self.assertIn(retained, rendered)
 
-    def test_unknown_active_reference_is_reported_with_path_and_interface(self):
+    def test_unknown_active_reference_is_warned_and_deferred(self):
         document = load("junos_nni_pruning_unknown.cfg")
         outcome = prune_non_nni(document, {"ge-0/0/0"})
-        self.assertEqual(len(outcome.errors), 1)
-        self.assertIn("forwarding-options / unknown-feature / source-interface", outcome.errors[0])
-        self.assertIn("ge-0/0/1.0", outcome.errors[0])
+        self.assertFalse(outcome.errors)
+        self.assertEqual(len(outcome.warnings), 1)
+        self.assertIn(
+            "forwarding-options / unknown-feature / source-interface",
+            outcome.warnings[0],
+        )
+        self.assertIn("ge-0/0/1.0", outcome.warnings[0])
+        self.assertEqual(
+            {
+                (item.path, item.interface)
+                for item in outcome.deferred_interface_references
+            },
+            {
+                (
+                    (
+                        "forwarding-options",
+                        "unknown-feature",
+                        "source-interface ge-0/0/1.0",
+                    ),
+                    "ge-0/0/1.0",
+                )
+            },
+        )
+        validation = document.validate_interfaces(
+            set(),
+            outcome.removed_interfaces,
+            outcome.deferred_interface_references,
+        )
+        self.assertFalse(validation.errors)
+
+    def test_member_cleanup_uses_the_same_conservative_reference_policy(self):
+        document = load("junos_nni_pruning_unknown.cfg")
+        document.remove_interface("ge-0/0/1")
+        outcome = prune_interface_dependencies(
+            document,
+            {"ge-0/0/1", "ge-0/0/1.0"},
+        )
+        self.assertFalse(outcome.errors)
+        self.assertTrue(outcome.warnings)
+        self.assertTrue(outcome.deferred_interface_references)
 
     def test_descriptions_comments_and_inactive_references_are_not_dependencies(self):
         document = load("junos_nni_pruning_inactive.cfg")
