@@ -9,13 +9,13 @@ from typing import TYPE_CHECKING, Generic, TypeVar
 from impl.common.config_ast import ConfigVisitor
 from impl.common.config_ast.editor import EditResult, EditScope
 from impl.common.config_ast.model import tree_signature
-from impl.common.outcomes import (
+from impl.common.domain.outcomes import (
     InterfaceAdaptationOutcome,
     InterfacePruningOutcome,
     SimulationAdaptationOutcome,
 )
 
-from ..ast import CiscoNode
+from ..syntax.ast import CiscoNode
 from .scopes import document_scope
 
 if TYPE_CHECKING:
@@ -108,17 +108,17 @@ class RuleSession(Generic[ContextT, OutcomeT]):
         return self._edits
 
     def assert_unchanged(self):
-        """Reject edits performed outside the controlled edit collector.
+        """拒绝绕过受控编辑收集器直接修改配置。
 
-        Visitors collect edits through their session; direct mutation would bypass the executor’s audit and rollback boundary.
+        Visitor 必须通过会话收集编辑；直接修改会绕过执行器的审计和回滚边界。
         """
         if tree_signature(self.document.root) != self.baseline:
             raise RuleContractError("规则绕过 Editor 修改了配置")
 
     def apply_edits(self):
-        """Apply collected operations after traversal has completed.
+        """在遍历完成后应用已收集的操作。
 
-        Read-only sessions return an empty result without creating an editor or advancing the document revision.
+        只读会话返回空结果，不创建 Editor，也不推进文档修订号。
         """
         return EditResult() if self.readonly else self._transaction.apply()
 
@@ -269,9 +269,9 @@ class CiscoVisitorRule(Generic[ContextT, OutcomeT]):
         return self.condition(context)
 
     def apply(self, document: CiscoDocument, context: ContextT) -> OutcomeT:
-        """Run a rule against the AST and restore its backup on failure.
+        """在 AST 上执行规则，并在失败时恢复备份。
 
-        A failed edit or rule restores the tree backup; completed edits are exposed only through the returned result.
+        编辑或规则失败时恢复树备份；成功修改只通过返回结果对外暴露。
         """
         with EditScope(document, independent=True) as scope:
             original = scope.backup
@@ -309,9 +309,9 @@ class CiscoVisitorRule(Generic[ContextT, OutcomeT]):
                 raise
 
     def _visit(self, session, roots):
-        """Traverse selected nodes before applying collected edits.
+        """在应用收集到的编辑前遍历选定节点。
 
-        All selected roots share one visitor instance, and finish runs once after their callbacks complete.
+        所有选定根共享一个 Visitor 实例，并在回调全部完成后只调用一次 ``finish``。
         """
         visitor = self.visitor_factory(session)
         if (
@@ -328,9 +328,9 @@ class CiscoVisitorRule(Generic[ContextT, OutcomeT]):
         return visitor
 
     def _finish(self, session, visitor):
-        """Apply edits and map audit results, enforcing read-only rules.
+        """应用编辑并映射审计结果，同时执行只读规则约束。
 
-        Result mapping is checked for unexpected mutations so reporting cannot introduce unaudited configuration changes.
+        结果映射也会检查意外修改，防止报告阶段引入未经审计的配置变化。
         """
         if self.readonly:
             _check_readonly_result(session.result)

@@ -3,7 +3,7 @@
 from impl.common.config_ast import ConfigListener, ConfigVisitor
 from impl.common.config_ast.editor import EditConflictError, format_fragment
 
-from ..ast import JuniperNode
+from ..syntax.ast import JuniperNode
 from .runtime import (
     JunosRuleVisitor,
     JunosVisitorRule,

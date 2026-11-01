@@ -2,7 +2,7 @@
 
 import re
 
-from impl.common.interface import (
+from impl.common.domain.interface import (
     BundleMode,
     InterfaceKind,
     interface_parent,
@@ -10,8 +10,8 @@ from impl.common.interface import (
 )
 from impl.common.semantic_identity.models import MergeKind
 
-from ..identity import resolve_cisco_identity
-from ..interfaces import interface_nodes
+from ..operations.interfaces import interface_nodes
+from ..support.identity import resolve_cisco_identity
 from .support import (
     CiscoRuleVisitor,
     CiscoVisitorRule,

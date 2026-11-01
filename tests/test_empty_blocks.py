@@ -6,7 +6,7 @@ from tempfile import TemporaryDirectory
 
 import yaml
 
-from impl.common.empty_blocks import EmptyBlockPolicy, load_empty_block_policy
+from impl.common.rules.empty_blocks import EmptyBlockPolicy, load_empty_block_policy
 
 
 class EmptyBlockPolicyTest(unittest.TestCase):

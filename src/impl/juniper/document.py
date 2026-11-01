@@ -6,37 +6,40 @@ import re
 from collections.abc import Iterable, Sequence
 from functools import lru_cache
 
-from impl.common.cleaning import (
-    CleaningAction,
-    CleaningOperation,
-)
 from impl.common.config_ast.document import AstDocument
 from impl.common.config_ast.model import tree_signature
-from impl.common.contracts import VendorConfiguration
-from impl.common.interface import (
+from impl.common.domain.contracts import VendorConfiguration
+from impl.common.domain.interface import (
     BundleMode,
     InterfaceKind,
     InterfaceSpec,
     interface_parent,
 )
-from impl.common.interface_cache import (
-    PARSER_HEADER_CACHE_SIZE,
-    InterfaceAnalysisCache,
-    copy_interface_specs,
-)
-from impl.common.outcomes import (
+from impl.common.domain.outcomes import (
     CleanupOutcome,
     GroupExpansionOutcome,
     InterfaceAdaptationOutcome,
     InterfacePruningOutcome,
     SimulationAdaptationOutcome,
 )
-from impl.common.policies import SimulationAdaptationPolicy, WashingPolicy
+from impl.common.domain.policies import (
+    SimulationAdaptationPolicy,
+    WashingPolicy,
+)
+from impl.common.rules.cleaning import (
+    CleaningAction,
+    CleaningOperation,
+)
+from impl.common.support.interface_cache import (
+    PARSER_HEADER_CACHE_SIZE,
+    InterfaceAnalysisCache,
+    copy_interface_specs,
+)
 
-from .ast import JuniperNode
-from .empty_blocks import vmx_empty_block_policy
-from .parser import JuniperParser
-from .writer import JuniperWriter
+from .support.empty_blocks import vmx_empty_block_policy
+from .syntax.ast import JuniperNode
+from .syntax.parser import JuniperParser
+from .syntax.writer import JuniperWriter
 
 
 def canonical_junos_interface(value: str) -> str:
@@ -228,7 +231,7 @@ class JunosDocument(AstDocument, VendorConfiguration):
     vendor = "juniper_junos"
 
     def __init__(self, text: str):
-        """Parse the configuration into the single mutable document tree.
+        """把配置解析为唯一的可变文档树。
 
         该操作在当前文档的业务处理边界内运行，调用方继续负责统一的结果记录和失败处理。
         """
@@ -240,23 +243,23 @@ class JunosDocument(AstDocument, VendorConfiguration):
         self._last_signature = tree_signature(self.root)
 
     def parse_fragment(self, text):
-        """Parse an isolated fragment before attaching it to the tree.
+        """在挂接到配置树前解析独立片段。
 
-        Fragment validation happens before the editor alters the live tree, isolating syntax errors from configuration state.
+        片段校验先于 Editor 修改活动树执行，使语法错误不会污染当前配置状态。
         """
         return JuniperParser().parse(text)
 
     def normalize_header(self, header):
-        """Remove syntax terminators from incoming command heads.
+        """移除传入命令头中的语法结束符。
 
-        Structural punctuation belongs to the parser and writer, not to business command matching.
+        结构标点由 Parser 和 Writer 处理，不参与业务命令匹配。
         """
         return header.strip().removesuffix(";").rstrip()
 
     def validate_header(self, node, header):
-        """Delegate structural command validation to the vendor parser.
+        """把结构命令校验委托给厂商 Parser。
 
-        The facade selects syntax services without implementing grammar checks.
+        Document 门面只选择语法服务，不自行实现语法检查。
         """
         return JuniperParser().validate_header(node, header)
 
@@ -415,7 +418,7 @@ class JunosDocument(AstDocument, VendorConfiguration):
         group 继承必须在接口分类前物化，但 apply-groups、通配符及优先级处理不属于
         基础语法树职责；委托专用展开器可隔离复杂语义，并让调用方据结果决定是否继续。
         """
-        from .groups import JunosGroupExpander
+        from .operations.groups import JunosGroupExpander
 
         return JunosGroupExpander(self).expand_groups(known_interfaces, policy)
 
@@ -439,7 +442,7 @@ class JunosDocument(AstDocument, VendorConfiguration):
         接口模块需要引用 ``JunosDocument`` 和 ``JuniperNode``；在方法调用时再导入可
         打破模块初始化阶段的循环依赖，同时保持文档类对外提供稳定门面。
         """
-        from . import interfaces
+        from .operations import interfaces
 
         return interfaces
 
@@ -573,7 +576,7 @@ class JunosDocument(AstDocument, VendorConfiguration):
 
         无法确认成员绑定或 LACP 模式时返回 unknown，使迁移流程选择保守失败。
         """
-        from .bundles import bundle_mode
+        from .operations.bundles import bundle_mode
 
         return bundle_mode(self, member)
 
@@ -582,7 +585,7 @@ class JunosDocument(AstDocument, VendorConfiguration):
 
         只改模拟不兼容的成员数和带宽门槛，保留主口类型、地址及引用。
         """
-        from .bundles import adapt_bundle
+        from .operations.bundles import adapt_bundle
 
         with self.edit().bulk():
             outcome = adapt_bundle(self, name)
@@ -597,7 +600,7 @@ class JunosDocument(AstDocument, VendorConfiguration):
 
         一对多目标无法等价承载单值配置，因此校验必须先于任何克隆或改名。
         """
-        from .clone_constraints import validate_nni_clone
+        from .support.clone_constraints import validate_nni_clone
 
         return validate_nni_clone(self, source, target_interfaces)
 
@@ -724,7 +727,7 @@ class JunosDocument(AstDocument, VendorConfiguration):
         生产账号、外部 AAA、SNMP 和远程管理凭据不应进入实验环境；委托独立清洗
         模块可集中维护敏感节点规则，同时让文档门面保持统一调用接口。
         """
-        from .cleaning import clean_management_access
+        from .operations.cleaning import clean_management_access
 
         return clean_management_access(self)
 
@@ -734,7 +737,7 @@ class JunosDocument(AstDocument, VendorConfiguration):
         清除生产认证后必须建立已知登录入口，防止输出设备无法接管；账号节点由厂商
         清洗模块生成，使凭据替换与旧认证删除使用同一实现边界。
         """
-        from .cleaning import add_lab_account
+        from .operations.cleaning import add_lab_account
 
         add_lab_account(self)
 
@@ -759,27 +762,27 @@ class JunosDocument(AstDocument, VendorConfiguration):
     def apply_cleaning_rules(
         self, operations: Sequence[CleaningOperation]
     ) -> list[int]:
-        """Delegate ordered cleaning to the vendor cleaning service.
+        """把有序清洗委托给厂商清洗服务。
 
-        The service owns matching and traversal; the document retains its stable API.
+        服务负责匹配和遍历，Document 只保留稳定入口。
         """
-        from .configuration_cleaning import apply_cleaning_rules
+        from .operations.configuration_cleaning import apply_cleaning_rules
 
         return apply_cleaning_rules(self, operations)
 
     def replace_references(self, replacements: dict[str, list[str]]) -> None:
-        """Delegate interface-reference conversion to the reference service.
+        """把接口引用转换委托给引用改写服务。
 
-        The service preserves definition names while expanding their references.
+        服务保留接口定义名，只展开其他位置对这些接口的引用。
         """
-        from .references import replace_references
+        from .operations.references import replace_references
 
         replace_references(self, replacements)
 
     def render(self) -> str:
-        """Serialize the tree with deployment-specific empty-block policies.
+        """按目标部署镜像的空块策略序列化配置树。
 
-        Deployment output may omit or reshape empty blocks without changing the configuration held by the document.
+        部署输出可以省略或改变空块形式，但不会修改 Document 当前持有的配置。
         """
         return self.writer.render(
             self.root, self._parser, vmx_empty_block_policy()

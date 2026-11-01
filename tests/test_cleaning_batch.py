@@ -22,7 +22,7 @@ from adaptation.cleaning_rules import (
 )
 from adaptation.models import ConversionContext, Vendor
 from impl.cisco.document import CiscoDocument, CiscoNode
-from impl.common.cleaning import (
+from impl.common.rules.cleaning import (
     CleaningOperation,
     compile_cleaning_rules,
     matches_cleaning_path,
@@ -78,7 +78,7 @@ def reference_clean(document, operations):
 
 
 def reference_cisco_clean(document, operations):
-    """Independently apply matching rules directly to a copied AST."""
+    """在 AST 副本上独立应用匹配规则，作为参考实现。"""
     counts = [0] * len(operations)
     for action in ("delete", "replace"):
 
@@ -219,8 +219,16 @@ class CleaningBatchTest(unittest.TestCase):
 
     def test_phase_caches_release_without_waiting_for_cyclic_gc(self):
         for cls, source, module in [
-            (CiscoDocument, "A\nOLD\n", "impl.cisco.document"),
-            (JunosDocument, "A; OLD;", "impl.juniper.document"),
+            (
+                CiscoDocument,
+                "A\nOLD\n",
+                "impl.cisco.operations.configuration_cleaning",
+            ),
+            (
+                JunosDocument,
+                "A; OLD;",
+                "impl.juniper.operations.configuration_cleaning",
+            ),
         ]:
             with self.subTest(vendor=cls.vendor):
                 references = []
@@ -236,7 +244,7 @@ class CleaningBatchTest(unittest.TestCase):
                     document = cls(source)
                     parser = weakref.ref(document._parser)
                     with patch(
-                        f"{module.rsplit('.', 1)[0]}.configuration_cleaning.compile_cleaning_rules",
+                        f"{module}.compile_cleaning_rules",
                         side_effect=track_compilation,
                     ):
                         self.assertEqual(

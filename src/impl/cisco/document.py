@@ -6,24 +6,16 @@ import re
 from collections.abc import Iterable, Sequence
 from functools import lru_cache
 
-from impl.common.cleaning import (
-    CleaningAction,
-    CleaningOperation,
-)
 from impl.common.config_ast.document import AstDocument
 from impl.common.config_ast.model import tree_signature
-from impl.common.contracts import VendorConfiguration
-from impl.common.interface import (
+from impl.common.domain.contracts import VendorConfiguration
+from impl.common.domain.interface import (
     BundleMode,
     InterfaceKind,
     InterfaceSpec,
     interface_parent,
 )
-from impl.common.interface_cache import (
-    PARSER_HEADER_CACHE_SIZE,
-    copy_interface_specs,
-)
-from impl.common.outcomes import (
+from impl.common.domain.outcomes import (
     CleanupOutcome,
     DeferredInterfaceReference,
     GroupExpansionOutcome,
@@ -31,17 +23,28 @@ from impl.common.outcomes import (
     InterfacePruningOutcome,
     SimulationAdaptationOutcome,
 )
-from impl.common.policies import SimulationAdaptationPolicy, WashingPolicy
+from impl.common.domain.policies import (
+    SimulationAdaptationPolicy,
+    WashingPolicy,
+)
+from impl.common.rules.cleaning import (
+    CleaningAction,
+    CleaningOperation,
+)
+from impl.common.support.interface_cache import (
+    PARSER_HEADER_CACHE_SIZE,
+    copy_interface_specs,
+)
 
-from .ast import CiscoNode
-from .empty_blocks import xrv9000_empty_block_policy
-from .parser import CiscoParser
-from .semantics import (
+from .support.empty_blocks import xrv9000_empty_block_policy
+from .syntax.ast import CiscoNode
+from .syntax.parser import CiscoParser
+from .syntax.semantics import (
     _interface_name_from_header,
     _is_l2transport_header,
     canonical_cisco_interface,
 )
-from .writer import CiscoWriter
+from .syntax.writer import CiscoWriter
 
 _CISCO_PHYSICAL_INTERFACE = re.compile(
     r"^(?:Ethernet|FastEthernet|GigabitEthernet|TenGigE|TwentyFiveGigE|"
@@ -129,7 +132,7 @@ class CiscoDocument(AstDocument, VendorConfiguration):
     vendor = "cisco_iosxr"
 
     def __init__(self, text: str):
-        """Parse the configuration into the single mutable document tree.
+        """把配置解析为唯一的可变文档树。
 
         该操作在当前文档的业务处理边界内运行，调用方继续负责统一的结果记录和失败处理。
         """
@@ -141,16 +144,16 @@ class CiscoDocument(AstDocument, VendorConfiguration):
         self._last_signature = tree_signature(self.root)
 
     def parse_fragment(self, text):
-        """Parse an isolated fragment before attaching it to the tree.
+        """在挂接到配置树前解析独立片段。
 
-        Fragment validation happens before the editor alters the live tree, isolating syntax errors from configuration state.
+        片段校验先于 Editor 修改活动树执行，使语法错误不会污染当前配置状态。
         """
         return CiscoParser().parse(text)
 
     def validate_header(self, node, header):
-        """Delegate structural command validation to the vendor parser.
+        """把结构命令校验委托给厂商 Parser。
 
-        The facade selects syntax services without implementing grammar checks.
+        Document 门面只选择语法服务，不自行实现语法检查。
         """
         return CiscoParser().validate_header(node, header)
 
@@ -181,7 +184,7 @@ class CiscoDocument(AstDocument, VendorConfiguration):
         接口模块需要引用 ``CiscoDocument`` 和 ``CiscoNode``；在方法调用时再导入
         可打破模块初始化阶段的循环依赖，同时保持文档类对外提供稳定门面。
         """
-        from . import interfaces
+        from .operations import interfaces
 
         return interfaces
 
@@ -274,7 +277,7 @@ class CiscoDocument(AstDocument, VendorConfiguration):
         group 继承必须在接口分类前物化，但其语义远比基础块解析复杂；委托专用展开器
         可以隔离冲突处理，并让调用方通过结果对象决定是否安全继续转换。
         """
-        from .groups import CiscoGroupExpander
+        from .operations.groups import CiscoGroupExpander
 
         return CiscoGroupExpander(self).expand_groups(known_interfaces, policy)
 
@@ -325,7 +328,7 @@ class CiscoDocument(AstDocument, VendorConfiguration):
 
         模式与其他单值业务冲突时无法安全复制，因此不能默认成静态聚合。
         """
-        from .bundles import bundle_mode
+        from .operations.bundles import bundle_mode
 
         return bundle_mode(self, member)
 
@@ -334,7 +337,7 @@ class CiscoDocument(AstDocument, VendorConfiguration):
 
         只修改已有聚合属性并保留逻辑接口，使成员缩减后业务仍可稳定运行。
         """
-        from .bundles import adapt_bundle
+        from .operations.bundles import adapt_bundle
 
         return adapt_bundle(self, name)
 
@@ -347,7 +350,7 @@ class CiscoDocument(AstDocument, VendorConfiguration):
 
         地址和单值协议源不能共享，因此校验先于克隆执行。
         """
-        from .clone_constraints import validate_nni_clone
+        from .support.clone_constraints import validate_nni_clone
 
         return validate_nni_clone(self, source, target_interfaces)
 
@@ -475,7 +478,7 @@ class CiscoDocument(AstDocument, VendorConfiguration):
         生产账号、AAA 和远程管理凭据不应进入实验环境；委托独立清洗模块可以集中
         维护敏感命令模式，同时让文档门面保持统一调用接口。
         """
-        from .cleaning import clean_management_access
+        from .operations.cleaning import clean_management_access
 
         return clean_management_access(self)
 
@@ -485,7 +488,7 @@ class CiscoDocument(AstDocument, VendorConfiguration):
         清除生产认证后必须建立已知的本地登录入口，防止输出设备无法接管；账号语法
         由厂商清洗模块生成，使凭据替换与旧认证删除使用同一实现边界。
         """
-        from .cleaning import add_lab_account
+        from .operations.cleaning import add_lab_account
 
         add_lab_account(self)
 
@@ -510,20 +513,20 @@ class CiscoDocument(AstDocument, VendorConfiguration):
     def apply_cleaning_rules(
         self, operations: Sequence[CleaningOperation]
     ) -> list[int]:
-        """Delegate ordered cleaning to the vendor cleaning service.
+        """把有序清洗委托给厂商清洗服务。
 
-        The service owns matching and traversal; the document retains its stable API.
+        服务负责匹配和遍历，Document 只保留稳定入口。
         """
-        from .configuration_cleaning import apply_cleaning_rules
+        from .operations.configuration_cleaning import apply_cleaning_rules
 
         return apply_cleaning_rules(self, operations)
 
     def replace_references(self, replacements: dict[str, list[str]]) -> None:
-        """Delegate interface-reference conversion to the reference service.
+        """把接口引用转换委托给引用改写服务。
 
-        The document exposes the vendor capability while the service owns traversal.
+        Document 暴露厂商能力，实际遍历由服务实现。
         """
-        from .references import replace_references
+        from .operations.references import replace_references
 
         replace_references(self, replacements)
 

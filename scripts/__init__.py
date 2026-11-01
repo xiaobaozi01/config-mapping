@@ -1,1 +1,1 @@
-"""Repository quality and code-generation tools."""
+"""仓库质量检查和代码处理工具。"""

@@ -7,7 +7,7 @@ from pathlib import Path
 
 from adaptation.cleaning_rules import CleaningRulesHandler
 from impl.cisco.document import CiscoDocument
-from impl.common.interface import referenced_interface_names
+from impl.common.domain.interface import referenced_interface_names
 from impl.juniper.document import JunosDocument
 
 FIXTURES = Path(__file__).parent / "fixtures" / "interfaces"

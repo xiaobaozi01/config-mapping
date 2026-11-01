@@ -2,9 +2,9 @@
 
 import re
 
-from impl.common.interface import InterfaceKind, interface_unit
-from impl.common.outcomes import SimulationAdaptationOutcome
-from impl.common.policies import SimulationMode
+from impl.common.domain.interface import InterfaceKind, interface_unit
+from impl.common.domain.outcomes import SimulationAdaptationOutcome
+from impl.common.domain.policies import SimulationMode
 
 from .support import (
     CiscoRuleVisitor,

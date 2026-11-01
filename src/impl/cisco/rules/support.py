@@ -3,8 +3,8 @@
 from impl.common.config_ast import ConfigListener, ConfigVisitor
 from impl.common.config_ast.editor import EditConflictError, format_fragment
 
-from ..ast import CiscoNode
-from ..rewrite_helpers import append_top_level, delete_matching
+from ..syntax.ast import CiscoNode
+from ..syntax.rewrite_helpers import append_top_level, delete_matching
 from .runtime import (
     CiscoRuleVisitor,
     CiscoVisitorRule,

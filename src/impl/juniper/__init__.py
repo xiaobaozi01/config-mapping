@@ -1,7 +1,7 @@
 """Juniper Junos 配置实现。"""
 
-from .ast import JuniperNode
 from .document import JunosDocument
-from .groups import JunosGroupExpander
+from .operations.groups import JunosGroupExpander
+from .syntax.ast import JuniperNode
 
 __all__ = ["JuniperNode", "JunosDocument", "JunosGroupExpander"]

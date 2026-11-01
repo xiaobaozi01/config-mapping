@@ -49,7 +49,8 @@ def nni_context():
 class JunosReferenceRewriteTest(unittest.TestCase):
 
     def test_reference_rewriter_is_owned_by_reference_service(self):
-        from impl.juniper import document, references
+        from impl.juniper import document
+        from impl.juniper.operations import references
 
         self.assertFalse(hasattr(document, "_ReferenceRewriter"))
         self.assertEqual(

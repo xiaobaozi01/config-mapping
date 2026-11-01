@@ -14,10 +14,10 @@ from typing import ClassVar, Protocol
 import yaml
 
 from impl.cisco.document import CiscoDocument
-from impl.common.cleaning import CleaningAction, CleaningOperation
-from impl.common.config_paths import config_path
-from impl.common.contracts import VendorConfiguration
-from impl.common.interface import interface_parent
+from impl.common.domain.contracts import VendorConfiguration
+from impl.common.domain.interface import interface_parent
+from impl.common.rules.cleaning import CleaningAction, CleaningOperation
+from impl.common.support.config_paths import config_path
 
 from .models import (
     ConversionContext,

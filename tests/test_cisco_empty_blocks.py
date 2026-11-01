@@ -8,13 +8,13 @@ from unittest.mock import patch
 import yaml
 
 from impl.cisco.document import CiscoDocument
-from impl.cisco.empty_blocks import (
+from impl.cisco.support.empty_blocks import (
     EmptyBlockPolicy,
     load_empty_block_policy,
     xrv9000_empty_block_policy,
 )
-from impl.common.empty_blocks import EmptyBlockAction
-from impl.common.empty_blocks import EmptyBlockPolicy as CommonEmptyBlockPolicy
+from impl.common.rules.empty_blocks import EmptyBlockAction
+from impl.common.rules.empty_blocks import EmptyBlockPolicy as CommonEmptyBlockPolicy
 
 
 class CiscoEmptyBlockRulesTest(unittest.TestCase):

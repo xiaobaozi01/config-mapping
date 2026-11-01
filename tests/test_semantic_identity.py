@@ -9,10 +9,10 @@ from pathlib import Path
 
 from adaptation.service import convert
 from impl.cisco.document import CiscoDocument
-from impl.cisco.identity import resolve_cisco_identity
-from impl.common.policies import WashingPolicy
+from impl.cisco.support.identity import resolve_cisco_identity
+from impl.common.domain.policies import WashingPolicy
 from impl.juniper.document import JunosDocument
-from impl.juniper.identity import resolve_junos_identity
+from impl.juniper.support.identity import resolve_junos_identity
 
 FIXTURES = Path(__file__).parent / "fixtures"
 

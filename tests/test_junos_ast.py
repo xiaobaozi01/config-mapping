@@ -7,7 +7,7 @@ from pathlib import Path
 from unittest.mock import patch
 
 from impl.juniper.document import JunosDocument
-from impl.juniper.empty_blocks import EmptyBlockPolicy
+from impl.juniper.support.empty_blocks import EmptyBlockPolicy
 
 FIXTURES = Path(__file__).parent / "fixtures" / "junos_ast"
 

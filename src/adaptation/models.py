@@ -7,11 +7,14 @@ from enum import StrEnum
 from pathlib import Path
 from typing import TYPE_CHECKING, Any
 
-from impl.common.outcomes import DeferredInterfaceReference
-from impl.common.policies import SimulationAdaptationPolicy, WashingPolicy
+from impl.common.domain.outcomes import DeferredInterfaceReference
+from impl.common.domain.policies import (
+    SimulationAdaptationPolicy,
+    WashingPolicy,
+)
 
 if TYPE_CHECKING:
-    from impl.common.contracts import VendorConfiguration
+    from impl.common.domain.contracts import VendorConfiguration
 
 RESERVED_NNI_INTERFACE_COUNT = 3
 MIN_PROFILE_INTERFACE_COUNT = RESERVED_NNI_INTERFACE_COUNT + 1

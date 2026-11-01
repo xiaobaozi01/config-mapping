@@ -12,7 +12,7 @@ from unittest.mock import patch
 from openpyxl import load_workbook
 
 from adaptation.service import convert
-from impl.common.errors import InvariantViolation
+from impl.common.support.errors import InvariantViolation
 
 FIXTURES = Path(__file__).parent / "fixtures"
 

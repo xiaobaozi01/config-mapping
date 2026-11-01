@@ -16,7 +16,7 @@ import statistics
 import time
 
 from impl.cisco.document import CiscoDocument
-from impl.common.cleaning import CleaningOperation, matches_cleaning_path
+from impl.common.rules.cleaning import CleaningOperation, matches_cleaning_path
 from impl.juniper.document import JunosDocument
 
 

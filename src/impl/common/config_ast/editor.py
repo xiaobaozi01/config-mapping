@@ -1,4 +1,4 @@
-"""Validated structural edits and audit records for mutable ASTs."""
+"""可变 AST 的受校验结构编辑和审计记录。"""
 
 from contextlib import contextmanager
 from dataclasses import dataclass
@@ -7,24 +7,24 @@ from .model import ConfigNode, bind_parents
 
 
 class EditConflictError(ValueError):
-    """Reject edits using detached nodes or invalid tree relationships.
+    """拒绝使用游离节点或无效树关系的编辑。
 
-    The batch must fail instead of applying an operation to an unrelated or invalid tree position.
+    批量编辑必须失败，不能把操作应用到无关或无效的树位置。
     """
 
 
 @dataclass(frozen=True)
 class EditResult:
-    """Expose the audit records of an applied edit batch.
+    """暴露已应用编辑批次的审计记录。
 
-    Only successfully applied operations appear in the changes tuple consumed by rule result mappers.
+    只有成功应用的操作会进入结果映射器读取的 ``changes`` 元组。
     """
 
     changes: tuple = ()
 
     @property
     def total(self):
-        """Count completed edits.
+        """统计已完成的编辑数量。
 
         该操作在当前文档的业务处理边界内运行，调用方继续负责统一的结果记录和失败处理。
         """
@@ -32,9 +32,9 @@ class EditResult:
 
 
 def format_fragment(text, indent=0, newline="\n"):
-    """Normalize fragment indentation before parsing it into nodes.
+    """在解析为节点前规范化片段缩进。
 
-    Only callers constructing fragments use this helper; full-document output is the responsibility of writers.
+    该辅助函数只供构造片段的调用方使用；完整文档输出由 Writer 负责。
     """
     lines = text.splitlines()
     first = next((line.expandtabs(8) for line in lines if line.strip()), "")
@@ -45,13 +45,13 @@ def format_fragment(text, indent=0, newline="\n"):
 
 
 class ConfigEditor:
-    """Collect validated node edits and apply them after traversal.
+    """收集经过校验的节点编辑，并在遍历后统一应用。
 
-    Operations use node identities rather than source offsets, and input fragments are parsed before attachment.
+    操作基于节点身份而非源偏移；输入片段会先解析，再挂接到配置树。
     """
 
     def __init__(self, document):
-        """Bind an edit batch to the current root identity.
+        """把编辑批次绑定到当前根节点身份。
 
         该操作在当前文档的业务处理边界内运行，调用方继续负责统一的结果记录和失败处理。
         """
@@ -61,16 +61,16 @@ class ConfigEditor:
 
     @property
     def newline(self):
-        """Return the canonical output line ending.
+        """返回规范输出换行符。
 
-        Both vendor writers emit LF regardless of the line ending used by the input configuration.
+        无论输入配置使用何种换行符，两个厂商的 Writer 都输出 LF。
         """
         return "\n"
 
     def _check(self, node):
-        """Reject detached, foreign, and rolled-back references.
+        """拒绝游离节点、外部节点和已回滚节点的引用。
 
-        A root replacement invalidates earlier editors, and detached nodes cannot be reused as edit targets.
+        根节点替换会使旧 Editor 失效，游离节点也不能继续作为编辑目标。
         """
         if self.finished or self.root is not self.document.root:
             raise EditConflictError("Editor is no longer current")
@@ -83,9 +83,9 @@ class ConfigEditor:
             raise EditConflictError("Node does not belong to this document")
 
     def _record(self, action, node, payload, reason, details):
-        """Validate ownership and audit fields before recording an operation.
+        """在记录操作前校验节点归属和审计字段。
 
-        Reserved audit fields belong to the framework; callers can add detail fields without replacing those values.
+        保留审计字段归框架管理；调用方可以增加明细字段，但不能覆盖这些值。
         """
         self._check(node)
         if not isinstance(reason, str) or not reason.strip():
@@ -104,9 +104,9 @@ class ConfigEditor:
         self.operations.append((action, node, payload, reason, details))
 
     def _fragment(self, text):
-        """Parse and detach new nodes before changing any document state.
+        """在改变文档状态前解析并分离新节点。
 
-        New nodes lose source coordinates because their positions do not refer to the original input document.
+        新节点会清除源位置，因为其坐标不属于原始输入文档。
         """
         nodes = self.document.parse_fragment(text).children
         for node in nodes:
@@ -117,16 +117,16 @@ class ConfigEditor:
         return nodes
 
     def delete(self, node, reason, **details):
-        """Schedule removal of a complete subtree.
+        """登记删除一整棵子树。
 
-        Removing the parent also removes its descendants, so callers should avoid scheduling redundant child deletions.
+        删除父节点会同时移除后代，因此调用方不应重复登记子节点删除。
         """
         self._record("delete", node, None, reason, details)
 
     def replace_header(self, node, header, reason, **details):
-        """Validate a new command head without replacing its children.
+        """校验新命令头，同时保留原有子节点。
 
-        The existing node identity and child relationships survive a command-head replacement.
+        替换命令头后，节点身份和父子关系保持不变。
         """
         self._check(node)
         if "\n" in header or "\r" in header:
@@ -137,9 +137,9 @@ class ConfigEditor:
             self._record("replace_header", node, header, reason, details)
 
     def replace_subtree(self, node, text, reason, **details):
-        """Replace a subtree with a parsed configuration fragment.
+        """使用解析后的配置片段替换子树。
 
-        The parsed replacement may contain several sibling nodes, all attached at the original position.
+        替换片段可以包含多个兄弟节点，它们都会挂接到原位置。
         """
         self._check(node)
         if text != self.document.writer.subtree(node):
@@ -148,45 +148,45 @@ class ConfigEditor:
             )
 
     def insert_before(self, node, text, reason, **details):
-        """Insert parsed siblings before a node.
+        """在指定节点之前插入解析后的兄弟节点。
 
-        The target remains in place and every inserted node becomes a child of the same parent.
+        目标节点保持原位，所有插入节点都成为同一父节点的子节点。
         """
         self._record(
             "insert_before", node, self._fragment(text), reason, details
         )
 
     def insert_after(self, node, text, reason, **details):
-        """Insert parsed siblings after a node.
+        """在指定节点之后插入解析后的兄弟节点。
 
-        Repeated insertions use declaration order rather than reversing the collected fragments.
+        连续插入保持声明顺序，不会反转已收集的片段。
         """
         self._record(
             "insert_after", node, self._fragment(text), reason, details
         )
 
     def append_child(self, node, text, reason, **details):
-        """Append parsed children, promoting a leaf to a block.
+        """追加解析后的子节点，并把叶子提升为块。
 
-        The target retains its identity; leaf nodes become blocks when children are added.
+        目标节点保持身份不变；叶子节点在增加子节点后变成块。
         """
         self._record(
             "append_child", node, self._fragment(text), reason, details
         )
 
     def move(self, node, parent, reason, **details):
-        """Move a subtree, rejecting cycles before applying edits.
+        """移动子树，并在应用编辑前拒绝循环关系。
 
-        The source node keeps its identity and metadata while its parent and containing path change.
+        源节点保持身份和元数据，只改变父节点及所在路径。
         """
         self._check(parent)
         self._check_move(node, parent)
         self._record("move", node, parent, reason, details)
 
     def _check_move(self, node, parent):
-        """Validate the current destination after earlier queued moves.
+        """在先前移动操作排入队列后再次校验当前目标。
 
-        Queued moves can change ancestry, so validation runs again immediately before moving a node.
+        排队操作可能改变祖先关系，因此真正移动前必须重新校验。
         """
         ancestor = parent
         while ancestor is not None:
@@ -195,9 +195,9 @@ class ConfigEditor:
             ancestor = ancestor.parent
 
     def clone(self, node, parent, reason, **details):
-        """Append an independent copy of a subtree.
+        """向目标位置追加子树的独立副本。
 
-        The copy owns independent child lists and stops at the subtree boundary rather than copying ancestors.
+        副本拥有独立子节点列表，并止步于当前子树边界。
         """
         self._check(node)
         cloned = node.clone()
@@ -207,9 +207,9 @@ class ConfigEditor:
         return cloned
 
     def _execute(self, action, node, payload):
-        """Apply one already validated structural operation.
+        """执行一个已经校验过的结构操作。
 
-        Parent links are updated with child lists; final document validation reconnects bulk changes and refreshes caches.
+        执行时同步更新父节点链接；文档级最终校验会重连批量修改并刷新缓存。
         """
         if action == "replace_header":
             node.header = payload
@@ -244,9 +244,9 @@ class ConfigEditor:
             child.parent = parent
 
     def _audit_value(self, payload):
-        """Serialize inserted nodes for the existing audit report schema.
+        """按现有审计报告结构序列化插入的节点。
 
-        Reports retain the inserted configuration text even though edits now operate on tree nodes.
+        虽然编辑基于树节点执行，报告仍保留插入的配置文本。
         """
         if isinstance(payload, str):
             return payload
@@ -255,26 +255,26 @@ class ConfigEditor:
         return ""
 
     def scope(self, *, independent=False):
-        """Create a rollback boundary, reusing an active boundary for nested edits.
+        """创建回滚边界，并在嵌套编辑中复用已激活边界。
 
-        Rule executors request independent boundaries; editor batches share them.
+        规则执行器申请独立边界；同一 Editor 的批量编辑共享该边界。
         """
         return EditScope(self.document, independent=independent)
 
     @contextmanager
     def bulk(self):
-        """Manage a vendor algorithm that mutates several AST nodes directly.
+        """管理直接修改多个 AST 节点的厂商算法。
 
-        The editor validates parent ownership and rolls back failed bulk changes.
+        Editor 会校验父节点归属，并在批量修改失败时回滚。
         """
         self._check(self.root)
         with self.scope():
             yield self.document.root
 
     def replace_root(self, root):
-        """Install an independently constructed result tree through the editor.
+        """通过 Editor 安装独立构造的结果树。
 
-        Group expansion validates a detached candidate before publishing its nodes.
+        Group 展开会先校验候选树，再把其中的节点发布到当前文档。
         """
         self._check(self.root)
         if root is self.root or root.parent is not None or root.kind != "root":
@@ -285,9 +285,9 @@ class ConfigEditor:
         self.finished = True
 
     def apply(self):
-        """Apply collected edits within the current rollback boundary.
+        """在当前回滚边界内应用已收集的编辑。
 
-        Standalone batches own a backup; managed rules supply their existing backup.
+        独立批次自行持有备份；受管规则则提供已有备份。
         """
         self._check(self.root)
         if not self.operations:
@@ -299,9 +299,9 @@ class ConfigEditor:
         return EditResult(tuple(changes))
 
     def _apply_operations(self):
-        """Apply each operation and collect its original semantic location.
+        """逐个应用操作并收集其原始语义位置。
 
-        Audit records are returned only after the complete batch succeeds.
+        只有整个批次成功后才会返回审计记录。
         """
         changes = []
         for action, node, payload, reason, details in self.operations:
@@ -324,9 +324,9 @@ class ConfigEditor:
         return changes
 
     def preview(self):
-        """Render edited copies without changing the live tree.
+        """渲染编辑后的副本，但不改变当前活动树。
 
-        The live tree and its caches remain untouched, allowing repeated previews of the same edit batch.
+        活动树及其缓存保持不变，因此同一编辑批次可以重复预览。
         """
         from copy import deepcopy
 
@@ -351,23 +351,23 @@ class ConfigEditor:
 
 
 class EditScope:
-    """Own one rollback copy for a rule or standalone structural edit.
+    """为规则或独立结构编辑持有一份回滚副本。
 
-    Nested editor batches share the active scope; explicit rule boundaries nest independently.
+    嵌套 Editor 批次共享活动作用域；显式规则边界则独立嵌套。
     """
 
     def __init__(self, document, *, independent=False):
-        """Record the requested boundary without copying the tree yet.
+        """记录所需回滚边界，但暂不复制配置树。
 
-        Entering the context decides whether an enclosing scope can be reused.
+        真正进入上下文时才判断是否可以复用外层作用域。
         """
         self.document, self.independent = document, independent
         self.failed = self.rolled_back = False
 
     def __enter__(self):
-        """Acquire a backup only when this scope owns the rollback boundary.
+        """仅在当前作用域拥有回滚边界时获取备份。
 
-        Returning the owner lets nested algorithms request rollback of their shared work.
+        返回边界所有者，使嵌套算法可以请求回滚共享修改。
         """
         self.previous = getattr(self.document, "_edit_scope", None)
         self.owner = (
@@ -382,26 +382,26 @@ class EditScope:
         return self.owner
 
     def rollback(self):
-        """Restore the boundary's original tree and invalidate old references.
+        """恢复边界创建时的原树，并使旧引用失效。
 
-        A business validation failure can request rollback without raising an exception.
+        业务校验失败时可以直接请求回滚，而无需抛出异常。
         """
         if not self.rolled_back:
             self.document.restore_tree(self.backup, self.revision)
             self.rolled_back = True
 
     def synchronize(self):
-        """Validate structure before publishing cache and revision changes.
+        """在发布缓存和修订号变化前校验树结构。
 
-        Writers and subsequent rules only observe trees with consistent parent links.
+        Writer 和后续规则只会看到父子关系一致的配置树。
         """
         bind_parents(self.document.root)
         self.document.tree_changed()
 
     def __exit__(self, exc_type, exc, traceback):
-        """Restore on error and release only scopes owned by this context.
+        """出错时恢复原树，并且只释放当前上下文拥有的作用域。
 
-        A swallowed nested failure still aborts its enclosing batch rather than publishing partial edits.
+        即使嵌套异常被内部吞掉，外层批次也会中止，避免发布部分编辑。
         """
         try:
             if exc_type is not None:

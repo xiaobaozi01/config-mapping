@@ -1,4 +1,4 @@
-"""Topology workbook loading tests."""
+"""拓扑工作簿加载测试。"""
 
 from __future__ import annotations
 
@@ -30,7 +30,7 @@ def _write_topology(
 
 
 class TopologyLoadTest(TestCase):
-    """Load stable link identities from topology workbooks."""
+    """从拓扑工作簿加载稳定的链路身份。"""
 
     def test_link_name_is_loaded_from_spreadsheet(self):
         with TemporaryDirectory() as directory:

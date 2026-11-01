@@ -6,8 +6,8 @@ from tempfile import TemporaryDirectory
 
 import yaml
 
-from impl.common.empty_blocks import EmptyBlockPolicy as CommonEmptyBlockPolicy
-from impl.juniper.empty_blocks import (
+from impl.common.rules.empty_blocks import EmptyBlockPolicy as CommonEmptyBlockPolicy
+from impl.juniper.support.empty_blocks import (
     EmptyBlockPolicy,
     load_empty_block_policy,
     vmx_empty_block_policy,

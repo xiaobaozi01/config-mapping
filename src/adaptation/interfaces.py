@@ -5,8 +5,8 @@ from __future__ import annotations
 from typing import cast
 
 from impl.cisco.document import CiscoDocument
-from impl.common.interface import InterfaceKind, interface_parent
-from impl.common.outcomes import InterfaceAdaptationOutcome
+from impl.common.domain.interface import InterfaceKind, interface_parent
+from impl.common.domain.outcomes import InterfaceAdaptationOutcome
 
 from .cleaning_rules import target_parents
 from .models import (

@@ -22,7 +22,7 @@
 ## 阅读顺序
 
 1. 阅读仓库适用的 AGENTS.md，保留已有工作区修改。
-2. 阅读 `docs/configuration-rule-authoring.md`、`src/impl/cisco/rules/__init__.py` 和 `src/impl/common/rules.py`，确认阶段、上下文与执行顺序。
+2. 阅读 `docs/configuration-rule-authoring.md`、`src/impl/cisco/rules/__init__.py` 和 `src/impl/common/rules/engine.py`，确认阶段、上下文与执行顺序。
 3. 阅读 `src/impl/cisco/rules/` 中的 `support.py`、`runtime.py`、`scopes.py` 和 `docs/config-ast.md`，理解托管生命周期及文本重写。
 4. 选择 `src/impl/cisco/rules/examples.py` 中对应类型的模板，并参考 `tests/test_rule_extensions.py`。真实删除与移动示例见 `compatibility.py`。
 

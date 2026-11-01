@@ -241,22 +241,22 @@ flowchart TB
     end
 
     subgraph Port[厂商能力边界]
-        API[impl/common/contracts.py<br/>VendorConfiguration Protocol]
+        API[impl/common/domain/contracts.py<br/>VendorConfiguration Protocol]
     end
 
     subgraph Cisco[Cisco 实现]
         CiscoParser[impl/cisco/document.py]
-        CiscoGroups[impl/cisco/groups.py]
-        CiscoInterfaces[impl/cisco/interfaces.py]
-        CiscoCleaning[impl/cisco/cleaning.py]
+        CiscoGroups[impl/cisco/operations/groups.py]
+        CiscoInterfaces[impl/cisco/operations/interfaces.py]
+        CiscoCleaning[impl/cisco/operations/cleaning.py]
         CiscoSimulation[impl/cisco/rules/simulation.py]
     end
 
     subgraph Juniper[Juniper 实现]
         JunosParser[impl/juniper/document.py]
-        JunosGroups[impl/juniper/groups.py]
-        JunosInterfaces[impl/juniper/interfaces.py]
-        JunosCleaning[impl/juniper/cleaning.py]
+        JunosGroups[impl/juniper/operations/groups.py]
+        JunosInterfaces[impl/juniper/operations/interfaces.py]
+        JunosCleaning[impl/juniper/operations/cleaning.py]
         JunosSimulation[impl/juniper/rules/simulation.py]
     end
 
@@ -298,11 +298,13 @@ flowchart TB
 | `adaptation/pipeline.py` | Stage 协议和停止规则 | 是 |
 | `adaptation/nni.py` | 聚合链路分组的纯计算 | NNI 业务时读 |
 | `adaptation/interfaces.py` | 接口预清理、源语义预检、分类、NNI 保留闭包、引用改写、目标兼容与最终校验 | 修改接口保留范围时读 |
-| `impl/common/contracts.py` | 两家厂商显式实现、应用层依赖的能力协议 | 是，理解边界 |
-| `impl/cisco/document.py、impl/juniper/document.py` | AST、解析、渲染及兼容 Facade | 第二阶段读 |
-| `impl/cisco/groups.py、impl/juniper/groups.py` | 厂商 Group 事务式展开 | 专项阅读 |
-| `impl/cisco/interfaces.py、impl/juniper/interfaces.py` | 业务接口分析和配置树修改 | 专项阅读 |
-| `impl/cisco/cleaning.py、impl/juniper/cleaning.py` | 强制管理面清洗 | 专项阅读 |
+| `impl/common/domain/` | 跨厂商协议、接口规格、结果和策略 | 是，理解边界 |
+| `impl/common/rules/`、`impl/common/support/` | 规则引擎、路径清洗、缓存和基础设施 | 修改公共能力时读 |
+| `impl/cisco/document.py、impl/juniper/document.py` | 组合语法、业务操作和镜像支持的稳定 Facade | 第二阶段读 |
+| `impl/cisco/syntax/、impl/juniper/syntax/` | Parser、AST、Writer 和语法级辅助能力 | 阅读解析与编辑时先读 |
+| `impl/cisco/operations/groups.py、impl/juniper/operations/groups.py` | 厂商 Group 事务式展开 | 专项阅读 |
+| `impl/cisco/operations/interfaces.py、impl/juniper/operations/interfaces.py` | 业务接口分析和配置树修改 | 专项阅读 |
+| `impl/cisco/operations/cleaning.py、impl/juniper/operations/cleaning.py` | 强制管理面清洗 | 专项阅读 |
 | `impl/cisco/rules/simulation.py、impl/juniper/rules/simulation.py` | 镜像运行参数适配 | 专项阅读 |
 | `adaptation/topology.py` | Excel 读写和列别名处理 | 输入问题时读 |
 | `adaptation/profiles.py` | 镜像 Profile 加载与校验 | Profile 问题时读 |
@@ -319,7 +321,7 @@ flowchart TB
 - `ConversionContext` 等是 dataclass：它们表达一次转换过程中的领域数据。
 - `plan_nni_components()` 是函数：输入链路和聚合关系，输出不可变计划，不持有状态。
 - `plan_nni_components()` 是函数：输入链路和聚合关系，稳定地产生组件计划。
-- `impl/cisco/interfaces.py、impl/juniper/interfaces.py`、`cleaning.py`、`simulation.py` 使用模块函数：这些操作依赖传入的 Document，但自身不需要额外对象生命周期。
+- `impl/cisco/operations/interfaces.py、impl/juniper/operations/interfaces.py`、`cleaning.py`、`simulation.py` 使用模块函数：这些操作依赖传入的 Document，但自身不需要额外对象生命周期。
 
 ## 6. 贯穿流程的核心数据
 
@@ -868,7 +870,7 @@ git diff --check
 
 如果准备开始开发：
 
-1. 阅读 `impl/common/contracts.py`，明确跨厂商能力边界。
+1. 阅读 `impl/common/domain/contracts.py`，明确跨厂商能力边界。
 2. 阅读相关业务 fixture 和已有断言。
 3. 阅读目标厂商的 Group、接口、清洗或模拟适配模块。
 4. 先补失败测试，再做最小实现。

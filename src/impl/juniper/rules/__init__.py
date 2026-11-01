@@ -1,11 +1,11 @@
 """Juniper 规则包：显式阶段注册表与执行入口。"""
 
-from impl.common.outcomes import (
+from impl.common.domain.outcomes import (
     InterfaceAdaptationOutcome,
     InterfacePruningOutcome,
     SimulationAdaptationOutcome,
 )
-from impl.common.policies import SimulationMode
+from impl.common.domain.policies import SimulationMode
 from impl.common.rules import (
     AdaptContext,
     PruneContext,

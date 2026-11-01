@@ -9,7 +9,7 @@ from pathlib import Path
 
 import yaml
 
-from impl.common.config_paths import config_path
+from impl.common.support.config_paths import config_path
 
 from .models import Vendor
 

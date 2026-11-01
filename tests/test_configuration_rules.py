@@ -13,11 +13,11 @@ from impl.cisco.rules.support import (
     simulation_result,
 )
 from impl.common.config_ast.model import tree_signature
-from impl.common.outcomes import (
+from impl.common.domain.outcomes import (
     InterfacePruningOutcome,
     SimulationAdaptationOutcome,
 )
-from impl.common.policies import SimulationAdaptationPolicy
+from impl.common.domain.policies import SimulationAdaptationPolicy
 from impl.common.rules import (
     AdaptContext,
     FunctionRule,

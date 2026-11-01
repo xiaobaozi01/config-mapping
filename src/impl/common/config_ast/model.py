@@ -1,4 +1,4 @@
-"""Mutable configuration nodes and source diagnostics."""
+"""可变的配置节点及源位置诊断。"""
 
 from copy import copy
 from dataclasses import dataclass
@@ -6,9 +6,9 @@ from dataclasses import dataclass
 
 @dataclass(frozen=True)
 class SourceLocation:
-    """Record the original position, independent of subsequent edits.
+    """记录原始输入位置，且不随后续编辑变化。
 
-    Line and column refer to the input text; edits never reinterpret them as output coordinates.
+    行号和列号始终指向输入文本；编辑过程不会把它们重新解释为输出坐标。
     """
 
     line: int
@@ -16,9 +16,9 @@ class SourceLocation:
 
 
 class ConfigNode:
-    """Store syntax and hierarchy without depending on a parser runtime.
+    """保存配置语法和层级关系，不依赖特定解析器运行时。
 
-    Children carry parent links, while kind records empty block semantics independently of child count.
+    子节点持有父节点引用；``kind`` 独立记录空块语义，不以子节点数量作为判断依据。
     """
 
     def __init__(
@@ -34,7 +34,7 @@ class ConfigNode:
         rank=(1_000_000, 0),
         declared_in_source=False,
     ):
-        """Create a detached node; empty blocks have an explicit kind.
+        """创建一个游离节点；空块通过显式 ``kind`` 表示。
 
         该操作在当前文档的业务处理边界内运行，调用方继续负责统一的结果记录和失败处理。
         """
@@ -53,41 +53,41 @@ class ConfigNode:
 
     @property
     def nodes(self):
-        """Return a stable view of direct children for traversal.
+        """返回用于遍历的稳定直接子节点视图。
 
-        A tuple keeps traversal stable while callers collect edits; logically removed children are excluded.
+        元组避免调用方收集编辑时结构发生变化；逻辑上已删除的子节点不会出现。
         """
         return tuple(child for child in self.children if child.active)
 
     @property
     def is_block(self):
-        """Distinguish empty blocks from leaf statements.
+        """区分空块和叶子语句。
 
-        Root and group nodes also accept children, even when their child lists are empty.
+        根节点和 group 节点即使没有子节点也属于可承载子配置的节点。
         """
         return self.kind in {"root", "block", "group"}
 
     @property
     def is_formatting(self):
-        """Identify comments and separators excluded from semantic queries.
+        """识别不参与语义查询的注释和分隔符。
 
-        Formatting nodes remain available to writers but are omitted by default from semantic walks.
+        格式化节点仍可供 Writer 输出，但默认不会进入语义遍历。
         """
         return self.kind in {"comment", "separator"} or not self.header
 
     @property
     def is_comment_only(self):
-        """Identify a standalone comment.
+        """识别独立注释节点。
 
-        A trailing comment on a command does not make that command a comment-only node.
+        命令末尾的注释只表示行尾注释，不会把该命令节点变成纯注释节点。
         """
         return not self.header and self.comment is not None
 
     @property
     def path(self):
-        """Return ancestor command headers, excluding the virtual root.
+        """返回祖先命令头，不包含虚拟根节点。
 
-        The current node is excluded so selectors can match the containing configuration scope.
+        当前节点也排除在外，使选择器可以匹配该节点所处的配置作用域。
         """
         result, parent = [], self.parent
         while parent is not None and parent.kind != "root":
@@ -96,16 +96,16 @@ class ConfigNode:
         return tuple(reversed(result))
 
     def accept(self, visitor):
-        """Dispatch to a visitor without controlling its child traversal.
+        """把当前节点分派给 Visitor，但不控制其子节点遍历。
 
-        Traversal policy belongs to the visitor, allowing callers to prune or aggregate a subtree.
+        遍历策略由 Visitor 决定，调用方可以据此跳过或聚合整棵子树。
         """
         return visitor.visit(self)
 
     def walk(self, *, include_self=False, include_formatting=False):
-        """Iterate descendants in source order without recursive calls.
+        """按源码顺序迭代后代节点，不使用递归调用。
 
-        The explicit stack avoids recursion limits and reverses pending children to preserve source order.
+        显式栈避免递归深度限制，并通过反向压入待处理子节点保持源码顺序。
         """
         pending = [self] if include_self else list(reversed(self.nodes))
         while pending:
@@ -115,9 +115,9 @@ class ConfigNode:
             pending.extend(reversed(node.nodes))
 
     def clone(self):
-        """Copy a subtree without following its parent into the document.
+        """复制子树，但不沿着父节点把文档其他部分一并复制。
 
-        The copy owns independent child lists and stops at the subtree boundary rather than copying ancestors.
+        副本拥有独立的子节点列表，并止步于当前子树边界。
         """
         root = copy(self)
         root.parent, root.children = None, []
@@ -132,9 +132,9 @@ class ConfigNode:
         return root
 
     def __deepcopy__(self, memo):
-        """Provide an iterative tree copy for rule rollback.
+        """为规则回滚提供非递归的树复制能力。
 
-        Parent relationships and derived caches must not retain references to the original document.
+        父节点关系和派生缓存不得继续引用原文档中的节点。
         """
         cloned = self.clone()
         memo[id(self)] = cloned
@@ -142,9 +142,9 @@ class ConfigNode:
 
 
 def bind_parents(root):
-    """Validate and reconnect a tree after a bulk structural edit.
+    """在批量结构编辑后校验并重新连接父子关系。
 
-    Repeated node identities are rejected because a configuration node may have only one owner.
+    重复出现的节点身份会被拒绝，因为一个配置节点只能有一个所有者。
     """
     root.parent = None
     seen, pending = {id(root)}, [root]
@@ -160,9 +160,9 @@ def bind_parents(root):
 
 
 def tree_signature(root):
-    """Capture editable values and structure for read-only enforcement.
+    """记录可编辑值和树结构，用于只读规则检查。
 
-    The signature includes editable metadata as well as child counts, so read-only checks detect structural changes.
+    签名同时包含可编辑元数据和子节点数量，因此能够发现结构变化。
     """
     pending, result, seen = [(root, None)], [], set()
     while pending:

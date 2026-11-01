@@ -6,11 +6,11 @@ from unittest.mock import patch
 
 from impl.cisco import rules
 from impl.cisco.document import CiscoDocument
-from impl.cisco.parser import ConfigurationParseError
+from impl.cisco.syntax.parser import ConfigurationParseError
 from impl.cisco.rules import pruning
 from impl.cisco.rules.support import CiscoVisitorRule
 from impl.common.config_ast.model import tree_signature
-from impl.common.outcomes import InterfacePruningOutcome
+from impl.common.domain.outcomes import InterfacePruningOutcome
 from impl.common.rules import PruneContext
 
 REMOVED = "GigabitEthernet0/0/0/2"

@@ -13,11 +13,11 @@ from adaptation.cleaning_rules import CleaningPoint, CleaningRulesHandler
 from adaptation.models import Vendor
 from impl.cisco import rules
 from impl.cisco.document import CiscoDocument
-from impl.cisco.interfaces import find_interface_node
+from impl.cisco.operations.interfaces import find_interface_node
 from impl.cisco.rules import examples
 from impl.common.config_ast.model import tree_signature
-from impl.common.outcomes import InterfacePruningOutcome
-from impl.common.policies import SimulationAdaptationPolicy
+from impl.common.domain.outcomes import InterfacePruningOutcome
+from impl.common.domain.policies import SimulationAdaptationPolicy
 from impl.common.rules import (
     AdaptContext,
     FunctionRule,

@@ -11,7 +11,7 @@ from cleaning_support import clean_hardware
 from adaptation.models import Vendor
 from adaptation.profiles import load_profiles
 from impl.cisco.document import CiscoDocument
-from impl.common.policies import SimulationAdaptationPolicy
+from impl.common.domain.policies import SimulationAdaptationPolicy
 from impl.juniper.document import JunosDocument
 
 FIXTURES = Path(__file__).parent / "fixtures"

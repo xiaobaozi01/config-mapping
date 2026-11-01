@@ -1,4 +1,4 @@
-"""Vendor independent mutable AST, traversal, and editing."""
+"""厂商无关的可变 AST、遍历和编辑。"""
 
 from .editor import ConfigEditor, EditConflictError, EditResult
 from .model import ConfigNode, SourceLocation, bind_parents

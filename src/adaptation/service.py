@@ -8,8 +8,8 @@ import shutil
 import tempfile
 from pathlib import Path
 
-from impl.common.lab_account import LAB_PASSWORD, LAB_USERNAME
-from impl.common.policies import WashingPolicy
+from impl.common.domain.policies import WashingPolicy
+from impl.common.support.lab_account import LAB_PASSWORD, LAB_USERNAME
 
 from .factory import parse_document
 from .input_normalization import normalize_input

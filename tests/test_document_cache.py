@@ -8,7 +8,7 @@ import unittest
 import weakref
 
 from impl.cisco import document as cisco
-from impl.common.interface import InterfaceKind
+from impl.common.domain.interface import InterfaceKind
 from impl.juniper import document as junos
 
 

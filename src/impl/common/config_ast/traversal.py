@@ -1,16 +1,16 @@
-"""Small visitor and listener protocols for configuration trees."""
+"""配置树使用的轻量 Visitor 和 Listener 协议。"""
 
 
 class ConfigVisitor:
-    """Let business visitors decide whether and how to descend.
+    """由业务 Visitor 决定是否以及如何继续向下遍历。
 
-    Subclasses override node callbacks and explicitly call visit_children when they want to descend.
+    子类重写节点回调，并在需要继续遍历时显式调用 ``visit_children``。
     """
 
     def visit(self, node):
-        """Visit a root or ordinary node when the selection permits it.
+        """在选择范围允许时访问根节点或普通节点。
 
-        Root callbacks are distinct from ordinary commands so document-wide analyses need no sentinel-header checks.
+        根节点回调与普通命令分开，使全文档分析无需检查特殊 header。
         """
         if not self.should_visit(node):
             return None
@@ -19,64 +19,64 @@ class ConfigVisitor:
         return self.visit_node(node)
 
     def should_visit(self, node):
-        """Allow subclasses to prune a complete subtree.
+        """允许子类跳过整棵子树。
 
-        Returning false excludes both the selected node and all of its descendants.
+        返回 ``False`` 时，当前节点及其全部后代都不参与遍历。
         """
         return True
 
     def visit_configuration(self, node):
-        """Visit a virtual document root.
+        """访问虚拟文档根节点。
 
-        The default root behavior delegates to the same ordered child traversal used by ordinary nodes.
+        默认行为使用与普通节点相同的有序子节点遍历逻辑。
         """
         return self.visit_children(node)
 
     def visit_node(self, node):
-        """Visit an ordinary configuration node.
+        """访问普通配置节点。
 
-        An overriding callback can omit visit_children to stop at the current command.
+        重写该回调时可以不调用 ``visit_children``，从而停在当前命令。
         """
         return self.visit_children(node)
 
     def visit_children(self, node):
-        """Visit direct children in order; subclasses may stop descent.
+        """按顺序访问直接子节点，子类可以提前停止。
 
-        Each child is dispatched through accept so should_visit and overridden callbacks remain effective.
+        每个子节点都通过 ``accept`` 分派，确保 ``should_visit`` 和重写回调继续生效。
         """
         for child in node.nodes:
             child.accept(self)
 
 
 class ConfigListener:
-    """Receive traversal events without managing traversal.
+    """接收遍历事件，但不负责控制遍历过程。
 
-    Listeners observe traversal; structural modifications should be collected separately and applied afterward.
+    Listener 只观察遍历；结构修改应先单独收集，再在遍历结束后统一应用。
     """
 
     def enter_node(self, node):
-        """Handle entry into a node.
+        """处理进入节点事件。
 
-        The walker invokes this hook before visiting children, allowing a listener to push scope information.
+        Walker 在访问子节点前调用该钩子，Listener 可据此压入作用域信息。
         """
 
     def exit_node(self, node):
-        """Handle exit after all children have been visited.
+        """处理离开节点事件。
 
-        The matching exit hook allows listeners to discard scope information after descendants complete.
+        对应的退出钩子让 Listener 在后代处理完成后清理作用域信息。
         """
 
 
 class ConfigTreeWalker:
-    """Deliver balanced events using an explicit traversal stack.
+    """使用显式遍历栈发送成对的进入和退出事件。
 
-    Pending exit events ensure every entered node receives an exit event after its descendants.
+    延迟退出事件保证每个已进入节点都会在后代处理完成后收到退出事件。
     """
 
     def walk(self, listener, node):
-        """Walk a tree in source order, including its root.
+        """按源码顺序遍历树，并包含根节点。
 
-        The explicit stack avoids recursion limits and reverses pending children to preserve source order.
+        显式栈避免递归深度限制，并通过反向压入待处理子节点保持源码顺序。
         """
         pending = [(node, False)]
         while pending:

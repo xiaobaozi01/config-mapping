@@ -5,8 +5,11 @@ from __future__ import annotations
 import re
 from typing import TYPE_CHECKING
 
-from impl.common.interface import interface_parent, referenced_interface_names
-from impl.common.outcomes import (
+from impl.common.domain.interface import (
+    interface_parent,
+    referenced_interface_names,
+)
+from impl.common.domain.outcomes import (
     DeferredInterfaceReference,
     InterfacePruningOutcome,
 )

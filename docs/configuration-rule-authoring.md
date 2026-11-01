@@ -36,7 +36,7 @@ impl/cisco/rules/
 └── xrv9000/                # 镜像清洗与输入整理 YAML
 ```
 
-`from impl.cisco import rules` 访问同一套注册表与执行入口。新增业务模块直接放在此包内，再在 `__init__.py` 登记。共享协议仍位于 `impl/common/rules.py`。
+`from impl.cisco import rules` 访问同一套注册表与执行入口。新增业务模块直接放在此包内，再在 `__init__.py` 登记。共享协议仍位于 `impl/common/rules/engine.py`。
 
 接口删除的多级依赖按具体对象建模。Cisco `rules/pruning.py` 的 `TRACK_DEPENDENCIES_RULE` 以 `cisco.prune.track_dependencies` 注册到 `PRUNE_RULES`，通过 `TrackDependenciesVisitor` 处理“被删除接口 → line-protocol track → VRRP track object”链：只解除对象跟踪，保留 VRRP 组的其他配置。发现未知消费者或不明确的 track 定义时停止自动删除、保留原配置并记录 warning；它不属于固定命令清洗。普通非 NNI 裁剪和冗余成员清理都执行同一个 `PRUNE_RULES` 注册表；移除该条目会同时停止这两个入口的 track 裁剪。
 
@@ -68,7 +68,7 @@ impl/cisco/rules/
 从 `impl.cisco.rules.support` 导入编写接口，继承 `CiscoRuleVisitor`（继承共享 ConfigVisitor）。例如新增一项实验 MTU 上限校验：
 
 ```python
-from impl.common.interface import InterfaceKind
+from impl.common.domain.interface import InterfaceKind
 from impl.cisco.rules.support import CiscoRuleVisitor, CiscoVisitorRule, InterfaceScope
 
 
@@ -103,7 +103,7 @@ Visitor 会话生命周期，入口位于 `impl.juniper.rules.support`。
 模拟规则指定 `SimulationAdaptationOutcome` 工厂及分类结果映射，使用已有镜像 Profile 中的 `SimulationAdaptationPolicy` 读取参数。需要新参数时在现有策略及 Profile 加载器中明确增加，不另建规则开关文件。以下注册假设业务 Visitor 已实现，编辑详情携带 `category`：
 
 ```python
-from impl.common.outcomes import SimulationAdaptationOutcome
+from impl.common.domain.outcomes import SimulationAdaptationOutcome
 from impl.cisco.rules.support import simulation_result
 
 

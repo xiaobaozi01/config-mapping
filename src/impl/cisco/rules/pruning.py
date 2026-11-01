@@ -6,8 +6,8 @@ import ipaddress
 import re
 from contextlib import suppress
 
-from impl.common.interface import InterfaceKind, interface_parent
-from impl.common.outcomes import (
+from impl.common.domain.interface import InterfaceKind, interface_parent
+from impl.common.domain.outcomes import (
     DeferredInterfaceReference,
     InterfacePruningOutcome,
 )
@@ -17,8 +17,8 @@ from ..document import (
     CiscoNode,
     canonical_cisco_interface,
 )
-from ..interfaces import interface_nodes
-from ..semantics import _CISCO_INTERFACE_TOKEN
+from ..operations.interfaces import interface_nodes
+from ..syntax.semantics import _CISCO_INTERFACE_TOKEN
 from .support import CiscoRuleVisitor, CiscoVisitorRule, document_scope
 
 # 整个接口 token 一次规范化，避免 Gi/BE 缩写和主口/子口前缀误匹配。

@@ -7,7 +7,7 @@ from pathlib import Path
 
 from openpyxl import load_workbook
 
-from impl.common.interface import interface_parent
+from impl.common.domain.interface import interface_parent
 
 from .models import (
     ConversionContext,

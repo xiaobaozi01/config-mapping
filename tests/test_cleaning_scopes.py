@@ -6,8 +6,8 @@ from cleaning_support import clean_hardware
 
 from adaptation.cleaning_rules import CleaningRulesHandler
 from impl.cisco.document import CiscoDocument
-from impl.common.cleaning import CleaningOperation
-from impl.common.policies import SimulationAdaptationPolicy
+from impl.common.rules.cleaning import CleaningOperation
+from impl.common.domain.policies import SimulationAdaptationPolicy
 from impl.juniper.document import JunosDocument
 
 

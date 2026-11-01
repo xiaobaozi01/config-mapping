@@ -4,7 +4,7 @@ from __future__ import annotations
 
 from collections import defaultdict
 
-from impl.common.interface import interface_parent
+from impl.common.domain.interface import interface_parent
 
 from .models import ConversionContext, EventKind
 

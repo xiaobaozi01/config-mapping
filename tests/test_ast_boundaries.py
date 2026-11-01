@@ -1,4 +1,4 @@
-"""Enforce AST, document, editing, and output ownership boundaries."""
+"""校验 AST、Document、编辑和输出职责边界。"""
 
 import ast
 from pathlib import Path
@@ -10,14 +10,16 @@ from impl.cisco.document import CiscoDocument
 from impl.cisco.rules.runtime import CiscoRuleVisitor, CiscoVisitorRule
 from impl.common.config_ast.editor import EditConflictError
 from impl.common.config_ast.model import ConfigNode, tree_signature
-from impl.common.outcomes import InterfaceAdaptationOutcome
+from impl.common.domain.outcomes import InterfaceAdaptationOutcome
 from impl.juniper.document import JunosDocument
 from impl.juniper.rules.runtime import JunosVisitorRule
 
 
 @pytest.mark.parametrize("vendor", ["cisco", "juniper"])
 def test_nodes_have_no_document_or_output_dependencies(vendor):
-    module = ast.parse(Path(f"src/impl/{vendor}/ast.py").read_text())
+    module = ast.parse(
+        Path(f"src/impl/{vendor}/syntax/ast.py").read_text()
+    )
     imports = [
         node.module
         for node in ast.walk(module)

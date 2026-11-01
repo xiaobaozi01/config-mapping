@@ -7,7 +7,7 @@ from unittest.mock import patch
 
 from impl.cisco import rules
 from impl.cisco.document import CiscoDocument
-from impl.cisco.parser import ConfigurationParseError
+from impl.cisco.syntax.parser import ConfigurationParseError
 from impl.cisco.rules import compatibility
 from impl.cisco.rules.support import (
     CiscoRuleVisitor,
@@ -17,13 +17,13 @@ from impl.cisco.rules.support import (
     compatibility_interfaces_scope,
 )
 from impl.common.config_ast.model import tree_signature
-from impl.common.interface import InterfaceKind
-from impl.common.outcomes import (
+from impl.common.domain.interface import InterfaceKind
+from impl.common.domain.outcomes import (
     InterfaceAdaptationOutcome,
     InterfacePruningOutcome,
     SimulationAdaptationOutcome,
 )
-from impl.common.policies import SimulationAdaptationPolicy
+from impl.common.domain.policies import SimulationAdaptationPolicy
 from impl.common.rules import (
     AdaptContext,
     FunctionRule,

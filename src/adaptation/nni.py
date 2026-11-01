@@ -5,7 +5,11 @@ from __future__ import annotations
 from collections import defaultdict
 from dataclasses import dataclass
 
-from impl.common.interface import BundleMode, InterfaceKind, interface_parent
+from impl.common.domain.interface import (
+    BundleMode,
+    InterfaceKind,
+    interface_parent,
+)
 
 from .interfaces import _report
 from .models import (

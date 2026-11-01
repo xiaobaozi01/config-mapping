@@ -1,4 +1,4 @@
-"""Measure handwritten parsing, traversal, serialization, and rollback copies."""
+"""测量手写解析、遍历、序列化和回滚复制的性能。"""
 
 import argparse
 import json
@@ -10,7 +10,7 @@ from impl.juniper.document import JunosDocument
 
 
 def measure(action):
-    """Return elapsed seconds and peak allocated memory for one action."""
+    """返回一次操作的耗时和峰值分配内存。"""
     tracemalloc.start()
     started = time.perf_counter()
     value = action()
@@ -24,7 +24,7 @@ def measure(action):
 
 
 def benchmark(blocks):
-    """Measure each phase independently for both configuration formats."""
+    """分别测量两种配置格式的各个处理阶段。"""
     sources = {
         CiscoDocument: "".join(
             f"interface Gi0/0/{i}/0\n description port {i}\n mtu 9000\n!\n"

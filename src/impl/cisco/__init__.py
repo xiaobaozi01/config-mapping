@@ -1,7 +1,7 @@
 """Cisco IOS XR 配置实现。"""
 
-from .ast import CiscoNode
 from .document import CiscoDocument
-from .groups import CiscoGroupExpander
+from .operations.groups import CiscoGroupExpander
+from .syntax.ast import CiscoNode
 
 __all__ = ["CiscoDocument", "CiscoGroupExpander", "CiscoNode"]

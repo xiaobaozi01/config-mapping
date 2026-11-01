@@ -3,13 +3,16 @@
 from collections.abc import Iterable
 from typing import TypeAlias
 
-from impl.common.outcomes import (
+from impl.common.domain.outcomes import (
     DeferredInterfaceReference,
     InterfaceAdaptationOutcome,
     InterfacePruningOutcome,
     SimulationAdaptationOutcome,
 )
-from impl.common.policies import SimulationAdaptationPolicy, SimulationMode
+from impl.common.domain.policies import (
+    SimulationAdaptationPolicy,
+    SimulationMode,
+)
 from impl.common.rules import (
     AdaptContext,
     ConfigurationRule,

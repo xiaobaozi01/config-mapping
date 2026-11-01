@@ -9,10 +9,10 @@ from unittest.mock import patch
 
 from cisco_support import append_child, delete_context, replace_header
 
-from impl.cisco import interfaces as cisco_interfaces
+from impl.cisco.operations import interfaces as cisco_interfaces
 from impl.cisco.document import CiscoDocument
-from impl.common.interface import InterfaceKind, InterfaceSpec
-from impl.juniper import interfaces as junos_interfaces
+from impl.common.domain.interface import InterfaceKind, InterfaceSpec
+from impl.juniper.operations import interfaces as junos_interfaces
 from impl.juniper.document import JunosDocument
 
 CISCO = (

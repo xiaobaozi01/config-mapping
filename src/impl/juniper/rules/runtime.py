@@ -9,19 +9,19 @@ from typing import TYPE_CHECKING, Generic, TypeVar
 from impl.common.config_ast import ConfigVisitor
 from impl.common.config_ast.editor import EditResult, EditScope
 from impl.common.config_ast.model import tree_signature
-from impl.common.outcomes import (
+from impl.common.domain.outcomes import (
     InterfaceAdaptationOutcome,
     InterfacePruningOutcome,
     SimulationAdaptationOutcome,
 )
 
-from ..ast import JuniperNode
+from ..syntax.ast import JuniperNode
 
 
 def document_scope(document, context):
-    """Select the whole configuration for a document rule.
+    """为文档级规则选择完整配置树。
 
-    Returning the root once lets document-wide rules build indexes without overlapping selected subtrees.
+    只返回一次根节点，使全文档规则可以建立索引且不会选择重叠子树。
     """
     return (document.root,)
 
@@ -116,17 +116,17 @@ class RuleSession(Generic[ContextT, OutcomeT]):
         return self._edits
 
     def assert_unchanged(self):
-        """Reject edits performed outside the controlled edit collector.
+        """拒绝绕过受控编辑收集器直接修改配置。
 
-        Visitors collect edits through their session; direct mutation would bypass the executor’s audit and rollback boundary.
+        Visitor 必须通过会话收集编辑；直接修改会绕过执行器的审计和回滚边界。
         """
         if tree_signature(self.document.root) != self.baseline:
             raise RuleContractError("规则绕过 Editor 修改了配置")
 
     def apply_edits(self):
-        """Apply collected operations after traversal has completed.
+        """在遍历完成后应用已收集的操作。
 
-        Read-only sessions return an empty result without creating an editor or advancing the document revision.
+        只读会话返回空结果，不创建 Editor，也不推进文档修订号。
         """
         return EditResult() if self.readonly else self._transaction.apply()
 
@@ -276,9 +276,9 @@ class JunosVisitorRule(Generic[ContextT, OutcomeT]):
         return self.condition(context)
 
     def apply(self, document: JunosDocument, context: ContextT) -> OutcomeT:
-        """Run a rule against the AST and restore its backup on failure.
+        """在 AST 上执行规则，并在失败时恢复备份。
 
-        A failed edit or rule restores the tree backup; completed edits are exposed only through the returned result.
+        编辑或规则失败时恢复树备份；成功修改只通过返回结果对外暴露。
         """
         if self.document_action is not None:
             return self._apply_document_action(document, context)
@@ -318,9 +318,9 @@ class JunosVisitorRule(Generic[ContextT, OutcomeT]):
                 raise
 
     def _visit(self, session, roots):
-        """Traverse selected nodes before applying collected edits.
+        """在应用收集到的编辑前遍历选定节点。
 
-        All selected roots share one visitor instance, and finish runs once after their callbacks complete.
+        所有选定根共享一个 Visitor 实例，并在回调全部完成后只调用一次 ``finish``。
         """
         visitor = self.visitor_factory(session)
         if (
@@ -337,9 +337,9 @@ class JunosVisitorRule(Generic[ContextT, OutcomeT]):
         return visitor
 
     def _finish(self, session, visitor):
-        """Apply edits and map audit results, enforcing read-only rules.
+        """应用编辑并映射审计结果，同时执行只读规则约束。
 
-        Result mapping is checked for unexpected mutations so reporting cannot introduce unaudited configuration changes.
+        结果映射也会检查意外修改，防止报告阶段引入未经审计的配置变化。
         """
         if self.readonly:
             _check_readonly_result(session.result)
@@ -355,18 +355,18 @@ class JunosVisitorRule(Generic[ContextT, OutcomeT]):
             _check_readonly_result(session.result)
 
     def _tag_changes(self, result):
-        """Attach the rule identity to completed bulk-edit audit records.
+        """为已完成的批量编辑审计记录附加规则身份。
 
-        Bulk actions use the same report origin field as edits produced through a standard visitor session.
+        批量动作与标准 Visitor 会话产生的编辑使用同一报告来源字段。
         """
         if isinstance(result, InterfaceAdaptationOutcome):
             for change in result.changes:
                 change["rule_id"] = self.rule_id
 
     def _run_action(self, document, context):
-        """Give mutable actions an editor boundary and keep validation read-only.
+        """为可变动作提供编辑边界，并保持校验动作只读。
 
-        Read-only actions never acquire an editor; the rule scope still detects bypasses.
+        只读动作不会获取 Editor；规则作用域仍会检测绕过修改。
         """
         if self.readonly:
             return self.document_action(document, context)
@@ -374,9 +374,9 @@ class JunosVisitorRule(Generic[ContextT, OutcomeT]):
             return self.document_action(document, context)
 
     def _apply_document_action(self, document, context):
-        """Guard a bulk AST action with rule-level rollback.
+        """使用规则级回滚保护批量 AST 动作。
 
-        A backup covers direct vendor operations as well as returned business errors, preventing partial rule results.
+        备份同时覆盖厂商直接操作和返回的业务错误，防止留下部分规则结果。
         """
         with EditScope(document, independent=True) as scope:
             original = scope.backup

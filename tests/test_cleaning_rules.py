@@ -11,7 +11,7 @@ from adaptation.cleaning_rules import (
     CleaningRulesHandler,
 )
 from impl.cisco.document import CiscoDocument
-from impl.common.cleaning import matches_cleaning_path
+from impl.common.rules.cleaning import matches_cleaning_path
 from impl.juniper.document import JunosDocument
 
 

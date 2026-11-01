@@ -4,12 +4,12 @@ from __future__ import annotations
 
 import re
 
-from impl.common.interface import interface_parent
-from impl.common.outcomes import (
+from impl.common.domain.interface import interface_parent
+from impl.common.domain.outcomes import (
     SimulationAdaptationOutcome,
     SimulationChangeAction,
 )
-from impl.common.policies import SimulationAdaptationPolicy
+from impl.common.domain.policies import SimulationAdaptationPolicy
 
 from ..document import JuniperNode, JunosDocument
 

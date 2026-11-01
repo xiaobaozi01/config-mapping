@@ -7,8 +7,11 @@ from pathlib import Path
 
 import yaml
 
-from impl.common.interface import InterfaceKind, interface_parent
-from impl.common.policies import SimulationAdaptationPolicy, SimulationMode
+from impl.common.domain.interface import InterfaceKind, interface_parent
+from impl.common.domain.policies import (
+    SimulationAdaptationPolicy,
+    SimulationMode,
+)
 
 from .factory import parse_document
 from .models import (

@@ -12,7 +12,7 @@ from adaptation.models import (
     InterfaceMapping,
     TopologyWorkbook,
 )
-from impl.common.policies import SimulationAdaptationPolicy, WashingPolicy
+from impl.common.domain.policies import SimulationAdaptationPolicy, WashingPolicy
 
 
 class DomainVocabularyValidationTest(unittest.TestCase):

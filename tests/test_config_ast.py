@@ -1,4 +1,4 @@
-"""Exercise handwritten parser, editor, traversal, and rollback contracts."""
+"""验证手写 Parser、Editor、遍历和回滚约定。"""
 
 import builtins
 from copy import deepcopy
@@ -16,7 +16,7 @@ from impl.common.config_ast import (
 )
 from impl.common.config_ast.editor import EditConflictError
 from impl.common.config_ast.model import tree_signature
-from impl.common.outcomes import InterfaceAdaptationOutcome
+from impl.common.domain.outcomes import InterfaceAdaptationOutcome
 from impl.juniper.document import JunosDocument
 from impl.juniper.rules.runtime import JunosVisitorRule, RuleContractError
 

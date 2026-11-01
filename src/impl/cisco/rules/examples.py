@@ -1,11 +1,11 @@
 """四类托管 Visitor 模板；合成 RULE_DEMO 标记不在默认注册表中启用。"""
 
-from impl.common.interface import InterfaceKind
-from impl.common.outcomes import (
+from impl.common.domain.interface import InterfaceKind
+from impl.common.domain.outcomes import (
     InterfacePruningOutcome,
     SimulationAdaptationOutcome,
 )
-from impl.common.policies import SimulationMode
+from impl.common.domain.policies import SimulationMode
 
 from .support import (
     CiscoRuleVisitor,

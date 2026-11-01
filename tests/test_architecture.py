@@ -13,7 +13,7 @@ from adaptation.models import Link
 from adaptation.nni import plan_nni_components
 from adaptation.pipeline import ConversionPipeline, build_default_pipeline
 from impl.cisco import CiscoDocument
-from impl.common.contracts import VendorConfiguration
+from impl.common.domain.contracts import VendorConfiguration
 from impl.juniper import JunosDocument
 
 
@@ -205,7 +205,7 @@ class PackageDependencyTest(unittest.TestCase):
                 )
 
     def test_cisco_rewrite_helpers_have_a_non_rule_owner(self):
-        from impl.cisco import rewrite_helpers
+        from impl.cisco.syntax import rewrite_helpers
         from impl.cisco.rules import support
 
         for name in ("append_top_level", "delete_matching"):
@@ -228,7 +228,7 @@ class ProjectConfigLayoutTest(unittest.TestCase):
                 self.assertTrue((target / "manifest.yaml").is_file())
                 self.assertFalse((project_root / "src" / "impl" / vendor / "rules" / image).exists())
 
-        from impl.common.config_paths import config_path
+        from impl.common.support.config_paths import config_path
 
         for vendor, image in locations:
             with self.subTest(vendor=vendor, helper=True):
@@ -287,6 +287,95 @@ class NoCliLayoutTest(unittest.TestCase):
         self.assertFalse((project_root / "src" / "adaptation" / "__main__.py").exists())
         payload = tomllib.loads((project_root / "pyproject.toml").read_text(encoding="utf-8"))
         self.assertNotIn("config-adaptor", payload.get("project", {}).get("scripts", {}))
+
+
+class ImplementationPackageLayoutTest(unittest.TestCase):
+    def test_target_packages_are_importable(self):
+        modules = (
+            "impl.common.domain.contracts",
+            "impl.common.domain.interface",
+            "impl.common.domain.outcomes",
+            "impl.common.domain.policies",
+            "impl.common.rules.engine",
+            "impl.common.rules.cleaning",
+            "impl.common.rules.empty_blocks",
+            "impl.common.support.config_paths",
+            "impl.common.support.errors",
+            "impl.common.support.interface_cache",
+            "impl.common.support.lab_account",
+            "impl.cisco.syntax.ast",
+            "impl.cisco.syntax.parser",
+            "impl.cisco.syntax.writer",
+            "impl.cisco.syntax.semantics",
+            "impl.cisco.syntax.rewrite_helpers",
+            "impl.cisco.operations.groups",
+            "impl.cisco.operations.interfaces",
+            "impl.cisco.operations.bundles",
+            "impl.cisco.operations.cleaning",
+            "impl.cisco.operations.configuration_cleaning",
+            "impl.cisco.operations.references",
+            "impl.cisco.support.clone_constraints",
+            "impl.cisco.support.empty_blocks",
+            "impl.cisco.support.identity",
+            "impl.juniper.syntax.ast",
+            "impl.juniper.syntax.parser",
+            "impl.juniper.syntax.writer",
+            "impl.juniper.operations.groups",
+            "impl.juniper.operations.interfaces",
+            "impl.juniper.operations.bundles",
+            "impl.juniper.operations.cleaning",
+            "impl.juniper.operations.configuration_cleaning",
+            "impl.juniper.operations.references",
+            "impl.juniper.support.clone_constraints",
+            "impl.juniper.support.empty_blocks",
+            "impl.juniper.support.identity",
+        )
+        for module in modules:
+            with self.subTest(module=module):
+                self.assertIsNotNone(importlib.util.find_spec(module))
+
+    def test_old_flat_modules_are_removed(self):
+        modules = (
+            "impl.common.contracts",
+            "impl.common.interface",
+            "impl.common.outcomes",
+            "impl.common.policies",
+            "impl.common.cleaning",
+            "impl.common.empty_blocks",
+            "impl.common.config_paths",
+            "impl.common.errors",
+            "impl.common.interface_cache",
+            "impl.common.lab_account",
+            "impl.cisco.ast",
+            "impl.cisco.parser",
+            "impl.cisco.writer",
+            "impl.cisco.semantics",
+            "impl.cisco.rewrite_helpers",
+            "impl.cisco.groups",
+            "impl.cisco.interfaces",
+            "impl.cisco.bundles",
+            "impl.cisco.cleaning",
+            "impl.cisco.configuration_cleaning",
+            "impl.cisco.references",
+            "impl.cisco.clone_constraints",
+            "impl.cisco.empty_blocks",
+            "impl.cisco.identity",
+            "impl.juniper.ast",
+            "impl.juniper.parser",
+            "impl.juniper.writer",
+            "impl.juniper.groups",
+            "impl.juniper.interfaces",
+            "impl.juniper.bundles",
+            "impl.juniper.cleaning",
+            "impl.juniper.configuration_cleaning",
+            "impl.juniper.references",
+            "impl.juniper.clone_constraints",
+            "impl.juniper.empty_blocks",
+            "impl.juniper.identity",
+        )
+        for module in modules:
+            with self.subTest(module=module):
+                self.assertIsNone(importlib.util.find_spec(module))
 
 
 if __name__ == "__main__":

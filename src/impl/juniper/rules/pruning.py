@@ -6,15 +6,15 @@ import ipaddress
 import re
 from typing import TYPE_CHECKING
 
-from impl.common.interface import (
+from impl.common.domain.interface import (
     InterfaceKind,
     interface_parent,
     referenced_interface_names,
 )
-from impl.common.outcomes import InterfacePruningOutcome
+from impl.common.domain.outcomes import InterfacePruningOutcome
 from impl.common.rules import merge_interface_results
 
-from ..interfaces import _collect_active_vlans, _expand_vlan_tokens
+from ..operations.interfaces import _collect_active_vlans, _expand_vlan_tokens
 from .compatibility import _validate_pruned_references, _walk
 
 if TYPE_CHECKING:

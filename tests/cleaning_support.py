@@ -8,7 +8,7 @@ from adaptation.cleaning_rules import (
     ConfiguredCleaningRule,
 )
 from adaptation.models import Vendor
-from impl.common.policies import SimulationAdaptationPolicy
+from impl.common.domain.policies import SimulationAdaptationPolicy
 
 
 def clean_hardware(document, targets, policy=None):

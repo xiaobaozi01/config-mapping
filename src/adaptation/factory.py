@@ -3,7 +3,7 @@
 from __future__ import annotations
 
 from impl.cisco.document import CiscoDocument
-from impl.common.contracts import VendorConfiguration
+from impl.common.domain.contracts import VendorConfiguration
 from impl.juniper.document import JunosDocument
 
 from .models import Vendor

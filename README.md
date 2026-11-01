@@ -10,10 +10,12 @@ group 展开是事务式的，并遵循显式配置、嵌套层级和 group 列�
 
 ## 代码边界
 
-- `impl/cisco/`：IOS XR Parser、AST、Writer、Group、接口、清洗、模拟适配及 XRv9000 规则。
-- `impl/juniper/`：Junos Parser、AST、Writer、Group、接口、清洗、模拟适配及 vMX 规则。
-- `impl/common/`：两家厂商共享的 AST、遍历、Editor、接口类型、操作结果、策略、不变量和语义 identity 引擎。
-- `impl/common/contracts.py`：Cisco 与 Juniper 显式实现的稳定厂商能力协议，厂商 AST 不向流程层泄漏。
+- `impl/cisco/syntax/`、`impl/cisco/operations/`、`impl/cisco/support/`：IOS XR 语法、业务操作和镜像约束；XRv9000 规则仍位于 `impl/cisco/rules/`。
+- `impl/juniper/syntax/`、`impl/juniper/operations/`、`impl/juniper/support/`：Junos 语法、业务操作和镜像约束；vMX 规则仍位于 `impl/juniper/rules/`。
+- `impl/common/config_ast/`：两家厂商共享的 AST、遍历、Editor 和 Writer 协议。
+- `impl/common/domain/`、`impl/common/rules/`、`impl/common/support/`：公共领域数据、规则引擎、路径清洗及基础设施能力。
+- `impl/common/semantic_identity/`：路径感知的语义 identity 规则引擎。
+- `impl/common/domain/contracts.py`：Cisco 与 Juniper 显式实现的稳定厂商能力协议，厂商 AST 不向流程层泄漏。
 - `adaptation/topology.py`：Excel 拓扑读取、预检和输出。
 - `adaptation/groups.py`：Group 展开的跨设备调度和诊断汇总。
 - `adaptation/interfaces.py`：接口预清理、分类、非 NNI 裁剪、引用改写、目标兼容与最终校验。

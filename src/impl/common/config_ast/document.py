@@ -1,4 +1,4 @@
-"""Shared document lifecycle for mutable configuration trees."""
+"""可变配置树的通用 Document 生命周期。"""
 
 from copy import copy, deepcopy
 
@@ -7,38 +7,38 @@ from .model import tree_signature
 
 
 class AstDocument:
-    """Own one mutable tree, its revision, and derived analysis caches.
+    """持有一棵可变配置树、修订号和派生分析缓存。
 
-    The original text is not a second configuration state; source is derived from the current tree.
+    原始文本不是第二份配置状态；``source`` 始终由当前树派生。
     """
 
     @property
     def source(self):
-        """Serialize the current tree without final deployment policies.
+        """序列化当前树，但不应用最终部署策略。
 
-        This view preserves explicit tree structure; render separately applies deployment-specific empty-block policies.
+        该视图保留显式树结构；``render`` 会另外应用目标镜像的空块策略。
         """
         return self.writer.write(self.root)
 
     @property
     def revision(self):
-        """Expose the mutation generation for diagnostics.
+        """暴露当前修改代数，供诊断和缓存判断使用。
 
-        A completed semantic tree change advances the revision; restoring a rule can restore its prior revision.
+        有效树修改会推进修订号；规则恢复时可以连同其先前修订号一起还原。
         """
         return self._revision
 
     def edit(self):
-        """Create a structural edit collector for this document.
+        """为当前文档创建结构编辑收集器。
 
-        The editor collects operations so traversal can finish before child lists are changed.
+        Editor 先收集操作，使遍历完成后才改变子节点列表。
         """
         return ConfigEditor(self)
 
     def tree_changed(self):
-        """Publish a validated tree change to revision and query caches.
+        """把已校验的树修改同步到修订号和查询缓存。
 
-        Tree signatures prevent no-op bulk scopes from invalidating otherwise reusable analysis results.
+        树签名可避免无实际变化的批量作用域使可复用分析结果失效。
         """
         signature = tree_signature(self.root)
         if signature != getattr(self, "_last_signature", None):
@@ -49,9 +49,9 @@ class AstDocument:
             self._last_signature = signature
 
     def restore_tree(self, root, revision=None):
-        """Restore a rule backup and invalidate references and caches.
+        """恢复规则备份，并使旧节点引用和缓存失效。
 
-        Nodes from the replaced tree must be queried again before subsequent edits can use them.
+        被替换树中的节点必须重新查询后，才能用于后续编辑。
         """
         self.root = root
         self._last_signature = None
@@ -60,9 +60,9 @@ class AstDocument:
             self._revision = revision
 
     def __deepcopy__(self, memo):
-        """Copy the AST directly without rendering or reparsing it.
+        """直接复制 AST，不通过渲染或重新解析创建副本。
 
-        Parent relationships and derived caches must not retain references to the original document.
+        父节点关系和派生缓存不得继续引用原文档。
         """
         cloned = copy(self)
         cloned.root = self.root.clone()
@@ -75,8 +75,8 @@ class AstDocument:
         return cloned
 
     def normalize_header(self, header):
-        """Normalize outer command whitespace.
+        """规范化命令头首尾的空白。
 
-        Structural punctuation belongs to the parser and writer, not to business command matching.
+        结构标点由 Parser 和 Writer 处理，不参与业务命令匹配。
         """
         return header.strip()

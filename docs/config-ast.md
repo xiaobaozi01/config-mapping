@@ -6,7 +6,7 @@ Cisco 和 Juniper 使用纯 Python Parser，不依赖解析器生成器、Java �
 ## 节点与解析
 
 共享代码位于 `src/impl/common/config_ast/`，厂商的 `ast.py`、`parser.py` 和
-`writer.py` 位于各自实现包。节点保存 `header`、`children`、`parent`、`kind`、
+`writer.py` 位于各自的 `syntax/` 子包。节点保存 `header`、`children`、`parent`、`kind`、
 注释及原始 `location`。`header` 不含缩进和结构分号、大括号；`kind` 区分根、
 普通语句、块、group、注释、分隔符及不透明 banner。空块仍是块。
 
@@ -104,7 +104,7 @@ python scripts/check_docstrings.py
 
 Document 持有 `root`、修订和分析缓存，提供厂商能力入口；AST 节点保存结构及纯语义属性。
 节点不导入 Document、Writer 或 Editor，不提供 `text` 输出属性。子树文本使用
-`document.writer.subtree(node)`；Cisco 共享命令语义位于 `impl/cisco/semantics.py`。
+`document.writer.subtree(node)`；Cisco 共享命令语义位于 `impl/cisco/syntax/semantics.py`。
 
 清洗遍历位于厂商 `configuration_cleaning.py`，引用转换位于 `references.py`；
 Document 对应方法只转发调用。语法校验委托 Parser，规范化文本及最终输出策略由
