@@ -17,6 +17,7 @@ from impl.common.semantic_identity import (
 
 from .document import CiscoDocument, canonical_cisco_interface
 from .identity import resolve_cisco_identity
+from .rewrite_helpers import append_top_level
 
 
 @dataclass
@@ -1114,8 +1115,6 @@ def publish_expansion(document, statements):
     复用原上下文删除或替换并追加新块，可保留未受影响显式配置的原始格式。
     """
     from collections import defaultdict, deque
-
-    from .rules.support import append_top_level
 
     candidates = defaultdict(deque)
     for statement in statements:

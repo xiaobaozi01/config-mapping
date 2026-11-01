@@ -137,6 +137,16 @@ class PackageDependencyTest(unittest.TestCase):
                     f"{source_path} 违反依赖方向: {sorted(imported & blocked)}",
                 )
 
+    def test_cisco_rewrite_helpers_have_a_non_rule_owner(self):
+        from impl.cisco import rewrite_helpers
+        from impl.cisco.rules import support
+
+        for name in ("append_top_level", "delete_matching"):
+            with self.subTest(name=name):
+                helper = getattr(rewrite_helpers, name)
+                self.assertEqual(helper.__module__, rewrite_helpers.__name__)
+                self.assertIs(getattr(support, name), helper)
+
 
 class ProjectConfigLayoutTest(unittest.TestCase):
     def test_vendor_rule_yaml_lives_under_project_config(self):

@@ -8,7 +8,7 @@ from impl.common.lab_account import LAB_PASSWORD, LAB_USERNAME
 from impl.common.outcomes import CleanupOutcome
 
 from .document import CiscoDocument
-from .rules.support import append_top_level, delete_matching
+from .rewrite_helpers import append_top_level, delete_matching
 
 # 模块级预编译，避免每次调用重复编译正则，并把清洗数据与遍历逻辑分离。
 _MANAGEMENT_TOP_LEVEL: tuple[tuple[str, re.Pattern[str]], ...] = (

@@ -13,10 +13,12 @@ from impl.common.interface import (
     referenced_interface_names,
 )
 
+from .antlr.rewriting import format_fragment
 from .document import (
     CiscoContext,
     CiscoDocument,
 )
+from .rewrite_helpers import append_top_level, delete_matching
 
 
 def interface_nodes(document: CiscoDocument) -> list[CiscoContext]:
@@ -365,8 +367,6 @@ def rename_interface_tree(document, source, target, strip_bundle=False):
     在同一事务中同步修改父口和子口后缀，避免目标名中途出现半套定义；移出聚合时
     同时删除失效的 bundle 和 LACP 属性。
     """
-    from .rules.support import delete_matching
-
     source, target = document.resolve_interface(
         source
     ), document.resolve_interface(target)
@@ -404,8 +404,6 @@ def _clone_fragment(original, name, strip_bundle):
 
     先复制完整子树再格式化文本，保证注释和未知子命令一并保留，同时不修改源接口。
     """
-    from .rules.support import delete_matching, format_fragment
-
     candidate = CiscoDocument(format_fragment(original.text, 0))
     root = candidate.root.nodes[0]
     transaction = candidate.rewrite()
@@ -461,8 +459,6 @@ def _merge_duplicate_interface(document, preferred):
 
     改名或克隆可能产生重复定义，按语义身份去重可保留双方不同业务并删除冗余块。
     """
-    from .rules.support import format_fragment
-
     if preferred is None:
         return
     name = preferred.interface_name
@@ -499,8 +495,6 @@ def _insert_top_level_before_end(document, text):
 
     终止命令之后的内容不属于活动配置，因此新增定义必须通过统一顶层插入器进入主体。
     """
-    from .rules.support import append_top_level
-
     transaction = document.rewrite()
     append_top_level(transaction, document, text, "创建目标接口")
     transaction.commit()
