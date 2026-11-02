@@ -319,3 +319,20 @@ def test_invalid_list_indices_do_not_mutate_or_invalidate(document):
         with pytest.raises(IndexError):
             del children[index]
     assert document.mutation_epoch == epoch
+
+
+def test_failed_direct_container_writes_leave_ownership_unchanged(document):
+    foreign_document = CiscoDocument("hostname foreign\n")
+    foreign = foreign_document.root
+    original, epoch = document.source, document.mutation_epoch
+    for invalid in (foreign, None):
+        new = ConfigNode("new")
+        with pytest.raises((ValueError, AttributeError)):
+            document.root.children.extend([new, invalid])
+        assert document.source == original
+        assert document.mutation_epoch == epoch
+        assert new._tracker() is None
+        assert not document._tracker.belongs(new)
+        assert document._tracker.edges == set(
+            document.root.walk(include_self=True, include_formatting=True)
+        )

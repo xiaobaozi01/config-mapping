@@ -18,6 +18,8 @@ class TrackedChildren(list):
     List reads retain their usual behavior; writes describe reversible splices before exposing the new contents.
     """
 
+    __slots__ = ("_owner",)
+
     def __init__(self, owner, values=()):
         """Bind a child sequence to its owning node.
 
@@ -208,34 +210,52 @@ class TreeTracker:
 
         Cross-document sharing is rejected before publication; incoming edges are tracked separately from visited nodes to detect cycles.
         """
-        pending = [root]
+        self._adopt_many([root])
+
+    def _adopt_many(self, roots):
+        """Validate incoming subtrees before publishing any ownership changes.
+
+        A failed direct list write must leave the index unchanged even outside
+        an edit scope, including when a later child belongs to another document.
+        """
+        pending, prepared = list(roots), {}
         while pending:
             node = pending.pop()
-            if node in self.edges:
+            if node in self.edges or node in prepared:
                 continue
             other = node._tracker()
             if other is not None and other is not self:
                 raise ValueError("AST contains a foreign or shared child")
+            prepared[node] = tuple(node.children)
+            pending.extend(node.children)
+        for node in prepared:
             object.__setattr__(node, "_tracking", ref(self))
             self.edges.add(node)
-            for child in node.children:
-                if child not in self.edges:
-                    pending.append(child)
-                # adopt() must not mark an unvisited child as visited.
+        for node, children in prepared.items():
+            for child in children:
                 self._incoming(child, node, 1)
 
     def _incoming(self, child, parent, delta):
-        # Incoming entries are separate from the visited/adopted marker.
-        """Adjust the multiplicity of a child-to-parent edge.
+        """Adjust one incoming edge using compact storage for a single parent.
 
-        Changed children are queued for structural validation and eventual removal of disconnected index entries.
+        Multiple parents retain a count mapping until synchronization rejects
+        sharing or a later operation resolves a temporary move.
         """
-        parents = self.parents.setdefault(child, {})
+        link = self.parents.get(child)
+        parents = (
+            {link[0]: link[1]} if isinstance(link, tuple) else dict(link or {})
+        )
         count = parents.get(parent, 0) + delta
         if count:
             parents[parent] = count
         else:
             parents.pop(parent, None)
+        if len(parents) == 1:
+            self.parents[child] = next(iter(parents.items()))
+        elif parents:
+            self.parents[child] = parents
+        else:
+            self.parents.pop(child, None)
         self.dirty.add(child)
         self.detached.add(child)
 
@@ -271,10 +291,10 @@ class TreeTracker:
             if node in seen:
                 return False
             seen.add(node)
-            parents = self.parents.get(node, {})
-            if len(parents) != 1:
+            link = self.parents.get(node)
+            if not isinstance(link, tuple):
                 return False
-            node, count = next(iter(parents.items()))
+            node, count = link
             if count != 1:
                 return False
         return True
@@ -297,11 +317,12 @@ class TreeTracker:
 
         Multiplicity counts retain detection of duplicate children while unchanged edges require no subtree traversal.
         """
-        removed, added = Counter(old), Counter(new)
-        for child, count in (removed - added).items():
+        old_counts, new_counts = Counter(old), Counter(new)
+        removed, added = old_counts - new_counts, new_counts - old_counts
+        self._adopt_many(added)
+        for child, count in removed.items():
             self._incoming(child, node, -count)
-        for child, count in (added - removed).items():
-            self.adopt(child)
+        for child, count in added.items():
             self._incoming(child, node, count)
 
     def splice(self, node, children, index, old, new):
@@ -337,21 +358,19 @@ class TreeTracker:
         """
         dirty, self.dirty = self.dirty, set()
         for node in dirty:
-            parents = self.parents.get(node, {})
-            if len(parents) > 1 or any(
-                count != 1 for count in parents.values()
-            ):
+            link = self.parents.get(node)
+            if isinstance(link, dict) or (link is not None and link[1] != 1):
                 raise ValueError("AST contains a cycle or shared child")
-            if node is self.root and parents:
+            if node is self.root and link is not None:
                 raise ValueError("AST contains a cycle or shared child")
-            parent = next(iter(parents), None)
+            parent = link[0] if link is not None else None
             seen, ancestor = {node}, parent
             while ancestor is not None:
                 if ancestor in seen:
                     raise ValueError("AST contains a cycle or shared child")
                 seen.add(ancestor)
-                incoming = self.parents.get(ancestor, {})
-                ancestor = next(iter(incoming), None)
+                incoming = self.parents.get(ancestor)
+                ancestor = incoming[0] if isinstance(incoming, tuple) else None
             if node.parent is not parent:
                 old = node.parent
                 object.__setattr__(node, "parent", parent)
