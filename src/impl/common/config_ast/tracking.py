@@ -433,6 +433,33 @@ class TreeTracker:
         del self.journal[index:]
         self.sync_index = min(self.sync_index, index)
 
+    def restore_checkpoint(self, index):
+        """Undo a boundary and install an independently owned rollback clone.
+
+        The clone builder already establishes unique children and correct parent
+        links. A single indexing pass avoids validating that fresh clone twice;
+        the journaled root swap keeps enclosing rollback records usable.
+        """
+        self.undo(index)
+        original = self.root
+        cloned = original.clone()
+        edges, parents, pending = set(), {}, [cloned]
+        tracking = ref(self)
+        while pending:
+            node = pending.pop()
+            edges.add(node)
+            object.__setattr__(node, "_tracking", tracking)
+            for child in node.children:
+                parents[child] = (node, 1)
+                pending.append(child)
+        self.journal.append(("root", self, "root", original, cloned))
+        self.root = cloned
+        self.edges, self.parents = edges, parents
+        self.dirty.clear()
+        self.detached.clear()
+        self.epoch += 1
+        self.sync_index = len(self.journal)
+
     def clear(self):
         # Remove only disconnected components affected by this batch. Keeping
         # every retired subtree would turn the index into an unbounded cache.

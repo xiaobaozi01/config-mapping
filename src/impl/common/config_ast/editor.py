@@ -384,17 +384,7 @@ class EditScope:
         """
         if not self.rolled_back:
             tracker = self.document._tracker
-            tracker.undo(self.checkpoint)
-            # Only failure paths copy; the inverse root swap lets outer scopes
-            # continue to undo records that reference the retired tree.
-            restored = tracker.root
-            tracker.edges = set()
-            tracker.parents = {}
-            tracker.detached = set()
-            tracker.dirty = set()
-            tracker.replace_root(restored.clone(), restoring=True)
-            tracker.repair()
-            tracker.sync_index = len(tracker.journal)
+            tracker.restore_checkpoint(self.checkpoint)
             self.document._revision = self.revision
             self.document._interface_analysis_cache = type(
                 self.document._interface_analysis_cache
