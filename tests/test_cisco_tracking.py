@@ -68,8 +68,8 @@ class CiscoTrackingTest(unittest.TestCase):
             )
         )
         self.assertFalse(
-            document.validation.validate_interfaces(
-                set(), outcome.removed_interfaces
+            cisco_rules.validate_interfaces(
+                document, set(), outcome.removed_interfaces
             ).errors
         )
         self.assertEqual(
@@ -91,8 +91,10 @@ class CiscoTrackingTest(unittest.TestCase):
         self.assertIn("track object LOST-LINK 20", output)
         self.assertNotIn("Te 0/0/0/67", output)
         self.assertFalse(
-            document.validation.validate_interfaces(
-                set(), outcome.removed_interfaces | {"TenGigE0/0/0/67"}
+            cisco_rules.validate_interfaces(
+                document,
+                set(),
+                outcome.removed_interfaces | {"TenGigE0/0/0/67"},
             ).errors
         )
 
@@ -131,7 +133,8 @@ class CiscoTrackingTest(unittest.TestCase):
         self.assertTrue(top_node(document, "track LOST-LINK").active)
         self.assertIn("track object LOST-LINK 30", document.render())
         self.assertFalse(
-            document.validation.validate_interfaces(
+            cisco_rules.validate_interfaces(
+                document,
                 set(),
                 outcome.removed_interfaces,
                 outcome.deferred_interface_references,
@@ -168,8 +171,8 @@ class CiscoTrackingTest(unittest.TestCase):
         self.assertNotIn("vrrp 110", document.render())
         self.assertNotIn("track object LOST-LINK", document.render())
         self.assertFalse(
-            document.validation.validate_interfaces(
-                set(), outcome.removed_interfaces
+            cisco_rules.validate_interfaces(
+                document, set(), outcome.removed_interfaces
             ).errors
         )
 

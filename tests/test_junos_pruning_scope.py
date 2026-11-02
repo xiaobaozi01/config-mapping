@@ -6,6 +6,9 @@ from pathlib import Path
 from gns3_config_adaptor.impl.juniper_vjunos_router_23_2R1_15_config_mapping_handler.document import (
     JunosDocument,
 )
+from gns3_config_adaptor.impl.juniper_vjunos_router_23_2R1_15_config_mapping_handler.rules import (
+    validate_interfaces,
+)
 
 FIXTURES = Path(__file__).parent / "fixtures" / "core_pruning"
 
@@ -38,8 +41,8 @@ class JunosPruningScopeTest(unittest.TestCase):
         ):
             self.assertNotIn(removed, rendered)
         self.assertFalse(
-            document.validation.validate_interfaces(
-                set(), outcome.removed_interfaces
+            validate_interfaces(
+                document, set(), outcome.removed_interfaces
             ).errors
         )
 
@@ -100,8 +103,8 @@ class JunosPruningScopeTest(unittest.TestCase):
         ):
             self.assertNotIn(removed, rendered)
         self.assertFalse(
-            document.validation.validate_interfaces(
-                set(), outcome.removed_interfaces
+            validate_interfaces(
+                document, set(), outcome.removed_interfaces
             ).errors
         )
 

@@ -137,7 +137,8 @@ class JunosNniPruningTest(unittest.TestCase):
                 )
             },
         )
-        validation = document.validation.validate_interfaces(
+        validation = juniper_rules.validate_interfaces(
+            document,
             set(),
             outcome.removed_interfaces,
             outcome.deferred_interface_references,
@@ -203,7 +204,8 @@ class JunosNniPruningTest(unittest.TestCase):
     ):
         document = load("junos_nni_pruning_invalid.cfg")
 
-        outcome = document.validation.validate_interfaces(
+        outcome = juniper_rules.validate_interfaces(
+            document,
             set(),
             set(),
             strict_input_validation=False,

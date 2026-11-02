@@ -132,7 +132,7 @@ class RuleTemplateTest(unittest.TestCase):
             (replace(examples.VALIDATE_DEMO_RULE, rule_id="validate"),),
         ):
             self.assertEqual(
-                document.validation.validate_interfaces(set(), set()).errors, []
+                rules.validate_interfaces(document, set(), set()).errors, []
             )
         self.assertEqual(tree_signature(document.root), before)
 
@@ -204,9 +204,7 @@ class RuleTemplateTest(unittest.TestCase):
         before = tree_signature(document.root)
         rule = examples.VALIDATE_DEMO_RULE
         with patch.object(rules, "VALIDATION_RULES", (rule,)):
-            outcome = document.validation.validate_interfaces(
-                {"Gi0/0/0/0"}, set()
-            )
+            outcome = rules.validate_interfaces(document, {"Gi0/0/0/0"}, set())
         self.assertEqual(len(outcome.errors), 1)
         self.assertIn("interface GigabitEthernet0/0/0/0.100", outcome.errors[0])
         self.assertEqual(outcome.diagnostics[0]["rule_id"], rule.rule_id)

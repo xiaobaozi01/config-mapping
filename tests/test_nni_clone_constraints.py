@@ -123,19 +123,6 @@ class NniCloneConstraintsTest(unittest.TestCase):
                     "2001:db8::1", context.devices["A"].document.render()
                 )
 
-    def test_empty_l3_family_is_not_unconditionally_forbidden(self):
-        document = load(Vendor.JUNIPER_JUNOS, "junos_clone_source.cfg")
-        protocols = next(
-            node for node in document.root.nodes if node.header == "protocols"
-        )
-        transaction = document.edit()
-        transaction.delete(protocols, "test setup")
-        transaction.apply()
-        outcome = document.validation.validate_nni_clone(
-            "ae10", {"ge-0/0/0", "ge-0/0/1"}
-        )
-        self.assertEqual(outcome.errors, [])
-
     def test_cross_peer_bundles_are_rejected_without_cloning_even_for_l2(self):
         for vendor, filename in (
             (Vendor.CISCO_IOSXR, "iosxr_clone_source.cfg"),

@@ -2,11 +2,7 @@
 
 from ...common.domain.outcomes import InterfaceAdaptationOutcome
 from ..document import CiscoDocument
-from ..rules import (
-    validate_final_integrity,
-    validate_interfaces,
-)
-from ..support.clone_constraints import validate_nni_clone
+from ..rules import validate_final_integrity
 
 
 class CiscoValidationOperations:
@@ -24,15 +20,6 @@ class CiscoValidationOperations:
         """
         self._document = document
 
-    def validate_nni_clone(
-        self, source: str, target_interfaces: set[str]
-    ) -> InterfaceAdaptationOutcome:
-        """检查源接口能否复制到全部目标。
-
-        校验先于克隆执行。
-        """
-        return validate_nni_clone(self._document, source, target_interfaces)
-
     def validate_final_integrity(
         self,
         target_interfaces: set[str],
@@ -48,24 +35,4 @@ class CiscoValidationOperations:
             target_interfaces,
             removed_interfaces,
             deferred_interface_references,
-        )
-
-    def validate_interfaces(
-        self,
-        target_interfaces: set[str],
-        removed_interfaces: set[str],
-        deferred_interface_references=(),
-        *,
-        strict_input_validation: bool = True,
-    ) -> InterfaceAdaptationOutcome:
-        """执行完整接口和引用校验。
-
-        校验保持只读，结果由调用方写入报告。
-        """
-        return validate_interfaces(
-            self._document,
-            target_interfaces,
-            removed_interfaces,
-            deferred_interface_references,
-            strict_input_validation=strict_input_validation,
         )

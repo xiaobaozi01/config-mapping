@@ -6,6 +6,9 @@ from pathlib import Path
 from gns3_config_adaptor.impl.cisco_iosxrv9k_7_11_1_config_mapping_handler.document import (
     CiscoDocument,
 )
+from gns3_config_adaptor.impl.cisco_iosxrv9k_7_11_1_config_mapping_handler.rules import (
+    validate_interfaces,
+)
 
 FIXTURES = Path(__file__).parent / "fixtures" / "core_pruning"
 
@@ -33,9 +36,7 @@ class CiscoPruningTest(unittest.TestCase):
         self.assertIn("vrf SHARED", output)
         self.assertIn("65000:1", output)
         self.assertFalse(
-            doc.validation.validate_interfaces(
-                set(), result.removed_interfaces
-            ).errors
+            validate_interfaces(doc, set(), result.removed_interfaces).errors
         )
 
     def test_bgp_source_dependencies_remove_whole_sessions_and_templates(self):
@@ -98,7 +99,8 @@ class CiscoPruningTest(unittest.TestCase):
                 )
             },
         )
-        validation = doc.validation.validate_interfaces(
+        validation = validate_interfaces(
+            doc,
             set(),
             result.removed_interfaces,
             result.deferred_interface_references,
@@ -116,8 +118,10 @@ class CiscoPruningTest(unittest.TestCase):
             {"GigabitEthernet0/0/0/7": ["GigabitEthernet0/0/0/0"]}
         )
         self.assertFalse(
-            doc.validation.validate_interfaces(
-                {"GigabitEthernet0/0/0/0"}, result.removed_interfaces
+            validate_interfaces(
+                doc,
+                {"GigabitEthernet0/0/0/0"},
+                result.removed_interfaces,
             ).errors
         )
         output = doc.render()
@@ -150,9 +154,7 @@ class CiscoPruningTest(unittest.TestCase):
         ]:
             self.assertIn(retained, output)
         self.assertFalse(
-            doc.validation.validate_interfaces(
-                set(), outcome.removed_interfaces
-            ).errors
+            validate_interfaces(doc, set(), outcome.removed_interfaces).errors
         )
 
     def test_tunnel_is_preserved_but_unreferenced_line_track_is_removed(self):
@@ -162,7 +164,8 @@ class CiscoPruningTest(unittest.TestCase):
         self.assertTrue(
             any("tunnel source" in warning for warning in outcome.warnings)
         )
-        validation = doc.validation.validate_interfaces(
+        validation = validate_interfaces(
+            doc,
             set(),
             outcome.removed_interfaces,
             outcome.deferred_interface_references,
@@ -189,7 +192,8 @@ class CiscoPruningTest(unittest.TestCase):
             any("track LOST" in warning for warning in outcome.warnings)
         )
         self.assertEqual(doc.render().count("track LOST"), 2)
-        validation = doc.validation.validate_interfaces(
+        validation = validate_interfaces(
+            doc,
             set(),
             outcome.removed_interfaces,
             outcome.deferred_interface_references,
@@ -200,7 +204,8 @@ class CiscoPruningTest(unittest.TestCase):
         doc = CiscoDocument(
             "custom-service FOO\n" " bind-interface GigabitEthernet0/0/0/2\n"
         )
-        outcome = doc.validation.validate_interfaces(
+        outcome = validate_interfaces(
+            doc,
             set(),
             {"GigabitEthernet0/0/0/2"},
         )

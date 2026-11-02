@@ -31,6 +31,9 @@ from gns3_config_adaptor.impl.common.rules import (
     execute_prune_rules,
     execute_rules,
 )
+from gns3_config_adaptor.impl.juniper_vjunos_router_23_2R1_15_config_mapping_handler import (
+    rules as juniper_rules,
+)
 from gns3_config_adaptor.impl.juniper_vjunos_router_23_2R1_15_config_mapping_handler.document import (
     JunosDocument,
 )
@@ -106,9 +109,9 @@ class ConfigurationRuleTest(unittest.TestCase):
             CiscoVisitorRule("last", LastVisitor, readonly=True),
         )
         with patch.object(cisco_rules, "VALIDATION_RULES", rules):
-            result = CiscoDocument(
-                "hostname R1\n"
-            ).validation.validate_interfaces(set(), set())
+            result = cisco_rules.validate_interfaces(
+                CiscoDocument("hostname R1\n"), set(), set()
+            )
         self.assertEqual(result.errors, ["first-error", "last-error"])
         self.assertEqual(
             [item["rule_id"] for item in result.diagnostics], ["first", "last"]
@@ -118,12 +121,18 @@ class ConfigurationRuleTest(unittest.TestCase):
         cases = [
             (
                 CiscoDocument,
+                cisco_rules.validate_interfaces,
                 "interface_compatibility/iosxr_invalid.cfg",
                 {"GigabitEthernet0/0/0/0"},
             ),
-            (JunosDocument, "", {"ge-0/0/0"}),
+            (
+                JunosDocument,
+                juniper_rules.validate_interfaces,
+                "",
+                {"ge-0/0/0"},
+            ),
         ]
-        for factory, fixture, targets in cases:
+        for factory, validate_interfaces, fixture, targets in cases:
             source = (
                 (FIXTURES / fixture).read_text()
                 if fixture
@@ -134,7 +143,7 @@ class ConfigurationRuleTest(unittest.TestCase):
             with self.subTest(vendor=factory.vendor):
                 document = factory(source)
                 before = tree_signature(document.root)
-                result = document.validation.validate_interfaces(targets, set())
+                result = validate_interfaces(document, targets, set())
                 self.assertTrue(result.errors)
                 self.assertTrue(result.diagnostics)
                 self.assertEqual(

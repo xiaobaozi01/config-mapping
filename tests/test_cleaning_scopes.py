@@ -8,6 +8,9 @@ from gns3_config_adaptor.adaptation.cleaning_rules import CleaningRulesHandler
 from gns3_config_adaptor.impl.cisco_iosxrv9k_7_11_1_config_mapping_handler.document import (
     CiscoDocument,
 )
+from gns3_config_adaptor.impl.cisco_iosxrv9k_7_11_1_config_mapping_handler.rules import (
+    validate_interfaces,
+)
 from gns3_config_adaptor.impl.common.domain.policies import (
     SimulationAdaptationPolicy,
 )
@@ -109,9 +112,7 @@ class CleaningScopeTest(unittest.TestCase):
         document.compatibility.adapt_interfaces({"Gi0/0/0/0"})
         document.simulation.adapt(SimulationAdaptationPolicy(), {"Gi0/0/0/0"})
         self.assertIn("speed 1000", document.render())
-        validation = document.validation.validate_interfaces(
-            {"Gi0/0/0/0"}, set()
-        )
+        validation = validate_interfaces(document, {"Gi0/0/0/0"}, set())
         self.assertTrue(
             any("残留不兼容属性" in error for error in validation.errors)
         )

@@ -1,11 +1,7 @@
 """Juniper Junos 只读校验能力门面。"""
 
 from ..document import JunosDocument
-from ..rules import (
-    validate_final_integrity,
-    validate_interfaces,
-)
-from ..support.clone_constraints import validate_nni_clone
+from ..rules import validate_final_integrity
 
 
 class JunosValidationOperations:
@@ -23,13 +19,6 @@ class JunosValidationOperations:
         """
         self._document = document
 
-    def validate_nni_clone(self, source, target_interfaces):
-        """检查源接口能否复制到全部目标。
-
-        校验先于克隆执行。
-        """
-        return validate_nni_clone(self._document, source, target_interfaces)
-
     def validate_final_integrity(
         self,
         target_interfaces,
@@ -45,24 +34,4 @@ class JunosValidationOperations:
             target_interfaces,
             removed_interfaces,
             deferred_interface_references,
-        )
-
-    def validate_interfaces(
-        self,
-        target_interfaces,
-        removed_interfaces,
-        deferred_interface_references=(),
-        *,
-        strict_input_validation=True,
-    ):
-        """执行完整接口和引用校验。
-
-        校验保持只读，结果由调用方写入报告。
-        """
-        return validate_interfaces(
-            self._document,
-            target_interfaces,
-            removed_interfaces,
-            deferred_interface_references,
-            strict_input_validation=strict_input_validation,
         )

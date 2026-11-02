@@ -6,6 +6,9 @@ from pathlib import Path
 from gns3_config_adaptor.impl.cisco_iosxrv9k_7_11_1_config_mapping_handler.document import (
     CiscoDocument,
 )
+from gns3_config_adaptor.impl.cisco_iosxrv9k_7_11_1_config_mapping_handler.rules import (
+    validate_interfaces,
+)
 
 FIXTURES = Path(__file__).parent / "fixtures" / "core_pruning"
 
@@ -69,8 +72,8 @@ class CiscoBgpPruningTest(unittest.TestCase):
         self.assertNotIn("neighbor 192.0.2.3", output)
         self.assertNotIn("update-source GigabitEthernet0/0/0/1", output)
         self.assertFalse(
-            document.validation.validate_interfaces(
-                set(), result.removed_interfaces
+            validate_interfaces(
+                document, set(), result.removed_interfaces
             ).errors
         )
 

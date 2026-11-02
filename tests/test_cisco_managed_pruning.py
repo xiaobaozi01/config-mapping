@@ -151,7 +151,8 @@ class ManagedPruningFailureTest(unittest.TestCase):
         self.assertNotIn("track LOST", output)
         self.assertIn("track UNKNOWN", output)
         self.assertIn("custom-service FOO", output)
-        validation = document.validation.validate_interfaces(
+        validation = rules.validate_interfaces(
+            document,
             set(),
             {REMOVED},
             result.deferred_interface_references,
@@ -171,7 +172,8 @@ class ManagedPruningFailureTest(unittest.TestCase):
         output = document.render()
         self.assertNotIn("cost 99", output)
         self.assertIn("custom-service FOO", output)
-        validation = document.validation.validate_interfaces(
+        validation = rules.validate_interfaces(
+            document,
             set(),
             {REMOVED},
             result.deferred_interface_references,

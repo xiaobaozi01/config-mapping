@@ -143,7 +143,6 @@ IMPLEMENTATION_PACKAGE_MODULES = (
     "gns3_config_adaptor.impl.cisco_iosxrv9k_7_11_1_config_mapping_handler.operations.references",
     "gns3_config_adaptor.impl.cisco_iosxrv9k_7_11_1_config_mapping_handler.operations.simulation",
     "gns3_config_adaptor.impl.cisco_iosxrv9k_7_11_1_config_mapping_handler.operations.validation",
-    "gns3_config_adaptor.impl.cisco_iosxrv9k_7_11_1_config_mapping_handler.support.clone_constraints",
     "gns3_config_adaptor.impl.cisco_iosxrv9k_7_11_1_config_mapping_handler.support.empty_blocks",
     "gns3_config_adaptor.impl.cisco_iosxrv9k_7_11_1_config_mapping_handler.support.identity",
     "gns3_config_adaptor.impl.juniper_vjunos_router_23_2R1_15_config_mapping_handler.syntax.ast",
@@ -160,7 +159,6 @@ IMPLEMENTATION_PACKAGE_MODULES = (
     "gns3_config_adaptor.impl.juniper_vjunos_router_23_2R1_15_config_mapping_handler.operations.references",
     "gns3_config_adaptor.impl.juniper_vjunos_router_23_2R1_15_config_mapping_handler.operations.simulation",
     "gns3_config_adaptor.impl.juniper_vjunos_router_23_2R1_15_config_mapping_handler.operations.validation",
-    "gns3_config_adaptor.impl.juniper_vjunos_router_23_2R1_15_config_mapping_handler.support.clone_constraints",
     "gns3_config_adaptor.impl.juniper_vjunos_router_23_2R1_15_config_mapping_handler.support.empty_blocks",
     "gns3_config_adaptor.impl.juniper_vjunos_router_23_2R1_15_config_mapping_handler.support.identity",
 )
@@ -825,6 +823,51 @@ class HeaderParserOwnershipTest(unittest.TestCase):
 
 
 class CapabilityProtocolLayoutTest(unittest.TestCase):
+
+    def test_nni_clone_validation_capability_is_removed(self):
+        from gns3_config_adaptor.impl.common.domain.capabilities import (
+            ValidationOperations,
+        )
+
+        self.assertFalse(hasattr(ValidationOperations, "validate_nni_clone"))
+        self.assertFalse(
+            hasattr(
+                cisco_validation.CiscoValidationOperations,
+                "validate_nni_clone",
+            )
+        )
+        self.assertFalse(
+            hasattr(
+                junos_validation.JunosValidationOperations,
+                "validate_nni_clone",
+            )
+        )
+        for package in VENDOR_HANDLER_PACKAGES:
+            self.assertIsNone(
+                importlib.util.find_spec(
+                    f"gns3_config_adaptor.impl.{package}.support."
+                    "clone_constraints"
+                )
+            )
+
+    def test_validate_interfaces_is_not_exposed_by_validation_facade(self):
+        from gns3_config_adaptor.impl.common.domain.capabilities import (
+            ValidationOperations,
+        )
+
+        self.assertFalse(hasattr(ValidationOperations, "validate_interfaces"))
+        self.assertFalse(
+            hasattr(
+                cisco_validation.CiscoValidationOperations,
+                "validate_interfaces",
+            )
+        )
+        self.assertFalse(
+            hasattr(
+                junos_validation.JunosValidationOperations,
+                "validate_interfaces",
+            )
+        )
 
     def test_capability_protocols_are_importable(self):
         from gns3_config_adaptor.impl.common.domain import capabilities
