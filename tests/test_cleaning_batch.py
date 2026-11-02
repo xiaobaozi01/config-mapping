@@ -14,23 +14,32 @@ from unittest.mock import Mock, patch
 
 from cisco_support import nodes
 
-from adaptation.cleaning_rules import (
+from gns3_config_adaptor.adaptation.cleaning_rules import (
     CleaningPoint,
     CleaningResult,
     CleaningRulesHandler,
     ConfiguredCleaningRule,
 )
-from adaptation.models import ConversionContext, Vendor
-from impl.cisco.document import CiscoDocument, CiscoNode
-from impl.common.rules.cleaning import (
+from gns3_config_adaptor.adaptation.models import ConversionContext, Vendor
+from gns3_config_adaptor.impl.cisco_iosxrv9k_7_11_1_config_mapping_handler.document import (
+    CiscoDocument,
+    CiscoNode,
+)
+from gns3_config_adaptor.impl.cisco_iosxrv9k_7_11_1_config_mapping_handler.operations.cleaning import (
+    CiscoCleaningOperations,
+)
+from gns3_config_adaptor.impl.common.config_ast.model import tree_signature
+from gns3_config_adaptor.impl.common.rules.cleaning import (
     CleaningOperation,
     compile_cleaning_rules,
     matches_cleaning_path,
 )
-from impl.common.config_ast.model import tree_signature
-from impl.juniper.document import JunosDocument
-from impl.juniper.syntax.ast import base_header
-from impl.cisco.operations.cleaning import CiscoCleaningOperations
+from gns3_config_adaptor.impl.juniper_vjunos_router_23_2R1_15_config_mapping_handler.document import (
+    JunosDocument,
+)
+from gns3_config_adaptor.impl.juniper_vjunos_router_23_2R1_15_config_mapping_handler.syntax.ast import (
+    base_header,
+)
 
 
 def reference_clean(document, operations):
@@ -224,12 +233,12 @@ class CleaningBatchTest(unittest.TestCase):
             (
                 CiscoDocument,
                 "A\nOLD\n",
-                "impl.cisco.operations.declarative_cleaning",
+                "gns3_config_adaptor.impl.cisco_iosxrv9k_7_11_1_config_mapping_handler.operations.declarative_cleaning",
             ),
             (
                 JunosDocument,
                 "A; OLD;",
-                "impl.juniper.operations.declarative_cleaning",
+                "gns3_config_adaptor.impl.juniper_vjunos_router_23_2R1_15_config_mapping_handler.operations.declarative_cleaning",
             ),
         ]:
             with self.subTest(vendor=cls.vendor):
@@ -605,7 +614,7 @@ class CleaningBatchHandlerTest(unittest.TestCase):
         code.apply.assert_called_once_with(document)
 
     def test_code_rule_input_errors_still_short_circuit(self):
-        from adaptation.cleaning_rules import (
+        from gns3_config_adaptor.adaptation.cleaning_rules import (
             CiscoBannerCleaningRule,
             CleaningRuleError,
         )

@@ -5,8 +5,10 @@ from __future__ import annotations
 import unittest
 from pathlib import Path
 
-from impl.common.domain.policies import WashingPolicy
-from impl.juniper.document import JunosDocument
+from gns3_config_adaptor.impl.common.domain.policies import WashingPolicy
+from gns3_config_adaptor.impl.juniper_vjunos_router_23_2R1_15_config_mapping_handler.document import (
+    JunosDocument,
+)
 
 FIXTURES = Path(__file__).parent / "fixtures" / "group_configs"
 

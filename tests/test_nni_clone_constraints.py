@@ -3,8 +3,8 @@
 import unittest
 from pathlib import Path
 
-from adaptation.factory import parse_document
-from adaptation.models import (
+from gns3_config_adaptor.adaptation.factory import parse_document
+from gns3_config_adaptor.adaptation.models import (
     ConversionContext,
     Device,
     DeviceContext,
@@ -12,8 +12,8 @@ from adaptation.models import (
     TopologyWorkbook,
     Vendor,
 )
-from adaptation.nni import NNIHandler
-from adaptation.profiles import load_profiles
+from gns3_config_adaptor.adaptation.nni import NNIHandler
+from gns3_config_adaptor.adaptation.profiles import load_profiles
 
 FIXTURES = Path(__file__).parent / "fixtures"
 CONFIGS = FIXTURES / "interface_compatibility"

@@ -5,11 +5,19 @@ from __future__ import annotations
 import unittest
 from pathlib import Path
 
-from adaptation.cleaning_rules import CleaningRulesHandler
-from impl.cisco.document import CiscoDocument
-from impl.common.domain.interface import referenced_interface_names
-from impl.juniper.document import JunosDocument
-from impl.juniper.operations import interfaces as junos_interfaces
+from gns3_config_adaptor.adaptation.cleaning_rules import CleaningRulesHandler
+from gns3_config_adaptor.impl.cisco_iosxrv9k_7_11_1_config_mapping_handler.document import (
+    CiscoDocument,
+)
+from gns3_config_adaptor.impl.common.domain.interface import (
+    referenced_interface_names,
+)
+from gns3_config_adaptor.impl.juniper_vjunos_router_23_2R1_15_config_mapping_handler.document import (
+    JunosDocument,
+)
+from gns3_config_adaptor.impl.juniper_vjunos_router_23_2R1_15_config_mapping_handler.operations import (
+    interfaces as junos_interfaces,
+)
 
 FIXTURES = Path(__file__).parent / "fixtures" / "interfaces"
 

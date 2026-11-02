@@ -6,13 +6,20 @@ from tempfile import TemporaryDirectory
 
 import yaml
 
-from impl.common.rules.empty_blocks import EmptyBlockPolicy, load_empty_block_policy
+from gns3_config_adaptor.impl.common.rules.empty_blocks import (
+    EmptyBlockPolicy,
+    load_empty_block_policy,
+)
 
 
 class EmptyBlockPolicyTest(unittest.TestCase):
+
     def load_policy(self, path):
         return load_empty_block_policy(
-            path, vendor="test_vendor", image="test_image", actions=("omit", "keep")
+            path,
+            vendor="test_vendor",
+            image="test_image",
+            actions=("omit", "keep"),
         )
 
     def test_invalid_rules_fail_fast(self):
@@ -44,12 +51,16 @@ class EmptyBlockPolicyTest(unittest.TestCase):
             path = Path(directory) / "empty_blocks.yaml"
             for change in invalid:
                 with self.subTest(change=change):
-                    path.write_text(yaml.safe_dump(base | change), encoding="utf-8")
+                    path.write_text(
+                        yaml.safe_dump(base | change), encoding="utf-8"
+                    )
                     with self.assertRaises(ValueError):
                         self.load_policy(path)
 
             for payload in (
-                None, [], "invalid",
+                None,
+                [],
+                "invalid",
                 {key: value for key, value in base.items() if key != "rules"},
             ):
                 with self.subTest(payload=payload):

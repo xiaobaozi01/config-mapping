@@ -3,8 +3,8 @@
 import unittest
 from pathlib import Path
 
-from adaptation.interfaces import ReferenceRewriteHandler
-from adaptation.models import (
+from gns3_config_adaptor.adaptation.interfaces import ReferenceRewriteHandler
+from gns3_config_adaptor.adaptation.models import (
     ConversionContext,
     Device,
     DeviceContext,
@@ -12,11 +12,15 @@ from adaptation.models import (
     TopologyWorkbook,
     Vendor,
 )
-from adaptation.nni import NNIHandler
-from adaptation.pipeline import build_default_pipeline
-from adaptation.profiles import load_profiles
-from impl.juniper.document import JunosDocument
-from impl.juniper.operations import interfaces as junos_interfaces
+from gns3_config_adaptor.adaptation.nni import NNIHandler
+from gns3_config_adaptor.adaptation.pipeline import build_default_pipeline
+from gns3_config_adaptor.adaptation.profiles import load_profiles
+from gns3_config_adaptor.impl.juniper_vjunos_router_23_2R1_15_config_mapping_handler.document import (
+    JunosDocument,
+)
+from gns3_config_adaptor.impl.juniper_vjunos_router_23_2R1_15_config_mapping_handler.operations import (
+    interfaces as junos_interfaces,
+)
 
 FIXTURES = Path(__file__).parent / "fixtures" / "reference_rewrite"
 
@@ -50,8 +54,12 @@ def nni_context():
 class JunosReferenceRewriteTest(unittest.TestCase):
 
     def test_reference_rewriter_is_owned_by_reference_service(self):
-        from impl.juniper import document
-        from impl.juniper.operations import references
+        from gns3_config_adaptor.impl.juniper_vjunos_router_23_2R1_15_config_mapping_handler import (
+            document,
+        )
+        from gns3_config_adaptor.impl.juniper_vjunos_router_23_2R1_15_config_mapping_handler.operations import (
+            references,
+        )
 
         self.assertFalse(hasattr(document, "_ReferenceRewriter"))
         self.assertEqual(

@@ -5,9 +5,13 @@ from __future__ import annotations
 import unittest
 from pathlib import Path
 
-from adaptation.cleaning_rules import CleaningRulesHandler
-from impl.cisco.document import CiscoDocument
-from impl.juniper.document import JunosDocument
+from gns3_config_adaptor.adaptation.cleaning_rules import CleaningRulesHandler
+from gns3_config_adaptor.impl.cisco_iosxrv9k_7_11_1_config_mapping_handler.document import (
+    CiscoDocument,
+)
+from gns3_config_adaptor.impl.juniper_vjunos_router_23_2R1_15_config_mapping_handler.document import (
+    JunosDocument,
+)
 
 FIXTURES = Path(__file__).parent / "fixtures" / "type_constraints"
 
@@ -27,8 +31,16 @@ class TypeConstraintCleaningTest(unittest.TestCase):
         """接口下的 LLDP/CDP、以太网 CFM/OAM 全部删除。"""
         doc = CiscoDocument((FIXTURES / "iosxr.cfg").read_text())
         handler = CleaningRulesHandler._configured_rules()
-        lldp_rule = next(r for r in handler if r.rule_id == "cisco.remove.interface.link.discovery")
-        cfm_rule = next(r for r in handler if r.rule_id == "cisco.remove.interface.ethernet.oam")
+        lldp_rule = next(
+            r
+            for r in handler
+            if r.rule_id == "cisco.remove.interface.link.discovery"
+        )
+        cfm_rule = next(
+            r
+            for r in handler
+            if r.rule_id == "cisco.remove.interface.ethernet.oam"
+        )
 
         lldp_rule.apply(doc)
         cfm_rule.apply(doc)
@@ -104,8 +116,16 @@ class TypeConstraintCleaningTest(unittest.TestCase):
         """protocols 下的 LLDP 和以太网 OAM 删除。"""
         doc = JunosDocument((FIXTURES / "junos.cfg").read_text())
         handler = CleaningRulesHandler._configured_rules()
-        lldp_rule = next(r for r in handler if r.rule_id == "juniper.remove.protocols.link.discovery")
-        oam_rule = next(r for r in handler if r.rule_id == "juniper.remove.protocols.ethernet.oam")
+        lldp_rule = next(
+            r
+            for r in handler
+            if r.rule_id == "juniper.remove.protocols.link.discovery"
+        )
+        oam_rule = next(
+            r
+            for r in handler
+            if r.rule_id == "juniper.remove.protocols.ethernet.oam"
+        )
 
         lldp_rule.apply(doc)
         oam_rule.apply(doc)
@@ -129,7 +149,9 @@ class TypeConstraintCleaningTest(unittest.TestCase):
 
         self.assertIn("class-of-service {", output)
         self.assertIn("scheduler-maps {", output)
-        self.assertNotIn("interfaces {", output.split("class-of-service {")[1].split("}")[0])
+        self.assertNotIn(
+            "interfaces {", output.split("class-of-service {")[1].split("}")[0]
+        )
 
     def test_junos_ospf_bfd_is_preserved(self):
         """路由协议内的 BFD 配置不受影响。"""
@@ -180,7 +202,9 @@ class OptionalCleaningRuleCompletenessTest(unittest.TestCase):
         self.assertNotIn("hello-authentication", output)
         self.assertIn("metric 10;", output)
 
-    def test_junos_flow_statistics_removes_instance_references_and_empty_blocks(self):
+    def test_junos_flow_statistics_removes_instance_references_and_empty_blocks(
+        self,
+    ):
         output = apply_categories(
             JunosDocument((FIXTURES / "junos_optional.cfg").read_text()),
             "juniper_junos",

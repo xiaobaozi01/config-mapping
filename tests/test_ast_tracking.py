@@ -7,20 +7,27 @@ from unittest.mock import patch
 
 import pytest
 
-from impl.cisco.document import CiscoDocument
-from impl.cisco.rules.runtime import (
+from gns3_config_adaptor.impl.cisco_iosxrv9k_7_11_1_config_mapping_handler.document import (
+    CiscoDocument,
+)
+from gns3_config_adaptor.impl.cisco_iosxrv9k_7_11_1_config_mapping_handler.rules.runtime import (
     CiscoRuleVisitor,
     CiscoVisitorRule,
     RuleContractError,
 )
-from impl.common.config_ast.editor import EditConflictError
-from impl.common.config_ast.model import (
+from gns3_config_adaptor.impl.common.config_ast.editor import EditConflictError
+from gns3_config_adaptor.impl.common.config_ast.model import (
     ConfigNode,
     SourceLocation,
     tree_signature,
 )
-from impl.juniper.document import JunosDocument
-from impl.juniper.rules.runtime import JunosRuleVisitor, JunosVisitorRule
+from gns3_config_adaptor.impl.juniper_vjunos_router_23_2R1_15_config_mapping_handler.document import (
+    JunosDocument,
+)
+from gns3_config_adaptor.impl.juniper_vjunos_router_23_2R1_15_config_mapping_handler.rules.runtime import (
+    JunosRuleVisitor,
+    JunosVisitorRule,
+)
 
 
 @pytest.fixture(params=["cisco", "juniper"])
@@ -243,7 +250,7 @@ def test_successful_rules_and_warm_queries_do_not_scan_or_clone(document):
         patch.object(ConfigNode, "clone", side_effect=AssertionError("clone")),
         patch.object(ConfigNode, "walk", side_effect=AssertionError("walk")),
         patch(
-            "impl.common.config_ast.model.tree_signature",
+            "gns3_config_adaptor.impl.common.config_ast.model.tree_signature",
             side_effect=AssertionError("signature"),
         ),
     ):
@@ -357,7 +364,7 @@ def test_warm_queries_have_no_signature_or_rebinding_calls(document):
 
 
 def test_header_validation_only_binds_detached_fragments(document):
-    from impl.common.config_ast import bind_parents
+    from gns3_config_adaptor.impl.common.config_ast import bind_parents
 
     def bind_fragment(root):
         assert root is not document.root
@@ -369,7 +376,8 @@ def test_header_validation_only_binds_detached_fragments(document):
     if isinstance(document, JunosDocument):
         node, header = node.nodes[0], "host-name new"
     with patch(
-        "impl.common.config_ast.bind_parents", side_effect=bind_fragment
+        "gns3_config_adaptor.impl.common.config_ast.bind_parents",
+        side_effect=bind_fragment,
     ):
         editor = document.edit()
         editor.replace_header(node, header, "rename")
@@ -378,7 +386,9 @@ def test_header_validation_only_binds_detached_fragments(document):
 
 
 def test_untracked_protocol_nodes_never_reuse_stale_analysis():
-    from impl.common.support.interface_cache import InterfaceAnalysisCache
+    from gns3_config_adaptor.impl.common.support.interface_cache import (
+        InterfaceAnalysisCache,
+    )
 
     class PlainNode:
         __slots__ = ("header",)

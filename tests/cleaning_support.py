@@ -2,13 +2,15 @@
 
 from types import SimpleNamespace
 
-from adaptation.cleaning_rules import (
+from gns3_config_adaptor.adaptation.cleaning_rules import (
     CleaningPoint,
     CleaningRulesHandler,
     ConfiguredCleaningRule,
 )
-from adaptation.models import Vendor
-from impl.common.domain.policies import SimulationAdaptationPolicy
+from gns3_config_adaptor.adaptation.models import Vendor
+from gns3_config_adaptor.impl.common.domain.policies import (
+    SimulationAdaptationPolicy,
+)
 
 
 def clean_hardware(document, targets, policy=None):

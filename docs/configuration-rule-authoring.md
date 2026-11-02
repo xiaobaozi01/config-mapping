@@ -6,7 +6,7 @@ Cisco 和 Juniper 的裁剪、接口适配、兼容校验、最终校验和模�
 `CiscoVisitorRule` 与 `JunosVisitorRule`：注册项声明范围和执行策略，Visitor 编写
 匹配及业务动作，会话与执行器管理文本事务和结果。底层机制分别见
 [手写 AST 说明](config-ast.md)。Cisco 完整可运行模板见
-[`rules/examples.py`](../src/impl/cisco/rules/examples.py)，
+[`rules/examples.py`](../src/gns3_config_adaptor/impl/cisco_iosxrv9k_7_11_1_config_mapping_handler/rules/examples.py)，
 内网大模型可直接使用[编写提示词](rule-templates/internal-model-prompt.md)。
 
 ## 先决定放在哪里
@@ -19,12 +19,12 @@ Cisco 和 Juniper 的裁剪、接口适配、兼容校验、最终校验和模�
 | 调整模拟运行参数 | `SIMULATION_RULES` |
 | 检查最终配置，不修改 AST | `VALIDATION_RULES` |
 
-Cisco 注册表位于 `src/impl/cisco/rules/__init__.py`，Junos 位于 `src/impl/juniper/rules/__init__.py`。没有新增规则配置文件；代码规则的增删通过注册表完成。非 NNI 接口、广播域、网关和 BGP 源的基础裁剪保留为一个完整规则；跨对象的 track 裁剪和普通接口绑定清理分别注册，按依赖顺序执行。
+Cisco 注册表位于 `src/gns3_config_adaptor/impl/cisco_iosxrv9k_7_11_1_config_mapping_handler/rules/__init__.py`，Junos 位于 `src/gns3_config_adaptor/impl/juniper_vjunos_router_23_2R1_15_config_mapping_handler/rules/__init__.py`。没有新增规则配置文件；代码规则的增删通过注册表完成。非 NNI 接口、广播域、网关和 BGP 源的基础裁剪保留为一个完整规则；跨对象的 track 裁剪和普通接口绑定清理分别注册，按依赖顺序执行。
 
 Cisco 的规则代码和镜像 YAML 集中在同一个包：
 
 ```text
-impl/cisco/rules/
+gns3_config_adaptor/impl/cisco_iosxrv9k_7_11_1_config_mapping_handler/rules/
 ├── __init__.py             # 显式阶段注册表与执行入口
 ├── runtime.py              # 会话、Visitor 生命周期、提交与结果映射
 ├── scopes.py               # 文档、目标接口、模拟数据口范围
@@ -36,7 +36,7 @@ impl/cisco/rules/
 └── xrv9000/                # 镜像清洗与输入整理 YAML
 ```
 
-`from impl.cisco import rules` 访问同一套注册表与执行入口。新增业务模块直接放在此包内，再在 `__init__.py` 登记。共享协议仍位于 `impl/common/rules/engine.py`。
+`from gns3_config_adaptor.impl.cisco_iosxrv9k_7_11_1_config_mapping_handler import rules` 访问同一套注册表与执行入口。新增业务模块直接放在此包内，再在 `__init__.py` 登记。共享协议仍位于 `gns3_config_adaptor/impl/common/rules/engine.py`。
 
 接口删除的多级依赖按具体对象建模。Cisco `rules/pruning.py` 的 `TRACK_DEPENDENCIES_RULE` 以 `cisco.prune.track_dependencies` 注册到 `PRUNE_RULES`，通过 `TrackDependenciesVisitor` 处理“被删除接口 → line-protocol track → VRRP track object”链：只解除对象跟踪，保留 VRRP 组的其他配置。发现未知消费者或不明确的 track 定义时停止自动删除、保留原配置并记录 warning；它不属于固定命令清洗。普通非 NNI 裁剪和冗余成员清理都执行同一个 `PRUNE_RULES` 注册表；移除该条目会同时停止这两个入口的 track 裁剪。
 
@@ -65,11 +65,11 @@ impl/cisco/rules/
 
 ## 新增接口适配或校验
 
-从 `impl.cisco.rules.support` 导入编写接口，继承 `CiscoRuleVisitor`（继承共享 ConfigVisitor）。例如新增一项实验 MTU 上限校验：
+从 `gns3_config_adaptor.impl.cisco_iosxrv9k_7_11_1_config_mapping_handler.rules.support` 导入编写接口，继承 `CiscoRuleVisitor`（继承共享 ConfigVisitor）。例如新增一项实验 MTU 上限校验：
 
 ```python
-from impl.common.domain.interface import InterfaceKind
-from impl.cisco.rules.support import CiscoRuleVisitor, CiscoVisitorRule, InterfaceScope
+from gns3_config_adaptor.impl.common.domain.interface import InterfaceKind
+from gns3_config_adaptor.impl.cisco_iosxrv9k_7_11_1_config_mapping_handler.rules.support import CiscoRuleVisitor, CiscoVisitorRule, InterfaceScope
 
 
 class TargetMtuVisitor(CiscoRuleVisitor):
@@ -94,7 +94,7 @@ TARGET_MTU_RULE = CiscoVisitorRule(
 这是新增实验约束的例子，不是默认的设备能力限制。接口适配使用同样的注册方式加入
 `ADAPT_RULES`；省略 `readonly=True`，通过 `self.session.edits` 声明修改。接口
 Outcome 默认从成功提交的实际编辑生成，不手工追加计划动作。Junos 使用相同的
-Visitor 会话生命周期，入口位于 `impl.juniper.rules.support`。
+Visitor 会话生命周期，入口位于 `gns3_config_adaptor.impl.juniper_vjunos_router_23_2R1_15_config_mapping_handler.rules.support`。
 
 每个阶段使用自己的上下文：`PruneContext` 提供保护父口，以及前序规则已删除的接口和地址集合；`remove_non_nni` 区分完整裁剪与仅处理已删除成员依赖，`AdaptContext` 提供目标接口，`ValidationContext` 还提供已删除接口。裁剪执行器按注册顺序合并每条规则的删除结果，为下一条规则创建新上下文快照；其他阶段不需要传递删除状态。上下文使用 frozen dataclass 和 frozenset；规则不依赖应用层的 `ConversionContext`。
 
@@ -103,8 +103,8 @@ Visitor 会话生命周期，入口位于 `impl.juniper.rules.support`。
 模拟规则指定 `SimulationAdaptationOutcome` 工厂及分类结果映射，使用已有镜像 Profile 中的 `SimulationAdaptationPolicy` 读取参数。需要新参数时在现有策略及 Profile 加载器中明确增加，不另建规则开关文件。以下注册假设业务 Visitor 已实现，编辑详情携带 `category`：
 
 ```python
-from impl.common.domain.outcomes import SimulationAdaptationOutcome
-from impl.cisco.rules.support import simulation_result
+from gns3_config_adaptor.impl.common.domain.outcomes import SimulationAdaptationOutcome
+from gns3_config_adaptor.impl.cisco_iosxrv9k_7_11_1_config_mapping_handler.rules.support import simulation_result
 
 
 def stable_mode(context):
@@ -157,8 +157,8 @@ Visitor 不自行调用 Editor.apply 或文档修改方法。执行器遍历完�
 ## 从模板新增一条规则
 
 1. 简单删除或替换复制 [`rule-templates/cleaning.yaml`](rule-templates/cleaning.yaml) 的列表项到实际镜像 cleaning.yaml，填写匹配路径、动作及原因。模板文件本身不会加载。
-2. 代码规则从 `rules/examples.py` 选择 Visitor、选择器及 `CiscoVisitorRule` 常量，复制到 `impl/cisco/rules/<业务名>.py`；替换 RULE_DEMO 合成条件与业务动作。
-3. 在 `impl/cisco/rules/__init__.py` 显式导入新模块，在对应元组加入 `module.NEW_RULE`。放置位置决定顺序，尤其依赖裁剪应位于产生删除集合的规则之后；条件用具名函数声明，不使用 lambda。
+2. 代码规则从 `rules/examples.py` 选择 Visitor、选择器及 `CiscoVisitorRule` 常量，复制到 `gns3_config_adaptor/impl/cisco_iosxrv9k_7_11_1_config_mapping_handler/rules/<业务名>.py`；替换 RULE_DEMO 合成条件与业务动作。
+3. 在 `gns3_config_adaptor/impl/cisco_iosxrv9k_7_11_1_config_mapping_handler/rules/__init__.py` 显式导入新模块，在对应元组加入 `module.NEW_RULE`。放置位置决定顺序，尤其依赖裁剪应位于产生删除集合的规则之后；条件用具名函数声明，不使用 lambda。
 4. 若希望校验同时参与独立兼容校验和最终校验，加入 COMPATIBILITY_VALIDATION_RULES；仅针对最终状态的校验加入 VALIDATION_RULES 的附加部分，避免在两个集合中重复登记。
 5. 在 tests/fixtures 下提供合成 .cfg，复制对应模板测试，执行范围、冲突、幂等性和真实 Document 入口检查，再运行全量回归。
 

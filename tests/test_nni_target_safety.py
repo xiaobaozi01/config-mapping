@@ -4,9 +4,9 @@ import tempfile
 import unittest
 from pathlib import Path
 
-from adaptation.factory import parse_document
-from adaptation.interfaces import NonNNICleanupHandler
-from adaptation.models import (
+from gns3_config_adaptor.adaptation.factory import parse_document
+from gns3_config_adaptor.adaptation.interfaces import NonNNICleanupHandler
+from gns3_config_adaptor.adaptation.models import (
     ConversionContext,
     Device,
     DeviceContext,
@@ -14,9 +14,9 @@ from adaptation.models import (
     TopologyWorkbook,
     Vendor,
 )
-from adaptation.nni import NNIHandler
-from adaptation.profiles import load_profiles
-from adaptation.topology import TopologyPreflightHandler
+from gns3_config_adaptor.adaptation.nni import NNIHandler
+from gns3_config_adaptor.adaptation.profiles import load_profiles
+from gns3_config_adaptor.adaptation.topology import TopologyPreflightHandler
 
 FIXTURES = Path(__file__).parent / "fixtures" / "interface_compatibility"
 

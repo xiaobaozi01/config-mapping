@@ -7,18 +7,27 @@ from unittest.mock import patch
 
 import pytest
 
-from impl.cisco.document import CiscoDocument
-from impl.common.config_ast import (
+from gns3_config_adaptor.impl.cisco_iosxrv9k_7_11_1_config_mapping_handler.document import (
+    CiscoDocument,
+)
+from gns3_config_adaptor.impl.common.config_ast import (
     ConfigListener,
     ConfigNode,
     ConfigTreeWalker,
     ConfigVisitor,
 )
-from impl.common.config_ast.editor import EditConflictError
-from impl.common.config_ast.model import tree_signature
-from impl.common.domain.outcomes import InterfaceAdaptationOutcome
-from impl.juniper.document import JunosDocument
-from impl.juniper.rules.runtime import JunosVisitorRule, RuleContractError
+from gns3_config_adaptor.impl.common.config_ast.editor import EditConflictError
+from gns3_config_adaptor.impl.common.config_ast.model import tree_signature
+from gns3_config_adaptor.impl.common.domain.outcomes import (
+    InterfaceAdaptationOutcome,
+)
+from gns3_config_adaptor.impl.juniper_vjunos_router_23_2R1_15_config_mapping_handler.document import (
+    JunosDocument,
+)
+from gns3_config_adaptor.impl.juniper_vjunos_router_23_2R1_15_config_mapping_handler.rules.runtime import (
+    JunosVisitorRule,
+    RuleContractError,
+)
 
 
 @pytest.mark.parametrize(
@@ -287,7 +296,10 @@ def test_insert_after_preserves_declaration_order():
 
 def test_cisco_cache_tracks_mutable_headers():
     document = CiscoDocument("interface Gi0/0/0/0\n")
-    assert document.interfaces.analysis.interface_specs()[0].name == "GigabitEthernet0/0/0/0"
+    assert (
+        document.interfaces.analysis.interface_specs()[0].name
+        == "GigabitEthernet0/0/0/0"
+    )
     document.root.nodes[0].header = "interface Loopback0"
     assert document.interfaces.analysis.interface_specs()[0].name == "Loopback0"
 

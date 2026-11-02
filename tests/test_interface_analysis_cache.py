@@ -9,16 +9,37 @@ from unittest.mock import patch
 
 from cisco_support import append_child, delete_context, replace_header
 
-from impl.cisco.document import CiscoDocument
-from impl.cisco.operations import interfaces as cisco_interfaces
-from impl.cisco.operations.interfaces import analysis as cisco_analysis
-from impl.cisco.operations.interfaces import business as cisco_business
-from impl.common.domain.interface import InterfaceKind, InterfaceSpec
-from impl.juniper.document import JunosDocument
-from impl.juniper.operations import interfaces as junos_interfaces
-from impl.juniper.operations.interfaces import analysis as junos_analysis
-from impl.juniper.operations.interfaces import business as junos_business
-from impl.juniper.syntax.ast import top_block
+from gns3_config_adaptor.impl.cisco_iosxrv9k_7_11_1_config_mapping_handler.document import (
+    CiscoDocument,
+)
+from gns3_config_adaptor.impl.cisco_iosxrv9k_7_11_1_config_mapping_handler.operations import (
+    interfaces as cisco_interfaces,
+)
+from gns3_config_adaptor.impl.cisco_iosxrv9k_7_11_1_config_mapping_handler.operations.interfaces import (
+    analysis as cisco_analysis,
+)
+from gns3_config_adaptor.impl.cisco_iosxrv9k_7_11_1_config_mapping_handler.operations.interfaces import (
+    business as cisco_business,
+)
+from gns3_config_adaptor.impl.common.domain.interface import (
+    InterfaceKind,
+    InterfaceSpec,
+)
+from gns3_config_adaptor.impl.juniper_vjunos_router_23_2R1_15_config_mapping_handler.document import (
+    JunosDocument,
+)
+from gns3_config_adaptor.impl.juniper_vjunos_router_23_2R1_15_config_mapping_handler.operations import (
+    interfaces as junos_interfaces,
+)
+from gns3_config_adaptor.impl.juniper_vjunos_router_23_2R1_15_config_mapping_handler.operations.interfaces import (
+    analysis as junos_analysis,
+)
+from gns3_config_adaptor.impl.juniper_vjunos_router_23_2R1_15_config_mapping_handler.operations.interfaces import (
+    business as junos_business,
+)
+from gns3_config_adaptor.impl.juniper_vjunos_router_23_2R1_15_config_mapping_handler.syntax.ast import (
+    top_block,
+)
 
 CISCO = (
     "interface Gi0/0/0/1\n bundle id 10 mode active\n!\n"

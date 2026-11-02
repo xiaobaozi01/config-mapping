@@ -6,13 +6,16 @@ import json
 import unittest
 from pathlib import Path
 
-from adaptation.models import (
+from gns3_config_adaptor.adaptation.models import (
     ConversionContext,
     EventKind,
     InterfaceMapping,
     TopologyWorkbook,
 )
-from impl.common.domain.policies import SimulationAdaptationPolicy, WashingPolicy
+from gns3_config_adaptor.impl.common.domain.policies import (
+    SimulationAdaptationPolicy,
+    WashingPolicy,
+)
 
 
 class DomainVocabularyValidationTest(unittest.TestCase):

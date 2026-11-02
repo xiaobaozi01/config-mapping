@@ -4,14 +4,26 @@ import unittest
 from dataclasses import replace
 from unittest.mock import patch
 
-from impl.cisco import rules
-from impl.cisco.document import CiscoDocument
-from impl.cisco.syntax.parser import ConfigurationParseError
-from impl.cisco.rules import pruning
-from impl.cisco.rules.support import CiscoVisitorRule
-from impl.common.config_ast.model import tree_signature
-from impl.common.domain.outcomes import InterfacePruningOutcome
-from impl.common.rules import PruneContext
+from gns3_config_adaptor.impl.cisco_iosxrv9k_7_11_1_config_mapping_handler import (
+    rules,
+)
+from gns3_config_adaptor.impl.cisco_iosxrv9k_7_11_1_config_mapping_handler.document import (
+    CiscoDocument,
+)
+from gns3_config_adaptor.impl.cisco_iosxrv9k_7_11_1_config_mapping_handler.rules import (
+    pruning,
+)
+from gns3_config_adaptor.impl.cisco_iosxrv9k_7_11_1_config_mapping_handler.rules.support import (
+    CiscoVisitorRule,
+)
+from gns3_config_adaptor.impl.cisco_iosxrv9k_7_11_1_config_mapping_handler.syntax.parser import (
+    ConfigurationParseError,
+)
+from gns3_config_adaptor.impl.common.config_ast.model import tree_signature
+from gns3_config_adaptor.impl.common.domain.outcomes import (
+    InterfacePruningOutcome,
+)
+from gns3_config_adaptor.impl.common.rules import PruneContext
 
 REMOVED = "GigabitEthernet0/0/0/2"
 FULL_SOURCE = (
@@ -87,7 +99,7 @@ class ManagedPruningFailureTest(unittest.TestCase):
                 staged = InterfacePruningOutcome()
                 registered = replace(rule, outcome_factory=lambda: staged)
                 with patch(
-                    "impl.common.config_ast.editor.ConfigEditor._execute",
+                    "gns3_config_adaptor.impl.common.config_ast.editor.ConfigEditor._execute",
                     side_effect=ConfigurationParseError("invalid"),
                 ):
                     with self.assertRaises(ConfigurationParseError):
@@ -213,7 +225,9 @@ class ManagedPruningResultTest(unittest.TestCase):
         self.assertEqual(retained.removed_addresses, set())
         self.assertIn("neighbor 192.0.2.2", second.source)
         self.assertEqual(first.pruning.prune_non_nni({"Gi0/0/0/0"}).changes, [])
-        self.assertEqual(second.pruning.prune_non_nni({"Gi0/0/0/2"}).changes, [])
+        self.assertEqual(
+            second.pruning.prune_non_nni({"Gi0/0/0/2"}).changes, []
+        )
 
     def test_later_managed_rules_receive_removed_sets_and_committed_snapshot(
         self,

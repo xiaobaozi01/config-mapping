@@ -3,8 +3,8 @@
 import unittest
 from pathlib import Path
 
-from adaptation.pipeline import build_default_pipeline
-from adaptation.service import prepare_context
+from gns3_config_adaptor.adaptation.pipeline import build_default_pipeline
+from gns3_config_adaptor.adaptation.service import prepare_context
 
 FIXTURES = Path(__file__).parent / "fixtures"
 

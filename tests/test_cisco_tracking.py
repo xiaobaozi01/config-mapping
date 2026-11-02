@@ -7,10 +7,14 @@ from unittest.mock import patch
 from cisco_support import insert_before, replace_header
 from test_preserve_bundles import context_for
 
-from adaptation.models import Vendor
-from adaptation.pipeline import build_default_pipeline
-from impl.cisco import rules as cisco_rules
-from impl.cisco.document import CiscoDocument
+from gns3_config_adaptor.adaptation.models import Vendor
+from gns3_config_adaptor.adaptation.pipeline import build_default_pipeline
+from gns3_config_adaptor.impl.cisco_iosxrv9k_7_11_1_config_mapping_handler import (
+    rules as cisco_rules,
+)
+from gns3_config_adaptor.impl.cisco_iosxrv9k_7_11_1_config_mapping_handler.document import (
+    CiscoDocument,
+)
 
 FIXTURE = (
     Path(__file__).parent / "fixtures" / "core_pruning" / "iosxr_track_vrrp.cfg"
@@ -68,7 +72,9 @@ class CiscoTrackingTest(unittest.TestCase):
                 set(), outcome.removed_interfaces
             ).errors
         )
-        self.assertEqual(document.pruning.prune_non_nni({"Gi0/0/0/0"}).changes, [])
+        self.assertEqual(
+            document.pruning.prune_non_nni({"Gi0/0/0/0"}).changes, []
+        )
 
     def test_monitored_interface_rename_keeps_tracking_and_vrrp(self):
         document = load_document()
@@ -93,7 +99,9 @@ class CiscoTrackingTest(unittest.TestCase):
     def test_member_removal_cleanup_also_cascades_track_references(self):
         document = load_document()
         document.interfaces.transform.remove("Te0/0/0/67")
-        outcome = document.pruning.prune_interface_dependencies({"TenGigE0/0/0/67"})
+        outcome = document.pruning.prune_interface_dependencies(
+            {"TenGigE0/0/0/67"}
+        )
         self.assertFalse(outcome.errors, outcome.errors)
         self.assertIsNone(top_node(document, "track LOST-LINK"))
         output = document.render()
@@ -138,7 +146,11 @@ class CiscoTrackingTest(unittest.TestCase):
                 document = load_document()
                 node = top_node(document, "track LOST-LINK")
                 if duplicate:
-                    insert_before(document, document.root.nodes[0], document.writer.subtree(node))
+                    insert_before(
+                        document,
+                        document.root.nodes[0],
+                        document.writer.subtree(node),
+                    )
                 else:
                     replace_header(
                         document, node.nodes[0], "type unsupported-state"

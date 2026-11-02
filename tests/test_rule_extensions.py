@@ -9,16 +9,31 @@ from unittest.mock import patch
 import yaml
 from cisco_support import replace_header
 
-from adaptation.cleaning_rules import CleaningPoint, CleaningRulesHandler
-from adaptation.models import Vendor
-from impl.cisco import rules
-from impl.cisco.document import CiscoDocument
-from impl.cisco.operations.interfaces import find_interface_node
-from impl.cisco.rules import examples
-from impl.common.config_ast.model import tree_signature
-from impl.common.domain.outcomes import InterfacePruningOutcome
-from impl.common.domain.policies import SimulationAdaptationPolicy
-from impl.common.rules import (
+from gns3_config_adaptor.adaptation.cleaning_rules import (
+    CleaningPoint,
+    CleaningRulesHandler,
+)
+from gns3_config_adaptor.adaptation.models import Vendor
+from gns3_config_adaptor.impl.cisco_iosxrv9k_7_11_1_config_mapping_handler import (
+    rules,
+)
+from gns3_config_adaptor.impl.cisco_iosxrv9k_7_11_1_config_mapping_handler.document import (
+    CiscoDocument,
+)
+from gns3_config_adaptor.impl.cisco_iosxrv9k_7_11_1_config_mapping_handler.operations.interfaces import (
+    find_interface_node,
+)
+from gns3_config_adaptor.impl.cisco_iosxrv9k_7_11_1_config_mapping_handler.rules import (
+    examples,
+)
+from gns3_config_adaptor.impl.common.config_ast.model import tree_signature
+from gns3_config_adaptor.impl.common.domain.outcomes import (
+    InterfacePruningOutcome,
+)
+from gns3_config_adaptor.impl.common.domain.policies import (
+    SimulationAdaptationPolicy,
+)
+from gns3_config_adaptor.impl.common.rules import (
     AdaptContext,
     FunctionRule,
     execute_prune_rules,
@@ -77,7 +92,8 @@ class RuleTemplateTest(unittest.TestCase):
             self.assertEqual(len(outcome.changes), 1)
             self.assertEqual(outcome.changes[0]["rule_id"], rule.rule_id)
             self.assertEqual(
-                document.compatibility.adapt_interfaces({"Gi0/0/0/0"}).changes, []
+                document.compatibility.adapt_interfaces({"Gi0/0/0/0"}).changes,
+                [],
             )
         target = find_interface_node(document, "Gi0/0/0/0")
         other = find_interface_node(document, "Gi0/0/0/1")
@@ -91,7 +107,9 @@ class RuleTemplateTest(unittest.TestCase):
         before = tree_signature(document.root)
         rule = examples.ADAPT_DEMO_RULE
         with patch.object(rules, "ADAPT_RULES", (rule,)):
-            result = document.compatibility.adapt_interfaces({"Gi0/0/0/0", "Gi0/0/0/1"})
+            result = document.compatibility.adapt_interfaces(
+                {"Gi0/0/0/0", "Gi0/0/0/1"}
+            )
         self.assertEqual(tree_signature(document.root), before)
         self.assertEqual(result.changes, [])
         self.assertEqual(result.diagnostics[0]["rule_id"], rule.rule_id)
@@ -105,7 +123,9 @@ class RuleTemplateTest(unittest.TestCase):
             "ADAPT_RULES",
             (replace(examples.ADAPT_DEMO_RULE, rule_id="adapt"),),
         ):
-            self.assertEqual(document.compatibility.adapt_interfaces(set()).changes, [])
+            self.assertEqual(
+                document.compatibility.adapt_interfaces(set()).changes, []
+            )
         with patch.object(
             rules,
             "VALIDATION_RULES",
@@ -184,7 +204,9 @@ class RuleTemplateTest(unittest.TestCase):
         before = tree_signature(document.root)
         rule = examples.VALIDATE_DEMO_RULE
         with patch.object(rules, "VALIDATION_RULES", (rule,)):
-            outcome = document.validation.validate_interfaces({"Gi0/0/0/0"}, set())
+            outcome = document.validation.validate_interfaces(
+                {"Gi0/0/0/0"}, set()
+            )
         self.assertEqual(len(outcome.errors), 1)
         self.assertIn("interface GigabitEthernet0/0/0/0.100", outcome.errors[0])
         self.assertEqual(outcome.diagnostics[0]["rule_id"], rule.rule_id)
@@ -206,7 +228,9 @@ class MigratedRulesTest(unittest.TestCase):
         )
         self.assertEqual(document.render().count("tunneling ethertype"), 1)
         self.assertEqual(document.render().strip().splitlines()[-1], "end")
-        self.assertEqual(document.compatibility.adapt_interfaces({"Gi0/0/0/0"}).changes, [])
+        self.assertEqual(
+            document.compatibility.adapt_interfaces({"Gi0/0/0/0"}).changes, []
+        )
         self.assertEqual(
             CiscoDocument(document.render()).render(), document.render()
         )
@@ -252,7 +276,10 @@ class MigratedRulesTest(unittest.TestCase):
             "lacp period short", [node.header for node in outside.nodes]
         )
         self.assertEqual(
-            document.compatibility.adapt_interfaces({"Gi0/0/0/0", "BVI100"}).changes, []
+            document.compatibility.adapt_interfaces(
+                {"Gi0/0/0/0", "BVI100"}
+            ).changes,
+            [],
         )
 
 

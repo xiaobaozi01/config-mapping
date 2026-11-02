@@ -3,7 +3,9 @@
 import unittest
 from pathlib import Path
 
-from impl.juniper.document import JunosDocument
+from gns3_config_adaptor.impl.juniper_vjunos_router_23_2R1_15_config_mapping_handler.document import (
+    JunosDocument,
+)
 
 FIXTURES = Path(__file__).parent / "fixtures" / "core_pruning"
 
@@ -54,7 +56,9 @@ class JunosPruningScopeTest(unittest.TestCase):
         self.assertNotIn("CUSTOMER-BD", rendered)
         self.assertNotIn("irb.200", rendered)
         self.assertNotIn("irb.400", rendered)
-        specs = {spec.name for spec in document.interfaces.analysis.interface_specs()}
+        specs = {
+            spec.name for spec in document.interfaces.analysis.interface_specs()
+        }
         self.assertTrue({"irb.100", "irb.300"} <= specs)
         self.assertFalse({"irb.200", "irb.400"} & specs)
 

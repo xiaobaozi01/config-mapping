@@ -4,15 +4,19 @@ from __future__ import annotations
 
 import unittest
 
-from adaptation.cleaning_rules import (
+from gns3_config_adaptor.adaptation.cleaning_rules import (
     AuthenticationCleaningRule,
     CiscoBannerCleaningRule,
     CleaningPoint,
     CleaningRulesHandler,
 )
-from impl.cisco.document import CiscoDocument
-from impl.common.rules.cleaning import matches_cleaning_path
-from impl.juniper.document import JunosDocument
+from gns3_config_adaptor.impl.cisco_iosxrv9k_7_11_1_config_mapping_handler.document import (
+    CiscoDocument,
+)
+from gns3_config_adaptor.impl.common.rules.cleaning import matches_cleaning_path
+from gns3_config_adaptor.impl.juniper_vjunos_router_23_2R1_15_config_mapping_handler.document import (
+    JunosDocument,
+)
 
 
 class CleaningPathTest(unittest.TestCase):
@@ -85,11 +89,11 @@ class CleaningRuleLoadingTest(unittest.TestCase):
         self.assertEqual(juniper_vendor.value, "juniper_junos")
         self.assertEqual(
             cisco_path.parts[-4:],
-            ("rules", "cisco", "xrv9000", "cleaning.yaml"),
+            ("rules", "cisco_iosxr", "xrv9000", "cleaning.yaml"),
         )
         self.assertEqual(
             juniper_path.parts[-4:],
-            ("rules", "juniper", "vmx", "cleaning.yaml"),
+            ("rules", "juniper_junos", "vmx", "cleaning.yaml"),
         )
         rules = CleaningRulesHandler._configured_rules()
         self.assertTrue(

@@ -5,27 +5,35 @@ from dataclasses import FrozenInstanceError
 from pathlib import Path
 from unittest.mock import patch
 
-from impl.cisco import rules as cisco_rules
-from impl.cisco.document import CiscoDocument
-from impl.cisco.rules.support import (
+from gns3_config_adaptor.impl.cisco_iosxrv9k_7_11_1_config_mapping_handler import (
+    rules as cisco_rules,
+)
+from gns3_config_adaptor.impl.cisco_iosxrv9k_7_11_1_config_mapping_handler.document import (
+    CiscoDocument,
+)
+from gns3_config_adaptor.impl.cisco_iosxrv9k_7_11_1_config_mapping_handler.rules.support import (
     CiscoRuleVisitor,
     CiscoVisitorRule,
     simulation_result,
 )
-from impl.common.config_ast.model import tree_signature
-from impl.common.domain.outcomes import (
+from gns3_config_adaptor.impl.common.config_ast.model import tree_signature
+from gns3_config_adaptor.impl.common.domain.outcomes import (
     InterfacePruningOutcome,
     SimulationAdaptationOutcome,
 )
-from impl.common.domain.policies import SimulationAdaptationPolicy
-from impl.common.rules import (
+from gns3_config_adaptor.impl.common.domain.policies import (
+    SimulationAdaptationPolicy,
+)
+from gns3_config_adaptor.impl.common.rules import (
     AdaptContext,
     FunctionRule,
     PruneContext,
     execute_prune_rules,
     execute_rules,
 )
-from impl.juniper.document import JunosDocument
+from gns3_config_adaptor.impl.juniper_vjunos_router_23_2R1_15_config_mapping_handler.document import (
+    JunosDocument,
+)
 
 FIXTURES = Path(__file__).parent / "fixtures"
 
@@ -98,9 +106,9 @@ class ConfigurationRuleTest(unittest.TestCase):
             CiscoVisitorRule("last", LastVisitor, readonly=True),
         )
         with patch.object(cisco_rules, "VALIDATION_RULES", rules):
-            result = CiscoDocument("hostname R1\n").validation.validate_interfaces(
-                set(), set()
-            )
+            result = CiscoDocument(
+                "hostname R1\n"
+            ).validation.validate_interfaces(set(), set())
         self.assertEqual(result.errors, ["first-error", "last-error"])
         self.assertEqual(
             [item["rule_id"] for item in result.diagnostics], ["first", "last"]

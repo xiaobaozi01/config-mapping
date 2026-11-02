@@ -5,7 +5,7 @@ Cisco 和 Juniper 使用纯 Python Parser，不依赖解析器生成器、Java �
 
 ## 节点与解析
 
-共享代码位于 `src/impl/common/config_ast/`，厂商的 `ast.py`、`parser.py`、
+共享代码位于 `src/gns3_config_adaptor/impl/common/config_ast/`，厂商的 `ast.py`、`parser.py`、
 `header_parser.py` 和 `writer.py` 位于各自的 `syntax/` 子包。节点保存
 `header`、`children`、`parent`、`kind`、
 注释及原始 `location`。`header` 不含缩进和结构分号、大括号；`kind` 区分根、
@@ -26,8 +26,8 @@ Junos 使用词法状态识别引号、转义、跨行注释及结构标点，�
 按深度优先顺序发送配对事件。Listener 用于索引和信息收集，不在回调中改变树。
 
 ```python
-from impl.cisco.document import CiscoDocument
-from impl.common.config_ast import ConfigVisitor
+from gns3_config_adaptor.impl.cisco_iosxrv9k_7_11_1_config_mapping_handler.document import CiscoDocument
+from gns3_config_adaptor.impl.common.config_ast import ConfigVisitor
 
 class Interfaces(ConfigVisitor):
     def __init__(self):
@@ -105,7 +105,7 @@ python scripts/check_docstrings.py
 
 Document 持有 `root`、修订、分析缓存和按需能力入口；AST 节点保存结构及纯语义属性。
 节点不导入 Document、Writer 或 Editor，不提供 `text` 输出属性。子树文本使用
-`document.writer.subtree(node)`；Cisco 共享命令语义位于 `impl/cisco/syntax/semantics.py`。
+`document.writer.subtree(node)`；Cisco 共享命令语义位于 `gns3_config_adaptor/impl/cisco_iosxrv9k_7_11_1_config_mapping_handler/syntax/semantics.py`。
 
 厂商 `management_cleaning.py` 保存管理面清洗策略，`declarative_cleaning.py`
 提供声明式规则遍历和执行器，`cleaning.py` 只组合 `CleaningOperations` 能力门面；

@@ -8,9 +8,9 @@ from unittest.mock import patch
 
 import pytest
 
-from adaptation import performance, service
-from adaptation.performance import ConversionPerformance
-from adaptation.pipeline import ConversionPipeline
+from gns3_config_adaptor.adaptation import performance, service
+from gns3_config_adaptor.adaptation.performance import ConversionPerformance
+from gns3_config_adaptor.adaptation.pipeline import ConversionPipeline
 
 FIXTURES = Path(__file__).parent / "fixtures" / "iosxr_bundle"
 

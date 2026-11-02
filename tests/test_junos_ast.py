@@ -6,8 +6,12 @@ import unittest
 from pathlib import Path
 from unittest.mock import patch
 
-from impl.juniper.document import JunosDocument
-from impl.juniper.support.empty_blocks import EmptyBlockPolicy
+from gns3_config_adaptor.impl.juniper_vjunos_router_23_2R1_15_config_mapping_handler.document import (
+    JunosDocument,
+)
+from gns3_config_adaptor.impl.juniper_vjunos_router_23_2R1_15_config_mapping_handler.support.empty_blocks import (
+    EmptyBlockPolicy,
+)
 
 FIXTURES = Path(__file__).parent / "fixtures" / "junos_ast"
 
@@ -118,7 +122,9 @@ class JunosAstTest(unittest.TestCase):
         document = JunosDocument(source)
 
         self.assertEqual(document.root.nodes[1].comment, "# ge-0/0/1")
-        self.assertEqual(document.interfaces.analysis.business_interface_names(), set())
+        self.assertEqual(
+            document.interfaces.analysis.business_interface_names(), set()
+        )
         self.assertEqual(
             document.cleaning.apply_rule((), "^#|^/\\*", "delete", None), 0
         )
@@ -211,7 +217,8 @@ class JunosAstTest(unittest.TestCase):
         policy = EmptyBlockPolicy("semicolon", ((("security",), "braces"),))
 
         with patch(
-            "impl.juniper.document.vmx_empty_block_policy", return_value=policy
+            "gns3_config_adaptor.impl.juniper_vjunos_router_23_2R1_15_config_mapping_handler.document.vmx_empty_block_policy",
+            return_value=policy,
         ):
             self.assertEqual(document.render(), "security {\n}\n")
 
@@ -226,7 +233,7 @@ class JunosAstTest(unittest.TestCase):
             with self.subTest(action=action):
                 policy = EmptyBlockPolicy(action, ())
                 with patch(
-                    "impl.juniper.document.vmx_empty_block_policy",
+                    "gns3_config_adaptor.impl.juniper_vjunos_router_23_2R1_15_config_mapping_handler.document.vmx_empty_block_policy",
                     return_value=policy,
                 ):
                     self.assertEqual(document.render(), rendered)
@@ -241,7 +248,8 @@ class JunosAstTest(unittest.TestCase):
         policy = EmptyBlockPolicy("braces", ())
 
         with patch(
-            "impl.juniper.document.vmx_empty_block_policy", return_value=policy
+            "gns3_config_adaptor.impl.juniper_vjunos_router_23_2R1_15_config_mapping_handler.document.vmx_empty_block_policy",
+            return_value=policy,
         ):
             self.assertEqual(document.render(), "\n")
 

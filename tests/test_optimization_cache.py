@@ -5,7 +5,7 @@ import weakref
 
 import pytest
 
-from impl.common.support.optimization_cache import (
+from gns3_config_adaptor.impl.common.support.optimization_cache import (
     CACHE_MISS,
     BudgetCache,
     current_cache,

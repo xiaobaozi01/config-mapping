@@ -4,14 +4,14 @@
 
 内置规则分别位于：
 
-- XRv9000：`config/rules/cisco/xrv9000/`
-- vMX：`config/rules/juniper/vmx/`
+- XRv9000：`config/rules/cisco_iosxr/xrv9000/`
+- vMX：`config/rules/juniper_junos/vmx/`
 
 identity 规则按 `interfaces.yaml`、`routing.yaml`、`policy.yaml` 和 `system.yaml` 分类。在已有文件中追加规则时不需要修改 manifest；新增 identity 规则文件时，必须同时把文件名加入对应的 `manifest.yaml.rule_files`。
 
 同目录下的 `cleaning.yaml` 是配置清洗规则，由 `CleaningRulesHandler` 单独加载，不属于 identity 规则，也不加入 `manifest.yaml.rule_files`。
 
-需要跨节点扫描、条件判断或创建配置树的复杂清洗规则实现 `ExecutableCleaningRule`，并在 `adaptation/cleaning_rules.py` 的内置注册表中显式注册；YAML 规则固定在 `post_rewrite` 执行。
+需要跨节点扫描、条件判断或创建配置树的复杂清洗规则实现 `ExecutableCleaningRule`，并在 `gns3_config_adaptor/adaptation/cleaning_rules.py` 的内置注册表中显式注册；YAML 规则固定在 `post_rewrite` 执行。
 
 ## 完整示例
 
@@ -22,7 +22,7 @@ hold-time up 1000;
 hold-time down 640;
 ```
 
-同一方向的不同数值应当相互覆盖，up 和 down 则应同时保留。对应规则放在 `config/rules/juniper/vmx/interfaces.yaml`：
+同一方向的不同数值应当相互覆盖，up 和 down 则应同时保留。对应规则放在 `config/rules/juniper_junos/vmx/interfaces.yaml`：
 
 ```yaml
 - id: vmx.interface.hold-time

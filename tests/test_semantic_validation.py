@@ -2,7 +2,9 @@
 
 import unittest
 
-from impl.cisco.document import CiscoDocument
+from gns3_config_adaptor.impl.cisco_iosxrv9k_7_11_1_config_mapping_handler.document import (
+    CiscoDocument,
+)
 
 
 class FinalIntegrityValidationTest(unittest.TestCase):
@@ -45,9 +47,13 @@ def test_default_pipeline_has_no_source_audit_for_either_vendor(tmp_path):
     from pathlib import Path
     from unittest.mock import patch
 
-    from adaptation.service import convert
-    from impl.cisco.operations.validation import CiscoValidationOperations
-    from impl.juniper.operations.validation import JunosValidationOperations
+    from gns3_config_adaptor.adaptation.service import convert
+    from gns3_config_adaptor.impl.cisco_iosxrv9k_7_11_1_config_mapping_handler.operations.validation import (
+        CiscoValidationOperations,
+    )
+    from gns3_config_adaptor.impl.juniper_vjunos_router_23_2R1_15_config_mapping_handler.operations.validation import (
+        JunosValidationOperations,
+    )
 
     fixtures = Path(__file__).parent / "fixtures"
     for fixture, operations in (

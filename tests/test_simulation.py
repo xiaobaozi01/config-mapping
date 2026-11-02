@@ -8,11 +8,17 @@ from pathlib import Path
 
 from cleaning_support import clean_hardware
 
-from adaptation.models import Vendor
-from adaptation.profiles import load_profiles
-from impl.cisco.document import CiscoDocument
-from impl.common.domain.policies import SimulationAdaptationPolicy
-from impl.juniper.document import JunosDocument
+from gns3_config_adaptor.adaptation.models import Vendor
+from gns3_config_adaptor.adaptation.profiles import load_profiles
+from gns3_config_adaptor.impl.cisco_iosxrv9k_7_11_1_config_mapping_handler.document import (
+    CiscoDocument,
+)
+from gns3_config_adaptor.impl.common.domain.policies import (
+    SimulationAdaptationPolicy,
+)
+from gns3_config_adaptor.impl.juniper_vjunos_router_23_2R1_15_config_mapping_handler.document import (
+    JunosDocument,
+)
 
 FIXTURES = Path(__file__).parent / "fixtures"
 PROJECT_ROOT = Path(__file__).resolve().parent.parent
@@ -20,10 +26,13 @@ PROJECT_ROOT = Path(__file__).resolve().parent.parent
 
 def simulation_config(name: str) -> str:
     """读取模拟参数适配测试配置。"""
-    return (FIXTURES / "simulation_adaptation" / name).read_text(encoding="utf-8")
+    return (FIXTURES / "simulation_adaptation" / name).read_text(
+        encoding="utf-8"
+    )
 
 
 class SimulationAdaptationTest(unittest.TestCase):
+
     def test_iosxr_simulation_adaptation_is_scoped_and_idempotent(self):
         """硬件属性全局清理，模拟适配只调整映射目标口。"""
         policy = SimulationAdaptationPolicy()
@@ -77,11 +86,15 @@ class SimulationAdaptationTest(unittest.TestCase):
 
     def test_simulation_adaptation_profile_and_off_mode(self):
         """示例 Profile 可加载，off 模式严格保持文档不变。"""
-        profiles = load_profiles(PROJECT_ROOT / "config" / "image_profiles.yaml")
+        profiles = load_profiles(
+            PROJECT_ROOT / "config" / "image_profiles.yaml"
+        )
         cisco_profile = profiles[Vendor.CISCO_IOSXR]
         self.assertEqual(cisco_profile.image, "xrv9000")
         self.assertEqual(cisco_profile.simulation_adaptation.mode, "stable")
-        self.assertEqual(cisco_profile.simulation_adaptation.bfd_minimum_interval_ms, 300)
+        self.assertEqual(
+            cisco_profile.simulation_adaptation.bfd_minimum_interval_ms, 300
+        )
 
         source = simulation_config("iosxr.cfg")
         document = CiscoDocument(source)
@@ -110,7 +123,11 @@ class SimulationAdaptationTest(unittest.TestCase):
             with self.subTest(vendor=vendor):
                 profile = defaults[vendor]
                 self.assertEqual(profile.nni_interfaces, profile.interfaces[:5])
-                self.assertTrue(set(profile.interfaces[5:]).isdisjoint(profile.nni_interfaces))
+                self.assertTrue(
+                    set(profile.interfaces[5:]).isdisjoint(
+                        profile.nni_interfaces
+                    )
+                )
 
         with tempfile.TemporaryDirectory() as directory:
             profile_path = Path(directory) / "profile.yaml"

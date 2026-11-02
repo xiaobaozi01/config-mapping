@@ -8,7 +8,7 @@ from pathlib import Path
 
 from openpyxl import load_workbook
 
-from adaptation.service import convert
+from gns3_config_adaptor.adaptation.service import convert
 
 FIXTURES = Path(__file__).parent / "fixtures"
 

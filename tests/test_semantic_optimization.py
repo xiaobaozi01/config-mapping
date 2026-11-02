@@ -7,14 +7,19 @@ from pathlib import Path
 
 import pytest
 
-from impl.common.semantic_identity import (
+from gns3_config_adaptor.impl.common.semantic_identity import (
     MergeKind,
     SemanticResolver,
     SemanticRule,
     StatementContext,
 )
-from impl.common.semantic_identity.matcher import match_rule, rule_specificity
-from impl.common.support.optimization_cache import optimization_scope
+from gns3_config_adaptor.impl.common.semantic_identity.matcher import (
+    match_rule,
+    rule_specificity,
+)
+from gns3_config_adaptor.impl.common.support.optimization_cache import (
+    optimization_scope,
+)
 
 
 class Reference(SemanticResolver):
@@ -173,10 +178,18 @@ def test_seeded_paths_capture_constraints_and_wildcard_backtracking():
 
 
 def test_pack_fixture_contexts_match_unfiltered_reference():
-    from impl.cisco.document import CiscoDocument
-    from impl.cisco.support.identity import _resolver as cisco_resolver
-    from impl.juniper.document import JunosDocument
-    from impl.juniper.support.identity import _resolver as junos_resolver
+    from gns3_config_adaptor.impl.cisco_iosxrv9k_7_11_1_config_mapping_handler.document import (
+        CiscoDocument,
+    )
+    from gns3_config_adaptor.impl.cisco_iosxrv9k_7_11_1_config_mapping_handler.support.identity import (
+        _resolver as cisco_resolver,
+    )
+    from gns3_config_adaptor.impl.juniper_vjunos_router_23_2R1_15_config_mapping_handler.document import (
+        JunosDocument,
+    )
+    from gns3_config_adaptor.impl.juniper_vjunos_router_23_2R1_15_config_mapping_handler.support.identity import (
+        _resolver as junos_resolver,
+    )
 
     root = Path(__file__).parent / "fixtures" / "semantic_identity"
     for path in root.glob("*.cfg"):

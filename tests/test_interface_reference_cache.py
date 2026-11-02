@@ -1,11 +1,27 @@
 """Reference extraction is independent of changing interface name sets."""
 
+import random
 import re
+from copy import deepcopy
 from unittest.mock import patch
 
-from impl.cisco.document import CiscoDocument
-from impl.cisco.rules.pruning import interface_references, reference_matcher
-from impl.cisco.syntax import semantics
+from gns3_config_adaptor.impl.cisco_iosxrv9k_7_11_1_config_mapping_handler.document import (
+    CiscoDocument,
+)
+from gns3_config_adaptor.impl.cisco_iosxrv9k_7_11_1_config_mapping_handler.rules.pruning import (
+    _CiscoPruner,
+    interface_references,
+    reference_matcher,
+)
+from gns3_config_adaptor.impl.cisco_iosxrv9k_7_11_1_config_mapping_handler.syntax import (
+    semantics,
+)
+from gns3_config_adaptor.impl.cisco_iosxrv9k_7_11_1_config_mapping_handler.syntax.ast import (
+    CiscoNode,
+)
+from gns3_config_adaptor.impl.common.domain.outcomes import (
+    InterfacePruningOutcome,
+)
 
 
 def legacy(text, names):
@@ -86,13 +102,6 @@ def test_text_cache_includes_nonmatches_and_is_bounded():
 
 
 def test_iterative_clean_preserves_reference_paths_and_event_order():
-    import random
-    from copy import deepcopy
-
-    from impl.cisco.rules.pruning import _CiscoPruner
-    from impl.cisco.syntax.ast import CiscoNode
-    from impl.common.domain.outcomes import InterfacePruningOutcome
-
     randomizer = random.Random(731)
     names = {"GigabitEthernet0", "Bundle-Ether2"}
     headers = [
@@ -146,9 +155,15 @@ def test_iterative_clean_preserves_reference_paths_and_event_order():
 
 
 def test_iterative_clean_handles_deep_unknown_reference_without_recursion():
-    from impl.cisco.rules.pruning import _CiscoPruner
-    from impl.cisco.syntax.ast import CiscoNode
-    from impl.common.domain.outcomes import InterfacePruningOutcome
+    from gns3_config_adaptor.impl.cisco_iosxrv9k_7_11_1_config_mapping_handler.rules.pruning import (
+        _CiscoPruner,
+    )
+    from gns3_config_adaptor.impl.cisco_iosxrv9k_7_11_1_config_mapping_handler.syntax.ast import (
+        CiscoNode,
+    )
+    from gns3_config_adaptor.impl.common.domain.outcomes import (
+        InterfacePruningOutcome,
+    )
 
     node = CiscoNode("bind-interface Gi0")
     for _ in range(1500):

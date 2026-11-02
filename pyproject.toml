@@ -21,6 +21,7 @@ dev = [
 
 [tool.setuptools.packages.find]
 where = ["src"]
+include = ["gns3_config_adaptor*"]
 
 [tool.pytest.ini_options]
 pythonpath = ["src", "."]

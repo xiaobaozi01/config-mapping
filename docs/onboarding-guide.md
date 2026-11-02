@@ -105,7 +105,7 @@ Excel 至少包含两个工作表：
 | 设备列表 | 配置文件（可选） | 未填写时按设备名查找 `.cfg/.conf/.txt` |
 | 链接表 | A端设备、A端接口、Z端设备、Z端接口 | 定义物理 NNI |
 
-程序兼容常见中英文 Sheet 名和列名，实际别名定义在 `adaptation/topology.py`。
+程序兼容常见中英文 Sheet 名和列名，实际别名定义在 `gns3_config_adaptor/adaptation/topology.py`。
 
 设备名称是系统中的主键，必须非空且全局唯一。链接表只要某一列有值，就要求四个端点字段全部填写。
 
@@ -154,7 +154,7 @@ output/
 
 ```mermaid
 flowchart TD
-    Entry[调用 adaptation.service.convert] --> Prepare[prepare_context]
+    Entry[调用 gns3_config_adaptor.adaptation.service.convert] --> Prepare[prepare_context]
     Prepare --> Excel[读取和校验 Excel]
     Prepare --> Profiles[加载镜像 Profile]
     Prepare --> Policy[加载 Group 策略]
@@ -187,9 +187,9 @@ flowchart TD
 ```mermaid
 sequenceDiagram
     actor User as 操作者
-    participant Entry as adaptation/service.py
+    participant Entry as gns3_config_adaptor/adaptation/service.py
     participant IO as topology / profiles / washing
-    participant Parser as adaptation/factory.py
+    participant Parser as gns3_config_adaptor/adaptation/factory.py
     participant Flow as ConversionPipeline
     participant Stage as adaptation 业务模块
     participant Doc as VendorConfiguration
@@ -225,45 +225,45 @@ sequenceDiagram
 ```mermaid
 flowchart TB
     subgraph Delivery[调用入口]
-        API[adaptation.service.convert]
+        API[gns3_config_adaptor.adaptation.service.convert]
     end
 
     subgraph Orchestration[编排层]
-        Entry[adaptation/service.py]
+        Entry[gns3_config_adaptor/adaptation/service.py]
         Stages[adaptation 业务模块]
-        AppPipe[adaptation/pipeline.py]
+        AppPipe[gns3_config_adaptor/adaptation/pipeline.py]
     end
 
     subgraph Domain[领域模型与纯规划]
-        Models[adaptation/models.py]
-        NniPlan[adaptation/nni.py]
-        Cleanup[adaptation/interfaces.py]
+        Models[gns3_config_adaptor/adaptation/models.py]
+        NniPlan[gns3_config_adaptor/adaptation/nni.py]
+        Cleanup[gns3_config_adaptor/adaptation/interfaces.py]
     end
 
     subgraph Port[厂商能力边界]
-        API[impl/common/domain/contracts.py<br/>VendorConfiguration Protocol]
+        API[gns3_config_adaptor/impl/common/domain/contracts.py<br/>VendorConfiguration Protocol]
     end
 
     subgraph Cisco[Cisco 实现]
-        CiscoParser[impl/cisco/document.py]
-        CiscoGroups[impl/cisco/operations/groups/expander.py]
-        CiscoInterfaces[impl/cisco/operations/interfaces/]
-        CiscoCleaning[impl/cisco/operations/cleaning.py]
-        CiscoSimulation[impl/cisco/rules/simulation.py]
+        CiscoParser[gns3_config_adaptor/impl/cisco_iosxrv9k_7_11_1_config_mapping_handler/document.py]
+        CiscoGroups[gns3_config_adaptor/impl/cisco_iosxrv9k_7_11_1_config_mapping_handler/operations/groups/expander.py]
+        CiscoInterfaces[gns3_config_adaptor/impl/cisco_iosxrv9k_7_11_1_config_mapping_handler/operations/interfaces/]
+        CiscoCleaning[gns3_config_adaptor/impl/cisco_iosxrv9k_7_11_1_config_mapping_handler/operations/cleaning.py]
+        CiscoSimulation[gns3_config_adaptor/impl/cisco_iosxrv9k_7_11_1_config_mapping_handler/rules/simulation.py]
     end
 
     subgraph Juniper[Juniper 实现]
-        JunosParser[impl/juniper/document.py]
-        JunosGroups[impl/juniper/operations/groups/expander.py]
-        JunosInterfaces[impl/juniper/operations/interfaces/]
-        JunosCleaning[impl/juniper/operations/cleaning.py]
-        JunosSimulation[impl/juniper/rules/simulation.py]
+        JunosParser[gns3_config_adaptor/impl/juniper_vjunos_router_23_2R1_15_config_mapping_handler/document.py]
+        JunosGroups[gns3_config_adaptor/impl/juniper_vjunos_router_23_2R1_15_config_mapping_handler/operations/groups/expander.py]
+        JunosInterfaces[gns3_config_adaptor/impl/juniper_vjunos_router_23_2R1_15_config_mapping_handler/operations/interfaces/]
+        JunosCleaning[gns3_config_adaptor/impl/juniper_vjunos_router_23_2R1_15_config_mapping_handler/operations/cleaning.py]
+        JunosSimulation[gns3_config_adaptor/impl/juniper_vjunos_router_23_2R1_15_config_mapping_handler/rules/simulation.py]
     end
 
     subgraph IO[基础设施]
-        Excel[adaptation/topology.py]
-        Profiles[adaptation/profiles.py]
-        Rules[adaptation/cleaning_rules.py]
+        Excel[gns3_config_adaptor/adaptation/topology.py]
+        Profiles[gns3_config_adaptor/adaptation/profiles.py]
+        Rules[gns3_config_adaptor/adaptation/cleaning_rules.py]
     end
 
     CLI --> Entry
@@ -292,24 +292,24 @@ flowchart TB
 
 | 路径 | 职责 | 新人是否应先读 |
 | --- | --- | --- |
-| `adaptation/service.py` | 准备上下文、执行流程、写输出 | 是 |
-| `adaptation/topology.py`、`groups.py`、`interfaces.py`、`nni.py`、`cleaning_rules.py`、`simulation.py` | 十三个业务阶段 | 是，核心 |
-| `adaptation/models.py` | 设备、链路、映射、Profile、上下文 | 是 |
-| `adaptation/pipeline.py` | Stage 协议和停止规则 | 是 |
-| `adaptation/nni.py` | 聚合链路分组的纯计算 | NNI 业务时读 |
-| `adaptation/interfaces.py` | 接口预清理、源语义预检、分类、NNI 保留闭包、引用改写、目标兼容与最终校验 | 修改接口保留范围时读 |
-| `impl/common/domain/` | 跨厂商协议、接口规格、结果和策略 | 是，理解边界 |
-| `impl/common/rules/`、`impl/common/support/` | 规则引擎、路径清洗、缓存和基础设施 | 修改公共能力时读 |
-| `impl/cisco/document.py、impl/juniper/document.py` | 组合语法、业务操作和镜像支持的稳定 Facade | 第二阶段读 |
-| `impl/cisco/syntax/、impl/juniper/syntax/` | Parser、AST、Writer 和语法级辅助能力 | 阅读解析与编辑时先读 |
-| `impl/cisco/operations/groups/`、`impl/juniper/operations/groups/` | Group 选择器、定义、合并、展开与发布 | 专项阅读 |
-| `impl/cisco/operations/interfaces/`、`impl/juniper/operations/interfaces/` | 接口访问、规格分析、业务闭包和配置树修改 | 专项阅读 |
-| `impl/cisco/operations/cleaning.py、impl/juniper/operations/cleaning.py` | 强制管理面清洗 | 专项阅读 |
-| `impl/cisco/rules/simulation.py、impl/juniper/rules/simulation.py` | 镜像运行参数适配 | 专项阅读 |
-| `adaptation/topology.py` | Excel 读写和列别名处理 | 输入问题时读 |
-| `adaptation/profiles.py` | 镜像 Profile 加载与校验 | Profile 问题时读 |
-| `adaptation/cleaning_rules.py` | 统一清洗规则加载与调度 | 修改清洗框架时读 |
-| `config/rules/cisco/xrv9000/cleaning.yaml`、`config/rules/juniper/vmx/cleaning.yaml` | 各厂商的 PTP、接口类型约束及扩展清洗规则 | 增删清洗项时读 |
+| `gns3_config_adaptor/adaptation/service.py` | 准备上下文、执行流程、写输出 | 是 |
+| `gns3_config_adaptor/adaptation/topology.py`、`groups.py`、`interfaces.py`、`nni.py`、`cleaning_rules.py`、`simulation.py` | 十三个业务阶段 | 是，核心 |
+| `gns3_config_adaptor/adaptation/models.py` | 设备、链路、映射、Profile、上下文 | 是 |
+| `gns3_config_adaptor/adaptation/pipeline.py` | Stage 协议和停止规则 | 是 |
+| `gns3_config_adaptor/adaptation/nni.py` | 聚合链路分组的纯计算 | NNI 业务时读 |
+| `gns3_config_adaptor/adaptation/interfaces.py` | 接口预清理、源语义预检、分类、NNI 保留闭包、引用改写、目标兼容与最终校验 | 修改接口保留范围时读 |
+| `gns3_config_adaptor/impl/common/domain/` | 跨厂商协议、接口规格、结果和策略 | 是，理解边界 |
+| `gns3_config_adaptor/impl/common/rules/`、`gns3_config_adaptor/impl/common/support/` | 规则引擎、路径清洗、缓存和基础设施 | 修改公共能力时读 |
+| `gns3_config_adaptor/impl/cisco_iosxrv9k_7_11_1_config_mapping_handler/document.py、gns3_config_adaptor/impl/juniper_vjunos_router_23_2R1_15_config_mapping_handler/document.py` | 组合语法、业务操作和镜像支持的稳定 Facade | 第二阶段读 |
+| `gns3_config_adaptor/impl/cisco_iosxrv9k_7_11_1_config_mapping_handler/syntax/、gns3_config_adaptor/impl/juniper_vjunos_router_23_2R1_15_config_mapping_handler/syntax/` | Parser、AST、Writer 和语法级辅助能力 | 阅读解析与编辑时先读 |
+| `gns3_config_adaptor/impl/cisco_iosxrv9k_7_11_1_config_mapping_handler/operations/groups/`、`gns3_config_adaptor/impl/juniper_vjunos_router_23_2R1_15_config_mapping_handler/operations/groups/` | Group 选择器、定义、合并、展开与发布 | 专项阅读 |
+| `gns3_config_adaptor/impl/cisco_iosxrv9k_7_11_1_config_mapping_handler/operations/interfaces/`、`gns3_config_adaptor/impl/juniper_vjunos_router_23_2R1_15_config_mapping_handler/operations/interfaces/` | 接口访问、规格分析、业务闭包和配置树修改 | 专项阅读 |
+| `gns3_config_adaptor/impl/cisco_iosxrv9k_7_11_1_config_mapping_handler/operations/cleaning.py、gns3_config_adaptor/impl/juniper_vjunos_router_23_2R1_15_config_mapping_handler/operations/cleaning.py` | 强制管理面清洗 | 专项阅读 |
+| `gns3_config_adaptor/impl/cisco_iosxrv9k_7_11_1_config_mapping_handler/rules/simulation.py、gns3_config_adaptor/impl/juniper_vjunos_router_23_2R1_15_config_mapping_handler/rules/simulation.py` | 镜像运行参数适配 | 专项阅读 |
+| `gns3_config_adaptor/adaptation/topology.py` | Excel 读写和列别名处理 | 输入问题时读 |
+| `gns3_config_adaptor/adaptation/profiles.py` | 镜像 Profile 加载与校验 | Profile 问题时读 |
+| `gns3_config_adaptor/adaptation/cleaning_rules.py` | 统一清洗规则加载与调度 | 修改清洗框架时读 |
+| `config/rules/cisco_iosxr/xrv9000/cleaning.yaml`、`config/rules/juniper_junos/vmx/cleaning.yaml` | 各厂商的 PTP、接口类型约束及扩展清洗规则 | 增删清洗项时读 |
 
 ### 5.3 为什么有些东西是类，有些是函数
 
@@ -674,7 +674,7 @@ python3 -m pip install -e .
 ```python
 from pathlib import Path
 
-from adaptation.service import convert
+from gns3_config_adaptor.adaptation import convert
 
 context = convert(
     topology_path=Path("topology.xlsx"),
@@ -729,11 +729,11 @@ flowchart TD
 
 | 现象 | 优先查看 |
 | --- | --- |
-| 找不到 Sheet/列 | `adaptation/topology.py` |
-| 配置文件找不到或路径被拒绝 | `adaptation/service._safe_config_path()` |
+| 找不到 Sheet/列 | `gns3_config_adaptor/adaptation/topology.py` |
+| 配置文件找不到或路径被拒绝 | `gns3_config_adaptor/adaptation/service._safe_config_path()` |
 | Group 继承结果不对 | `<厂商>/groups.py` 和 `group_conflicts` |
 | 接口被当成未知类型 | 对应解析器的 `interface_kind` |
-| 聚合链路被错误合并 | `adaptation/nni.py` |
+| 聚合链路被错误合并 | `gns3_config_adaptor/adaptation/nni.py` |
 | M-LAG 少了一个目标 | `NNIHandler` 的 `plans_by_logical` 和 mappings |
 | 非 NNI 删除范围异常 | 原始拓扑、聚合闭包与 `NON_NNI` mapping |
 | 目标接口导入失败 | 接口兼容/最终校验事件与真实设备诊断 |
@@ -876,9 +876,9 @@ git diff --check
 如果只有 30 分钟：
 
 1. 本文第 1～4 节，建立业务和总流程。
-2. `adaptation/models.py`，认识 Context、Link、Mapping 和 Profile。
-3. `adaptation/service.py` 的 `convert()`。
-4. `adaptation/pipeline.py` 的 `build_default_pipeline()` 和十三个 Stage 类名。
+2. `gns3_config_adaptor/adaptation/models.py`，认识 Context、Link、Mapping 和 Profile。
+3. `gns3_config_adaptor/adaptation/service.py` 的 `convert()`。
+4. `gns3_config_adaptor/adaptation/pipeline.py` 的 `build_default_pipeline()` 和十三个 Stage 类名。
 5. 选一个 `tests/test_conversion.py` 的端到端用例，从输入断言看到输出。
 
 如果有半天：
@@ -893,7 +893,7 @@ git diff --check
 
 如果准备开始开发：
 
-1. 阅读 `impl/common/domain/contracts.py`，明确跨厂商能力边界。
+1. 阅读 `gns3_config_adaptor/impl/common/domain/contracts.py`，明确跨厂商能力边界。
 2. 阅读相关业务 fixture 和已有断言。
 3. 阅读目标厂商的 Group、接口、清洗或模拟适配模块。
 4. 先补失败测试，再做最小实现。
@@ -904,15 +904,15 @@ git diff --check
 以 Python API 转换为例，从以下符号依次跳转，能够完整走通主干：
 
 ```text
-adaptation.service.convert
-  → adaptation.service.prepare_context
-  → adaptation.topology.load_topology
-  → adaptation.factory.parse_document
-  → adaptation.pipeline.build_default_pipeline
+gns3_config_adaptor.adaptation.service.convert
+  → gns3_config_adaptor.adaptation.service.prepare_context
+  → gns3_config_adaptor.adaptation.topology.load_topology
+  → gns3_config_adaptor.adaptation.factory.parse_document
+  → gns3_config_adaptor.adaptation.pipeline.build_default_pipeline
   → ConversionPipeline.execute
   → 各 Handler.process
   → CleaningRulesHandler / VendorDocument 对应的厂商能力实现
-  → adaptation.service.write_outputs
+  → gns3_config_adaptor.adaptation.service.write_outputs
 ```
 
 在 IDE 中建议先沿这条主干走一遍，再深入 Group 或 AST。直接从 500 行左右的厂商算法开始读，容易知道“怎么实现”，却不知道“为什么此时调用”。
@@ -949,8 +949,8 @@ Cisco 块结构和 Junos 树结构差异很大。当前设计只统一应用层�
 - `docs/requirements.md`：需求与验收基线。
 - `docs/processing-flow.md`：Cisco/Junos 配置改写的详细规则。
 - `config/image_profiles.yaml`：镜像 Profile 示例。
-- `config/rules/cisco/xrv9000/cleaning.yaml`：XRv9000 配置清洗规则。
-- `config/rules/juniper/vmx/cleaning.yaml`：vMX 配置清洗规则。
+- `config/rules/cisco_iosxr/xrv9000/cleaning.yaml`：XRv9000 配置清洗规则。
+- `config/rules/juniper_junos/vmx/cleaning.yaml`：vMX 配置清洗规则。
 
 建议把本文作为第一入口，把 `requirements.md` 当作“系统必须满足什么”，把 `processing-flow.md` 当作“具体语法如何改写”。
 

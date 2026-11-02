@@ -336,7 +336,7 @@ interface 'GigabitEthernet0/0/0/.*'
 
 #### 语义冲突
 
-冲突键由 `config/rules/cisco/xrv9000/` 下的路径感知规则生成。规则区分单值、带 key 的可重复集合、方向属性和 presence 命令；未命中语句使用完整文本保守保留。
+冲突键由 `config/rules/cisco_iosxr/xrv9000/` 下的路径感知规则生成。规则区分单值、带 key 的可重复集合、方向属性和 presence 命令；未命中语句使用完整文本保守保留。
 
 系统不会只比较第一个单词。
 
@@ -580,7 +580,7 @@ Group 定义内可以继续应用其他 Group。系统递归求取依赖闭包�
 
 #### 语义冲突
 
-冲突键由 `config/rules/juniper/vmx/` 下的路径感知规则生成，因此 `peer-as`、`interface-mode`、同一前缀的 `address` 等可以按实际槽位进行覆盖，不同地址则继续并存。
+冲突键由 `config/rules/juniper_junos/vmx/` 下的路径感知规则生成，因此 `peer-as`、`interface-mode`、同一前缀的 `address` 等可以按实际槽位进行覆盖，不同地址则继续并存。
 
 典型单值语句：
 
@@ -679,7 +679,7 @@ system {
 
 ### 8.6 统一配置清洗规则
 
-PTP、协议认证、PKI、硬件、NAT、流量统计和镜像扩展清洗按厂商分别定义在项目配置目录的 `config/rules/cisco/xrv9000/cleaning.yaml` 和 `config/rules/juniper/vmx/cleaning.yaml` 中。转换时固定合并加载这两份文件，不接受外部规则路径。
+PTP、协议认证、PKI、硬件、NAT、流量统计和镜像扩展清洗按厂商分别定义在项目配置目录的 `config/rules/cisco_iosxr/xrv9000/cleaning.yaml` 和 `config/rules/juniper_junos/vmx/cleaning.yaml` 中。转换时固定合并加载这两份文件，不接受外部规则路径。
 
 ```yaml
 rules:

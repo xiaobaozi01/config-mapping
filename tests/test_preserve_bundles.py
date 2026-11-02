@@ -3,8 +3,8 @@
 import unittest
 from pathlib import Path
 
-from adaptation.factory import parse_document
-from adaptation.models import (
+from gns3_config_adaptor.adaptation.factory import parse_document
+from gns3_config_adaptor.adaptation.models import (
     ConversionContext,
     Device,
     DeviceContext,
@@ -12,8 +12,8 @@ from adaptation.models import (
     TopologyWorkbook,
     Vendor,
 )
-from adaptation.pipeline import build_default_pipeline
-from adaptation.profiles import load_profiles
+from gns3_config_adaptor.adaptation.pipeline import build_default_pipeline
+from gns3_config_adaptor.adaptation.profiles import load_profiles
 
 FIXTURES = Path(__file__).parent / "fixtures" / "preserve_bundles"
 
@@ -172,8 +172,17 @@ class PreserveBundleTest(unittest.TestCase):
             [link.row for link in context.topology.links if link.active],
             [2, 4],
         )
-        self.assertEqual(len(device.document.interfaces.analysis.bundle_members()), 2)
-        self.assertEqual(len(context.devices["B"].document.interfaces.analysis.bundle_members()), 1)
+        self.assertEqual(
+            len(device.document.interfaces.analysis.bundle_members()), 2
+        )
+        self.assertEqual(
+            len(
+                context.devices[
+                    "B"
+                ].document.interfaces.analysis.bundle_members()
+            ),
+            1,
+        )
         self.assertTrue(
             any(
                 mapping.source_interface == third_a
@@ -237,7 +246,8 @@ class PreserveBundleTest(unittest.TestCase):
         self.assertNotIn("minimum-bandwidth", output)
         self.assertNotIn("speed 100g", output)
         self.assertEqual(
-            context.devices["A"].document.interfaces.analysis.bundle_members(), {"ge-0/0/0": "ae10"}
+            context.devices["A"].document.interfaces.analysis.bundle_members(),
+            {"ge-0/0/0": "ae10"},
         )
 
     def test_lacp_is_preserved_without_enforcing_peer_mode_consistency(self):
@@ -279,7 +289,14 @@ class PreserveBundleTest(unittest.TestCase):
             [link.row for link in context.topology.links if link.active],
             [2, 3],
         )
-        self.assertEqual(len(context.devices["A"].document.interfaces.analysis.bundle_members()), 2)
+        self.assertEqual(
+            len(
+                context.devices[
+                    "A"
+                ].document.interfaces.analysis.bundle_members()
+            ),
+            2,
+        )
         self.assertTrue(
             any(
                 "独立业务" in warning
@@ -314,7 +331,14 @@ class PreserveBundleTest(unittest.TestCase):
             [link.row for link in context.topology.links if link.active],
             [2, 3],
         )
-        self.assertEqual(len(context.devices["A"].document.interfaces.analysis.bundle_members()), 2)
+        self.assertEqual(
+            len(
+                context.devices[
+                    "A"
+                ].document.interfaces.analysis.bundle_members()
+            ),
+            2,
+        )
         self.assertTrue(
             any(
                 "独立业务" in warning
@@ -474,7 +498,9 @@ class PreserveBundleTest(unittest.TestCase):
         build_default_pipeline().execute(context)
         device = context.devices["A"]
         self.assertFalse(context.has_errors, context.errors + device.errors)
-        self.assertIn("ge-0/0/0", device.document.interfaces.analysis.bundle_members())
+        self.assertIn(
+            "ge-0/0/0", device.document.interfaces.analysis.bundle_members()
+        )
         output = device.document.render()
         self.assertNotIn("interface ge-0/0/0;", output)
         self.assertIn("interface ae10.0;", output)

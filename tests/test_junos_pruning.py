@@ -4,10 +4,16 @@ import importlib.util
 import unittest
 from pathlib import Path
 
-from impl.juniper import rules as juniper_rules
-from impl.juniper.document import JunosDocument
-from impl.juniper.rules.compatibility import validate_pruned_references
-from impl.juniper.rules.pruning import (
+from gns3_config_adaptor.impl.juniper_vjunos_router_23_2R1_15_config_mapping_handler import (
+    rules as juniper_rules,
+)
+from gns3_config_adaptor.impl.juniper_vjunos_router_23_2R1_15_config_mapping_handler.document import (
+    JunosDocument,
+)
+from gns3_config_adaptor.impl.juniper_vjunos_router_23_2R1_15_config_mapping_handler.rules.compatibility import (
+    validate_pruned_references,
+)
+from gns3_config_adaptor.impl.juniper_vjunos_router_23_2R1_15_config_mapping_handler.rules.pruning import (
     prune_interface_dependencies,
     prune_non_nni,
 )
@@ -20,21 +26,44 @@ def load(name: str) -> JunosDocument:
 
 
 class JunosNniPruningTest(unittest.TestCase):
+
     def test_rule_code_is_packaged_under_rules(self):
         self.assertIsNotNone(getattr(juniper_rules, "__path__", None))
         for name in ("compatibility", "pruning", "simulation"):
             self.assertIsNotNone(
-                importlib.util.find_spec(f"impl.juniper.rules.{name}"),
+                importlib.util.find_spec(
+                    f"gns3_config_adaptor.impl.juniper_vjunos_router_23_2R1_15_config_mapping_handler.rules.{name}"
+                ),
             )
         for name in ("pruning", "simulation"):
-            self.assertIsNone(importlib.util.find_spec(f"impl.juniper.{name}"))
+            self.assertIsNone(
+                importlib.util.find_spec(
+                    f"gns3_config_adaptor.impl.juniper_vjunos_router_23_2R1_15_config_mapping_handler.{name}"
+                )
+            )
 
-    def test_protected_member_preserves_bundle_members_and_original_irb_role(self):
+    def test_protected_member_preserves_bundle_members_and_original_irb_role(
+        self,
+    ):
         document = load("junos_nni_pruning.cfg")
         outcome = prune_non_nni(document, {"ge-0/0/0", "ge-0/0/20"})
         self.assertEqual(outcome.errors, [])
-        specs = {spec.name for spec in document.interfaces.analysis.interface_specs()}
-        self.assertTrue({"ge-0/0/0", "ge-0/0/1", "ae0.100", "irb.100", "lo0.0", "fxp0.0", "gr-0/0/0.0", "future0.0"} <= specs)
+        specs = {
+            spec.name for spec in document.interfaces.analysis.interface_specs()
+        }
+        self.assertTrue(
+            {
+                "ge-0/0/0",
+                "ge-0/0/1",
+                "ae0.100",
+                "irb.100",
+                "lo0.0",
+                "fxp0.0",
+                "gr-0/0/0.0",
+                "future0.0",
+            }
+            <= specs
+        )
         self.assertFalse({"ge-0/0/2.200", "ge-0/0/3.300", "irb.300"} & specs)
         rendered = document.render()
         self.assertIn("routing-interface irb.100;", rendered)
@@ -46,14 +75,40 @@ class JunosNniPruningTest(unittest.TestCase):
         self.assertIn("198.51.103.1", outcome.removed_addresses)
         self.assertNotIn("198.51.100.1", outcome.removed_addresses)
 
-    def test_removes_owned_routes_and_bgp_sessions_retains_shared_vrf_policy(self):
+    def test_removes_owned_routes_and_bgp_sessions_retains_shared_vrf_policy(
+        self,
+    ):
         document = load("junos_nni_pruning.cfg")
         outcome = prune_non_nni(document, {"ae0", "ge-0/0/20"})
         self.assertEqual(outcome.errors, [])
         rendered = document.render()
-        for deleted in ("REMOVED-SOURCE", "10.10.10.1", "10.10.10.2", "route 10.10.0.0/24", "route 10.11.0.0/24", "route 10.14.0.0/24", "scheduler-map OLD", "interface ge-0/0/2.200", "OLD-VPWS", "target:64500:999", "local 903"):
+        for deleted in (
+            "REMOVED-SOURCE",
+            "10.10.10.1",
+            "10.10.10.2",
+            "route 10.10.0.0/24",
+            "route 10.11.0.0/24",
+            "route 10.14.0.0/24",
+            "scheduler-map OLD",
+            "interface ge-0/0/2.200",
+            "OLD-VPWS",
+            "target:64500:999",
+            "local 903",
+        ):
             self.assertNotIn(deleted, rendered)
-        for retained in ("10.10.10.3", "10.10.10.4", "route 10.12.0.0/24", "route 10.13.0.0/24", "SHARED-VRF", "SHARED-POLICY", "vrf-target target:64500:1", "scheduler-map KEEP", "interface ge-0/0/20.0", "MIXED-VPWS", "local 901"):
+        for retained in (
+            "10.10.10.3",
+            "10.10.10.4",
+            "route 10.12.0.0/24",
+            "route 10.13.0.0/24",
+            "SHARED-VRF",
+            "SHARED-POLICY",
+            "vrf-target target:64500:1",
+            "scheduler-map KEEP",
+            "interface ge-0/0/20.0",
+            "MIXED-VPWS",
+            "local 901",
+        ):
             self.assertIn(retained, rendered)
 
     def test_unknown_active_reference_is_warned_and_deferred(self):
@@ -100,7 +155,9 @@ class JunosNniPruningTest(unittest.TestCase):
         self.assertTrue(outcome.warnings)
         self.assertTrue(outcome.deferred_interface_references)
 
-    def test_descriptions_comments_and_inactive_references_are_not_dependencies(self):
+    def test_descriptions_comments_and_inactive_references_are_not_dependencies(
+        self,
+    ):
         document = load("junos_nni_pruning_inactive.cfg")
         outcome = prune_non_nni(document, {"ge-0/0/0"})
         self.assertEqual(outcome.errors, [])
@@ -113,18 +170,37 @@ class JunosNniPruningTest(unittest.TestCase):
         self.assertEqual(outcome.errors, [])
         self.assertIn("l3-interface irb.10", document.render())
         self.assertNotIn("RED", document.render())
-        self.assertEqual({spec.name for spec in document.interfaces.analysis.interface_specs()}, {"ge-0/0/0.0", "irb.10"})
+        self.assertEqual(
+            {
+                spec.name
+                for spec in document.interfaces.analysis.interface_specs()
+            },
+            {"ge-0/0/0.0", "irb.10"},
+        )
 
     def test_final_validation_rejects_conflicting_units_and_gateway_role(self):
         document = load("junos_nni_pruning_invalid.cfg")
         outcome = validate_pruned_references(document, set())
         self.assertEqual(len(outcome.errors), 4)
-        self.assertTrue(any("二三层模式冲突" in error for error in outcome.errors))
-        self.assertTrue(any("重复逻辑接口" in error for error in outcome.errors))
-        self.assertTrue(any("非法网关引用" in error for error in outcome.errors))
-        self.assertTrue(any("网关接口缺失" in error and "irb.999" in error for error in outcome.errors))
+        self.assertTrue(
+            any("二三层模式冲突" in error for error in outcome.errors)
+        )
+        self.assertTrue(
+            any("重复逻辑接口" in error for error in outcome.errors)
+        )
+        self.assertTrue(
+            any("非法网关引用" in error for error in outcome.errors)
+        )
+        self.assertTrue(
+            any(
+                "网关接口缺失" in error and "irb.999" in error
+                for error in outcome.errors
+            )
+        )
 
-    def test_final_validation_warns_for_source_semantic_conflicts_by_default(self):
+    def test_final_validation_warns_for_source_semantic_conflicts_by_default(
+        self,
+    ):
         document = load("junos_nni_pruning_invalid.cfg")
 
         outcome = document.validation.validate_interfaces(
@@ -138,10 +214,12 @@ class JunosNniPruningTest(unittest.TestCase):
             1,
             outcome.errors,
         )
-        self.assertTrue(any(
-            "网关接口缺失" in error and "irb.999" in error
-            for error in outcome.errors
-        ))
+        self.assertTrue(
+            any(
+                "网关接口缺失" in error and "irb.999" in error
+                for error in outcome.errors
+            )
+        )
         rendered = "\n".join(outcome.warnings)
         self.assertIn("二三层模式冲突", rendered)
         self.assertIn("重复逻辑接口", rendered)
@@ -159,15 +237,15 @@ class JunosNniPruningTest(unittest.TestCase):
             strict_input_validation=True,
         )
 
-        self.assertFalse(any(
-            "二三层模式冲突" in error for error in loose.errors
-        ))
-        self.assertTrue(any(
-            "二三层模式冲突" in warning for warning in loose.warnings
-        ))
-        self.assertTrue(any(
-            "二三层模式冲突" in error for error in strict.errors
-        ))
+        self.assertFalse(
+            any("二三层模式冲突" in error for error in loose.errors)
+        )
+        self.assertTrue(
+            any("二三层模式冲突" in warning for warning in loose.warnings)
+        )
+        self.assertTrue(
+            any("二三层模式冲突" in error for error in strict.errors)
+        )
 
     def test_final_reference_validation_is_read_only(self):
         document = load("junos_nni_pruning_unknown.cfg")
@@ -177,9 +255,13 @@ class JunosNniPruningTest(unittest.TestCase):
         self.assertTrue(outcome.errors)
         self.assertEqual(document.render(), before)
 
-    def test_final_validation_allows_nni_target_to_reuse_a_removed_source_name(self):
+    def test_final_validation_allows_nni_target_to_reuse_a_removed_source_name(
+        self,
+    ):
         document = load("junos_nni_pruning_unknown.cfg")
-        outcome = validate_pruned_references(document, {"ge-0/0/1", "ge-0/0/1.0"})
+        outcome = validate_pruned_references(
+            document, {"ge-0/0/1", "ge-0/0/1.0"}
+        )
         self.assertEqual(outcome.errors, [])
 
 

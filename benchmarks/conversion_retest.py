@@ -12,7 +12,7 @@ import sys
 import tempfile
 from pathlib import Path
 
-from adaptation.service import _write_text, convert
+from gns3_config_adaptor.adaptation.service import _write_text, convert
 
 
 def sample(args, warmup):

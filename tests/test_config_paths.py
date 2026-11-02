@@ -5,7 +5,7 @@ from __future__ import annotations
 import unittest
 from pathlib import Path
 
-from impl.common.support.config_paths import (
+from gns3_config_adaptor.impl.common.support.config_paths import (
     RuleYamlFile,
     rule_pack_dir,
     rule_yaml_path,
@@ -17,15 +17,17 @@ PROJECT_ROOT = Path(__file__).parents[1]
 class RuleYamlPathTest(unittest.TestCase):
 
     def test_rule_yaml_accessors_accept_vendor_dir_keyword(self):
-        expected_dir = PROJECT_ROOT / "config" / "rules" / "cisco" / "xrv9000"
+        expected_dir = (
+            PROJECT_ROOT / "config" / "rules" / "cisco_iosxr" / "xrv9000"
+        )
 
         self.assertEqual(
-            rule_pack_dir(vendor_dir="cisco", image="xrv9000"),
+            rule_pack_dir(vendor_dir="cisco_iosxr", image="xrv9000"),
             expected_dir,
         )
         self.assertEqual(
             rule_yaml_path(
-                vendor_dir="cisco",
+                vendor_dir="cisco_iosxr",
                 image="xrv9000",
                 rule_file=RuleYamlFile.CLEANING,
             ),
@@ -34,8 +36,8 @@ class RuleYamlPathTest(unittest.TestCase):
 
     def test_rule_yaml_accessors_resolve_existing_vendor_files(self):
         cases = (
-            ("cisco", "xrv9000"),
-            ("juniper", "vmx"),
+            ("cisco_iosxr", "xrv9000"),
+            ("juniper_junos", "vmx"),
         )
         rule_files = (
             (RuleYamlFile.MANIFEST, "manifest.yaml"),

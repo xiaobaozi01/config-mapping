@@ -15,9 +15,16 @@ import re
 import statistics
 import time
 
-from impl.cisco.document import CiscoDocument
-from impl.common.rules.cleaning import CleaningOperation, matches_cleaning_path
-from impl.juniper.document import JunosDocument
+from gns3_config_adaptor.impl.cisco_iosxrv9k_7_11_1_config_mapping_handler.document import (
+    CiscoDocument,
+)
+from gns3_config_adaptor.impl.common.rules.cleaning import (
+    CleaningOperation,
+    matches_cleaning_path,
+)
+from gns3_config_adaptor.impl.juniper_vjunos_router_23_2R1_15_config_mapping_handler.document import (
+    JunosDocument,
+)
 
 
 def configuration(vendor: str, lines: int) -> str:
@@ -25,7 +32,10 @@ def configuration(vendor: str, lines: int) -> str:
     block_lines = 20 if vendor == "cisco" else 22
     blocks = (lines - (0 if vendor == "cisco" else 2)) // block_lines
     for index in range(blocks):
-        children = [f"drop-marker-{index % 5}", f"rewrite-marker-{index % 5} old"]
+        children = [
+            f"drop-marker-{index % 5}",
+            f"rewrite-marker-{index % 5} old",
+        ]
         children += [f"keep-{number} original" for number in range(16)]
         if vendor == "cisco":
             result += [f"interface GigabitEthernet0/0/0/{index}"]
@@ -37,17 +47,25 @@ def configuration(vendor: str, lines: int) -> str:
             result += ["  }", " }"]
     if vendor == "juniper":
         result.append("}")
-    result += [("!" if vendor == "cisco" else "#") + " padding"] * (lines - len(result))
+    result += [("!" if vendor == "cisco" else "#") + " padding"] * (
+        lines - len(result)
+    )
     return "\n".join(result) + "\n"
 
 
 def operations(vendor: str, count: int) -> list[CleaningOperation]:
-    path = (r"^interface\b",) if vendor == "cisco" else ("^interfaces$", "^ge-", r"^unit\s+1$")
+    path = (
+        (r"^interface\b",)
+        if vendor == "cisco"
+        else ("^interfaces$", "^ge-", r"^unit\s+1$")
+    )
     return [
         CleaningOperation(path, f"^drop-marker-{index}$", "delete")
         for index in range(count // 2)
     ] + [
-        CleaningOperation(path, f"^(rewrite-marker-{index}) old$", "replace", r"\g<1> new")
+        CleaningOperation(
+            path, f"^(rewrite-marker-{index}) old$", "replace", r"\g<1> new"
+        )
         for index in range(count - count // 2)
     ]
 
@@ -76,12 +94,16 @@ def legacy_clean(document, rules):
             elif not document._parser.is_effective(node):
                 return
             statement = header(node)
-            if matches_cleaning_path(ancestors, rule.path) and pattern.search(statement):
+            if matches_cleaning_path(ancestors, rule.path) and pattern.search(
+                statement
+            ):
                 hits += 1
                 if rule.action == "delete":
                     node.active = False
                     return
-                node.header = pattern.sub(rule.value or "", node.header if cisco else statement)
+                node.header = pattern.sub(
+                    rule.value or "", node.header if cisco else statement
+                )
                 if not cisco and not node.is_block:
                     node.header += ";"
                 statement = header(node)
@@ -100,7 +122,9 @@ def batch_clean(document, rules):
 
 def run(vendor: str, line_count: int, rule_count: int, repeat: int) -> None:
     cls = CiscoDocument if vendor == "cisco" else JunosDocument
-    source, rules = configuration(vendor, line_count), operations(vendor, rule_count)
+    source, rules = configuration(vendor, line_count), operations(
+        vendor, rule_count
+    )
     results = []
     reference = None
     for name, execute in (("legacy", legacy_clean), ("optimized", batch_clean)):
@@ -125,12 +149,18 @@ def run(vendor: str, line_count: int, rule_count: int, repeat: int) -> None:
         profile.runcall(execute, document, rules)
         stats = pstats.Stats(profile).stats
         visits = sum(
-            value[1] for (filename, _, function), value in stats.items()
+            value[1]
+            for (filename, _, function), value in stats.items()
             if function == ("visit" if name == "legacy" else "walk")
-            and (filename == __file__ if name == "legacy" else filename.endswith(f"/{vendor}/document.py"))
+            and (
+                filename == __file__
+                if name == "legacy"
+                else filename.endswith(f"/{vendor}/document.py")
+            )
         )
         searches = sum(
-            value[1] for (_, _, function), value in stats.items()
+            value[1]
+            for (_, _, function), value in stats.items()
             if function == "<method 'search' of 're.Pattern' objects>"
         )
         elapsed = statistics.median(timings)
@@ -140,7 +170,10 @@ def run(vendor: str, line_count: int, rule_count: int, repeat: int) -> None:
             f"median={elapsed:.4f}s, node_visits={visits:,}, regex_searches={searches:,}",
             flush=True,
         )
-    print(f"{vendor}: speedup={results[0] / results[1]:.2f}x; AST and per-rule counts identical", flush=True)
+    print(
+        f"{vendor}: speedup={results[0] / results[1]:.2f}x; AST and per-rule counts identical",
+        flush=True,
+    )
 
 
 if __name__ == "__main__":

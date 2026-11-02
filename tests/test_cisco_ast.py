@@ -7,8 +7,11 @@ from pathlib import Path
 
 from cisco_support import delete_context, replace_header
 
-from adaptation.cleaning_rules import CleaningRulesHandler
-from impl.cisco.document import CiscoDocument, CiscoNode
+from gns3_config_adaptor.adaptation.cleaning_rules import CleaningRulesHandler
+from gns3_config_adaptor.impl.cisco_iosxrv9k_7_11_1_config_mapping_handler.document import (
+    CiscoDocument,
+    CiscoNode,
+)
 
 FIXTURES = Path(__file__).parent / "fixtures" / "cisco_ast"
 
@@ -132,7 +135,9 @@ class CiscoAstTest(unittest.TestCase):
         self.assertEqual(
             document.root.nodes[2].comment, "!! GigabitEthernet0/0/0/1"
         )
-        self.assertEqual(document.interfaces.analysis.business_interface_names(), set())
+        self.assertEqual(
+            document.interfaces.analysis.business_interface_names(), set()
+        )
         self.assertEqual(
             document.cleaning.apply_rule((), "^!!", "delete", None),
             0,

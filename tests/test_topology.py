@@ -8,7 +8,7 @@ from unittest import TestCase
 
 from openpyxl import Workbook
 
-from adaptation.topology import load_topology
+from gns3_config_adaptor.adaptation.topology import load_topology
 
 
 def _write_topology(

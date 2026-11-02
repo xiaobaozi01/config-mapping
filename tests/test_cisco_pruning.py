@@ -3,7 +3,9 @@
 import unittest
 from pathlib import Path
 
-from impl.cisco.document import CiscoDocument
+from gns3_config_adaptor.impl.cisco_iosxrv9k_7_11_1_config_mapping_handler.document import (
+    CiscoDocument,
+)
 
 FIXTURES = Path(__file__).parent / "fixtures" / "core_pruning"
 
@@ -31,7 +33,9 @@ class CiscoPruningTest(unittest.TestCase):
         self.assertIn("vrf SHARED", output)
         self.assertIn("65000:1", output)
         self.assertFalse(
-            doc.validation.validate_interfaces(set(), result.removed_interfaces).errors
+            doc.validation.validate_interfaces(
+                set(), result.removed_interfaces
+            ).errors
         )
 
     def test_bgp_source_dependencies_remove_whole_sessions_and_templates(self):
@@ -146,7 +150,9 @@ class CiscoPruningTest(unittest.TestCase):
         ]:
             self.assertIn(retained, output)
         self.assertFalse(
-            doc.validation.validate_interfaces(set(), outcome.removed_interfaces).errors
+            doc.validation.validate_interfaces(
+                set(), outcome.removed_interfaces
+            ).errors
         )
 
     def test_tunnel_is_preserved_but_unreferenced_line_track_is_removed(self):

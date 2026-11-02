@@ -7,16 +7,18 @@ from pathlib import Path
 from cisco_support import append_child, delete_context
 from cleaning_support import clean_hardware
 
-from impl.cisco.document import CiscoDocument
-from impl.cisco.operations.interfaces import (
+from gns3_config_adaptor.impl.cisco_iosxrv9k_7_11_1_config_mapping_handler.document import (
+    CiscoDocument,
+)
+from gns3_config_adaptor.impl.cisco_iosxrv9k_7_11_1_config_mapping_handler.operations.interfaces import (
     clone_interface_tree,
     ensure_parent_interface,
     find_interface_node,
 )
-from impl.cisco.rules import (
+from gns3_config_adaptor.impl.cisco_iosxrv9k_7_11_1_config_mapping_handler.rules import (
     adapt_interfaces,
 )
-from impl.cisco.rules import (
+from gns3_config_adaptor.impl.cisco_iosxrv9k_7_11_1_config_mapping_handler.rules import (
     validate_compatibility as validate_interfaces,
 )
 
@@ -25,28 +27,47 @@ TARGETS = {"GigabitEthernet0/0/0/0", "GigabitEthernet0/0/0/1.200"}
 
 
 class CiscoCompatibilityTest(unittest.TestCase):
+
     def test_interface_adaptation_rules_are_owned_by_compatibility_module(self):
-        from impl.cisco.rules import compatibility
+        from gns3_config_adaptor.impl.cisco_iosxrv9k_7_11_1_config_mapping_handler.rules import (
+            compatibility,
+        )
 
         self.assertTrue(hasattr(compatibility, "EthertypeVisitor"))
         self.assertEqual(
-            compatibility.EthertypeVisitor.__module__, compatibility.__name__,
+            compatibility.EthertypeVisitor.__module__,
+            compatibility.__name__,
         )
         self.assertIsNone(
-            importlib.util.find_spec("impl.cisco.rules.interface_adaptation"),
+            importlib.util.find_spec(
+                "gns3_config_adaptor.impl.cisco_iosxrv9k_7_11_1_config_mapping_handler.rules.interface_adaptation"
+            ),
         )
 
     def test_active_configuration_after_end_fails_final_validation(self):
         document = CiscoDocument((FIXTURES / "iosxr_early_end.cfg").read_text())
         outcome = validate_interfaces(document, TARGETS)
-        self.assertTrue(any("end 后存在活动配置" in error for error in outcome.errors))
+        self.assertTrue(
+            any("end 后存在活动配置" in error for error in outcome.errors)
+        )
 
-    def test_scalar_conflicts_fail_without_rejecting_multiple_secondary_or_ipv6_addresses(self):
-        document = CiscoDocument((FIXTURES / "iosxr_scalar_conflicts.cfg").read_text())
+    def test_scalar_conflicts_fail_without_rejecting_multiple_secondary_or_ipv6_addresses(
+        self,
+    ):
+        document = CiscoDocument(
+            (FIXTURES / "iosxr_scalar_conflicts.cfg").read_text()
+        )
         outcome = validate_interfaces(document, TARGETS)
         self.assertEqual(len(outcome.errors), 2)
-        self.assertTrue(any("mtu 存在冲突" in error for error in outcome.errors))
-        self.assertTrue(any("ipv4 address primary 存在冲突" in error for error in outcome.errors))
+        self.assertTrue(
+            any("mtu 存在冲突" in error for error in outcome.errors)
+        )
+        self.assertTrue(
+            any(
+                "ipv4 address primary 存在冲突" in error
+                for error in outcome.errors
+            )
+        )
 
     def test_adaptation_preserves_business_and_unknown_commands(self):
         document = CiscoDocument((FIXTURES / "iosxr_targets.cfg").read_text())
@@ -56,8 +77,14 @@ class CiscoCompatibilityTest(unittest.TestCase):
         self.assertEqual(len(outcome.changes), 3)
         parent = find_interface_node(document, "GigabitEthernet0/0/0/0")
         sub = find_interface_node(document, "GigabitEthernet0/0/0/0.100")
-        self.assertIn("ethernet dot1q tunneling ethertype 0x9100", [node.header for node in parent.nodes])
-        self.assertNotIn("ethernet dot1q tunneling ethertype 0x9100", [node.header for node in sub.nodes])
+        self.assertIn(
+            "ethernet dot1q tunneling ethertype 0x9100",
+            [node.header for node in parent.nodes],
+        )
+        self.assertNotIn(
+            "ethernet dot1q tunneling ethertype 0x9100",
+            [node.header for node in sub.nodes],
+        )
         rendered = document.render()
         self.assertIn("ipv4 address 192.0.2.1", rendered)
         self.assertIn("rewrite ingress tag pop 1 symmetric", rendered)
@@ -74,7 +101,16 @@ class CiscoCompatibilityTest(unittest.TestCase):
         document = CiscoDocument((FIXTURES / "iosxr_invalid.cfg").read_text())
         outcome = validate_interfaces(document, TARGETS)
         text = "\n".join(outcome.errors)
-        for fragment in ("三层地址或 VRF", "子接口封装", "父口不能配置为 l2transport", "L2 标签改写", "BVI 接口", "必须配置 l2transport", "不能引用 GigabitEthernet", "不存在的 BVI"):
+        for fragment in (
+            "三层地址或 VRF",
+            "子接口封装",
+            "父口不能配置为 l2transport",
+            "L2 标签改写",
+            "BVI 接口",
+            "必须配置 l2transport",
+            "不能引用 GigabitEthernet",
+            "不存在的 BVI",
+        ):
             with self.subTest(fragment=fragment):
                 self.assertIn(fragment, text)
 
@@ -107,20 +143,24 @@ class CiscoCompatibilityTest(unittest.TestCase):
             strict_input_validation=False,
         )
 
-        self.assertTrue(any(
-            "残留不兼容属性" in error for error in outcome.errors
-        ))
+        self.assertTrue(
+            any("残留不兼容属性" in error for error in outcome.errors)
+        )
 
     def test_ethertype_collision_is_reported_without_overwriting_source(self):
         document = CiscoDocument((FIXTURES / "iosxr_targets.cfg").read_text())
         parent = find_interface_node(document, "GigabitEthernet0/0/0/0")
         source = find_interface_node(document, "GigabitEthernet0/0/0/0.100")
-        setting = next(node for node in source.nodes if "ethertype" in node.header)
+        setting = next(
+            node for node in source.nodes if "ethertype" in node.header
+        )
         different = setting.header.replace("0x9100", "0x9200")
         append_child(document, parent, different)
         parent = find_interface_node(document, "GigabitEthernet0/0/0/0")
         source = find_interface_node(document, "GigabitEthernet0/0/0/0.100")
-        setting = next(node for node in source.nodes if "ethertype" in node.header)
+        setting = next(
+            node for node in source.nodes if "ethertype" in node.header
+        )
         outcome = adapt_interfaces(document, TARGETS)
         self.assertEqual(len(outcome.errors), 1)
         self.assertIn("冲突", outcome.errors[0])
@@ -130,7 +170,9 @@ class CiscoCompatibilityTest(unittest.TestCase):
     def test_new_parent_and_missing_clone_are_inserted_before_end(self):
         document = CiscoDocument("hostname R1\n!\nend\n")
         ensure_parent_interface(document, "GigabitEthernet0/0/0/0")
-        clone_interface_tree(document, "Bundle-Ether10", "GigabitEthernet0/0/0/1")
+        clone_interface_tree(
+            document, "Bundle-Ether10", "GigabitEthernet0/0/0/1"
+        )
         commands = document.render().strip().splitlines()
         self.assertEqual(commands[-1], "end")
         self.assertIn("interface GigabitEthernet0/0/0/0", commands)
@@ -144,7 +186,9 @@ class CiscoCompatibilityTest(unittest.TestCase):
         self.assertFalse(outcome.errors)
         self.assertEqual(document.render().strip().splitlines()[-1], "end")
         parent = find_interface_node(document, "GigabitEthernet0/0/0/0")
-        self.assertTrue(any("ethertype" in node.header for node in parent.nodes))
+        self.assertTrue(
+            any("ethertype" in node.header for node in parent.nodes)
+        )
 
 
 if __name__ == "__main__":

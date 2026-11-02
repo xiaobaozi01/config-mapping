@@ -5,26 +5,36 @@ from dataclasses import replace
 from pathlib import Path
 from unittest.mock import patch
 
-from impl.cisco import rules
-from impl.cisco.document import CiscoDocument
-from impl.cisco.syntax.parser import ConfigurationParseError
-from impl.cisco.rules import compatibility
-from impl.cisco.rules.support import (
+from gns3_config_adaptor.impl.cisco_iosxrv9k_7_11_1_config_mapping_handler import (
+    rules,
+)
+from gns3_config_adaptor.impl.cisco_iosxrv9k_7_11_1_config_mapping_handler.document import (
+    CiscoDocument,
+)
+from gns3_config_adaptor.impl.cisco_iosxrv9k_7_11_1_config_mapping_handler.rules import (
+    compatibility,
+)
+from gns3_config_adaptor.impl.cisco_iosxrv9k_7_11_1_config_mapping_handler.rules.support import (
     CiscoRuleVisitor,
     CiscoVisitorRule,
     InterfaceScope,
     RuleContractError,
     compatibility_interfaces_scope,
 )
-from impl.common.config_ast.model import tree_signature
-from impl.common.domain.interface import InterfaceKind
-from impl.common.domain.outcomes import (
+from gns3_config_adaptor.impl.cisco_iosxrv9k_7_11_1_config_mapping_handler.syntax.parser import (
+    ConfigurationParseError,
+)
+from gns3_config_adaptor.impl.common.config_ast.model import tree_signature
+from gns3_config_adaptor.impl.common.domain.interface import InterfaceKind
+from gns3_config_adaptor.impl.common.domain.outcomes import (
     InterfaceAdaptationOutcome,
     InterfacePruningOutcome,
     SimulationAdaptationOutcome,
 )
-from impl.common.domain.policies import SimulationAdaptationPolicy
-from impl.common.rules import (
+from gns3_config_adaptor.impl.common.domain.policies import (
+    SimulationAdaptationPolicy,
+)
+from gns3_config_adaptor.impl.common.rules import (
     AdaptContext,
     FunctionRule,
     PruneContext,

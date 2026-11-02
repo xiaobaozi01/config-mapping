@@ -6,18 +6,42 @@ from unittest.mock import patch
 
 import pytest
 
-from impl.cisco.document import CiscoDocument
-from impl.cisco.rules.runtime import CiscoRuleVisitor, CiscoVisitorRule
-from impl.common.config_ast.editor import EditConflictError
-from impl.common.config_ast.model import ConfigNode, tree_signature
-from impl.common.domain.outcomes import InterfaceAdaptationOutcome
-from impl.juniper.document import JunosDocument
-from impl.juniper.rules.runtime import JunosVisitorRule
+from gns3_config_adaptor.impl.cisco_iosxrv9k_7_11_1_config_mapping_handler.document import (
+    CiscoDocument,
+)
+from gns3_config_adaptor.impl.cisco_iosxrv9k_7_11_1_config_mapping_handler.rules.runtime import (
+    CiscoRuleVisitor,
+    CiscoVisitorRule,
+)
+from gns3_config_adaptor.impl.common.config_ast.editor import EditConflictError
+from gns3_config_adaptor.impl.common.config_ast.model import (
+    ConfigNode,
+    tree_signature,
+)
+from gns3_config_adaptor.impl.common.domain.outcomes import (
+    InterfaceAdaptationOutcome,
+)
+from gns3_config_adaptor.impl.juniper_vjunos_router_23_2R1_15_config_mapping_handler.document import (
+    JunosDocument,
+)
+from gns3_config_adaptor.impl.juniper_vjunos_router_23_2R1_15_config_mapping_handler.rules.runtime import (
+    JunosVisitorRule,
+)
 
 
-@pytest.mark.parametrize("vendor", ["cisco", "juniper"])
-def test_nodes_have_no_document_or_output_dependencies(vendor):
-    module = ast.parse(Path(f"src/impl/{vendor}/syntax/ast.py").read_text())
+@pytest.mark.parametrize(
+    "handler_package",
+    [
+        "cisco_iosxrv9k_7_11_1_config_mapping_handler",
+        "juniper_vjunos_router_23_2R1_15_config_mapping_handler",
+    ],
+)
+def test_nodes_have_no_document_or_output_dependencies(handler_package):
+    module = ast.parse(
+        Path(
+            "src/gns3_config_adaptor/impl/" f"{handler_package}/syntax/ast.py"
+        ).read_text()
+    )
     imports = [
         node.module
         for node in ast.walk(module)
@@ -29,7 +53,7 @@ def test_nodes_have_no_document_or_output_dependencies(vendor):
     )
     document = (
         CiscoDocument("hostname A\n")
-        if vendor == "cisco"
+        if handler_package.startswith("cisco_")
         else JunosDocument("system { host-name A; }")
     )
     assert not hasattr(document.root, "text")

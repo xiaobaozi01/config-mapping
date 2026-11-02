@@ -9,11 +9,13 @@ import unittest
 from pathlib import Path
 from unittest.mock import patch
 
-from adaptation import input_normalization
-from adaptation.input_normalization import normalize_input
-from adaptation.models import Vendor
-from adaptation.service import convert
-from impl.juniper.document import JunosDocument
+from gns3_config_adaptor.adaptation import input_normalization
+from gns3_config_adaptor.adaptation.input_normalization import normalize_input
+from gns3_config_adaptor.adaptation.models import Vendor
+from gns3_config_adaptor.adaptation.service import convert
+from gns3_config_adaptor.impl.juniper_vjunos_router_23_2R1_15_config_mapping_handler.document import (
+    JunosDocument,
+)
 
 FIXTURES = Path(__file__).parent / "fixtures"
 

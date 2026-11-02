@@ -15,23 +15,29 @@ import time
 import tracemalloc
 from contextlib import nullcontext
 
-from impl.cisco.document import CiscoDocument
-from impl.cisco.operations.interfaces.access import (
+from gns3_config_adaptor.impl.cisco_iosxrv9k_7_11_1_config_mapping_handler.document import (
+    CiscoDocument,
+)
+from gns3_config_adaptor.impl.cisco_iosxrv9k_7_11_1_config_mapping_handler.operations.interfaces.access import (
     find_interface_node as cisco_find,
 )
-from impl.common.semantic_identity import (
+from gns3_config_adaptor.impl.common.semantic_identity import (
     MergeKind,
     SemanticResolver,
     SemanticRule,
     StatementContext,
 )
-from impl.juniper.document import JunosDocument
-from impl.juniper.operations.interfaces.access import (
+from gns3_config_adaptor.impl.juniper_vjunos_router_23_2R1_15_config_mapping_handler.document import (
+    JunosDocument,
+)
+from gns3_config_adaptor.impl.juniper_vjunos_router_23_2R1_15_config_mapping_handler.operations.interfaces.access import (
     find_interface_node as junos_find,
 )
 
 try:
-    from impl.common.support.optimization_cache import optimization_scope
+    from gns3_config_adaptor.impl.common.support.optimization_cache import (
+        optimization_scope,
+    )
 except ImportError:
 
     def optimization_scope(_budget):

@@ -6,8 +6,11 @@ from pathlib import Path
 
 import yaml
 
-from adaptation.models import Vendor
-from adaptation.profiles import load_profiles, normalize_data_interfaces
+from gns3_config_adaptor.adaptation.models import Vendor
+from gns3_config_adaptor.adaptation.profiles import (
+    load_profiles,
+    normalize_data_interfaces,
+)
 
 
 class ProfileDataInterfaceTest(unittest.TestCase):

@@ -22,14 +22,14 @@
 ## 阅读顺序
 
 1. 阅读仓库适用的 AGENTS.md，保留已有工作区修改。
-2. 阅读 `docs/configuration-rule-authoring.md`、`src/impl/cisco/rules/__init__.py` 和 `src/impl/common/rules/engine.py`，确认阶段、上下文与执行顺序。
-3. 阅读 `src/impl/cisco/rules/` 中的 `support.py`、`runtime.py`、`scopes.py` 和 `docs/config-ast.md`，理解托管生命周期及文本重写。
-4. 选择 `src/impl/cisco/rules/examples.py` 中对应类型的模板，并参考 `tests/test_rule_extensions.py`。真实删除与移动示例见 `compatibility.py`。
+2. 阅读 `docs/configuration-rule-authoring.md`、`src/gns3_config_adaptor/impl/cisco_iosxrv9k_7_11_1_config_mapping_handler/rules/__init__.py` 和 `src/gns3_config_adaptor/impl/common/rules/engine.py`，确认阶段、上下文与执行顺序。
+3. 阅读 `src/gns3_config_adaptor/impl/cisco_iosxrv9k_7_11_1_config_mapping_handler/rules/` 中的 `support.py`、`runtime.py`、`scopes.py` 和 `docs/config-ast.md`，理解托管生命周期及文本重写。
+4. 选择 `src/gns3_config_adaptor/impl/cisco_iosxrv9k_7_11_1_config_mapping_handler/rules/examples.py` 中对应类型的模板，并参考 `tests/test_rule_extensions.py`。真实删除与移动示例见 `compatibility.py`。
 
 ## 实现约束
 
 - 按路径和正则固定删除、替换优先使用已有 cleaning.yaml；复制 `docs/rule-templates/cleaning.yaml` 的列表项，保留现有 YAML 执行语义。
-- Cisco 裁剪、适配、兼容校验、最终校验和模拟适配代码规则统一放入 `impl/cisco/rules/<业务名>.py`，从 `impl.cisco.rules.support` 导入 `CiscoRuleVisitor`、`CiscoVisitorRule` 和范围工具。定义 Visitor 与注册常量，在 `impl/cisco/rules/__init__.py` 对应阶段显式登记一条常量，ID 为 `cisco.<阶段>.<业务名>`；不要为跨对象规则另建 FunctionRule 分支。
+- Cisco 裁剪、适配、兼容校验、最终校验和模拟适配代码规则统一放入 `gns3_config_adaptor/impl/cisco_iosxrv9k_7_11_1_config_mapping_handler/rules/<业务名>.py`，从 `gns3_config_adaptor.impl.cisco_iosxrv9k_7_11_1_config_mapping_handler.rules.support` 导入 `CiscoRuleVisitor`、`CiscoVisitorRule` 和范围工具。定义 Visitor 与注册常量，在 `gns3_config_adaptor/impl/cisco_iosxrv9k_7_11_1_config_mapping_handler/rules/__init__.py` 对应阶段显式登记一条常量，ID 为 `cisco.<阶段>.<业务名>`；不要为跨对象规则另建 FunctionRule 分支。
 - 注册项声明 Visitor 工厂、selector、具名 condition、readonly、outcome_factory 和可选 result_mapper。每次执行使用新的 Visitor、会话和 Outcome；不在模块变量或注册项缓存节点、编辑器或设备状态。
 - 不修改流水线来接入普通规则，不自动发现目录，不添加通用参数字典或新的规则配置体系。确需新业务参数时扩展既有策略和 Profile 加载契约。
 - AST 是可变配置状态。Visitor 通过 session.document 查询、session.result 收集诊断、session.edits 收集编辑；执行器在遍历完成后统一应用修改，并在失败时恢复树副本。
@@ -49,7 +49,7 @@
 ## 必须输出
 
 1. 规则意图、选择该阶段的原因、作用范围和冲突策略。
-2. 实现代码及 `impl/cisco/rules/__init__.py` 的精确注册修改；YAML 规则给出实际列表项。
+2. 实现代码及 `gns3_config_adaptor/impl/cisco_iosxrv9k_7_11_1_config_mapping_handler/rules/__init__.py` 的精确注册修改；YAML 规则给出实际列表项。
 3. tests/fixtures 下的 .cfg 样例：命中、不命中、非目标对象及冲突。
 4. 测试覆盖实际 Document 入口、报告规则 ID、作用范围（空集合、缩写、父子接口、非目标对象）、多设备及重复执行不共享状态、幂等性、业务冲突不提交。校验比较执行前后解析快照；依赖裁剪验证删除集合传递，模拟验证模式、开关及分类计数。新增结果映射需验证映射失败恢复且失败动作不进报告。
 5. 执行下列检查并如实报告结果；测试失败时修复，不能声称测试通过等价于实机验证。

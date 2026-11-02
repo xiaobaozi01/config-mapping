@@ -14,11 +14,23 @@ import statistics
 import time
 import tracemalloc
 
-from impl.cisco.document import CiscoDocument
-from impl.cisco.rules import pruning
-from impl.cisco.rules.runtime import CiscoRuleVisitor, CiscoVisitorRule
-from impl.juniper.document import JunosDocument
-from impl.juniper.rules.runtime import JunosRuleVisitor, JunosVisitorRule
+from gns3_config_adaptor.impl.cisco_iosxrv9k_7_11_1_config_mapping_handler.document import (
+    CiscoDocument,
+)
+from gns3_config_adaptor.impl.cisco_iosxrv9k_7_11_1_config_mapping_handler.rules import (
+    pruning,
+)
+from gns3_config_adaptor.impl.cisco_iosxrv9k_7_11_1_config_mapping_handler.rules.runtime import (
+    CiscoRuleVisitor,
+    CiscoVisitorRule,
+)
+from gns3_config_adaptor.impl.juniper_vjunos_router_23_2R1_15_config_mapping_handler.document import (
+    JunosDocument,
+)
+from gns3_config_adaptor.impl.juniper_vjunos_router_23_2R1_15_config_mapping_handler.rules.runtime import (
+    JunosRuleVisitor,
+    JunosVisitorRule,
+)
 
 
 def prepare(vendor, nodes, rules, edits, case):  # noqa: C901 - scenario matrix

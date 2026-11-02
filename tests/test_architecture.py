@@ -4,17 +4,249 @@ from __future__ import annotations
 
 import ast
 import importlib.util
+import inspect
 import tomllib
 import unittest
 from pathlib import Path
 from types import SimpleNamespace
 
-from adaptation.models import Link
-from adaptation.nni import plan_nni_components
-from adaptation.pipeline import ConversionPipeline, build_default_pipeline
-from impl.cisco import CiscoDocument
-from impl.common.domain.contracts import VendorConfiguration
-from impl.juniper import JunosDocument
+from gns3_config_adaptor.adaptation.models import Link
+from gns3_config_adaptor.adaptation.nni import plan_nni_components
+from gns3_config_adaptor.adaptation.pipeline import (
+    ConversionPipeline,
+    build_default_pipeline,
+)
+from gns3_config_adaptor.impl.cisco_iosxrv9k_7_11_1_config_mapping_handler import (
+    CiscoDocument,
+)
+from gns3_config_adaptor.impl.cisco_iosxrv9k_7_11_1_config_mapping_handler.operations import (
+    bundles as cisco_bundles,
+)
+from gns3_config_adaptor.impl.cisco_iosxrv9k_7_11_1_config_mapping_handler.operations import (
+    cleaning as cisco_cleaning,
+)
+from gns3_config_adaptor.impl.cisco_iosxrv9k_7_11_1_config_mapping_handler.operations import (
+    compatibility as cisco_compatibility,
+)
+from gns3_config_adaptor.impl.cisco_iosxrv9k_7_11_1_config_mapping_handler.operations import (
+    groups as cisco_groups,
+)
+from gns3_config_adaptor.impl.cisco_iosxrv9k_7_11_1_config_mapping_handler.operations import (
+    interfaces as cisco_interfaces,
+)
+from gns3_config_adaptor.impl.cisco_iosxrv9k_7_11_1_config_mapping_handler.operations import (
+    pruning as cisco_pruning,
+)
+from gns3_config_adaptor.impl.cisco_iosxrv9k_7_11_1_config_mapping_handler.operations import (
+    references as cisco_references,
+)
+from gns3_config_adaptor.impl.cisco_iosxrv9k_7_11_1_config_mapping_handler.operations import (
+    simulation as cisco_simulation,
+)
+from gns3_config_adaptor.impl.cisco_iosxrv9k_7_11_1_config_mapping_handler.operations import (
+    validation as cisco_validation,
+)
+from gns3_config_adaptor.impl.cisco_iosxrv9k_7_11_1_config_mapping_handler.rules import (
+    compatibility as cisco_rule_compatibility,
+)
+from gns3_config_adaptor.impl.cisco_iosxrv9k_7_11_1_config_mapping_handler.rules import (
+    pruning as cisco_rule_pruning,
+)
+from gns3_config_adaptor.impl.cisco_iosxrv9k_7_11_1_config_mapping_handler.rules import (
+    simulation as cisco_rule_simulation,
+)
+from gns3_config_adaptor.impl.common.domain import capabilities
+from gns3_config_adaptor.impl.common.domain.contracts import VendorConfiguration
+from gns3_config_adaptor.impl.juniper_vjunos_router_23_2R1_15_config_mapping_handler import (
+    JunosDocument,
+)
+from gns3_config_adaptor.impl.juniper_vjunos_router_23_2R1_15_config_mapping_handler import (
+    rules as junos_rules,
+)
+from gns3_config_adaptor.impl.juniper_vjunos_router_23_2R1_15_config_mapping_handler.operations import (
+    bundles as junos_bundles,
+)
+from gns3_config_adaptor.impl.juniper_vjunos_router_23_2R1_15_config_mapping_handler.operations import (
+    cleaning as junos_cleaning,
+)
+from gns3_config_adaptor.impl.juniper_vjunos_router_23_2R1_15_config_mapping_handler.operations import (
+    compatibility as junos_compatibility,
+)
+from gns3_config_adaptor.impl.juniper_vjunos_router_23_2R1_15_config_mapping_handler.operations import (
+    groups as junos_groups,
+)
+from gns3_config_adaptor.impl.juniper_vjunos_router_23_2R1_15_config_mapping_handler.operations import (
+    interfaces as junos_interfaces,
+)
+from gns3_config_adaptor.impl.juniper_vjunos_router_23_2R1_15_config_mapping_handler.operations import (
+    pruning as junos_pruning,
+)
+from gns3_config_adaptor.impl.juniper_vjunos_router_23_2R1_15_config_mapping_handler.operations import (
+    references as junos_references,
+)
+from gns3_config_adaptor.impl.juniper_vjunos_router_23_2R1_15_config_mapping_handler.operations import (
+    simulation as junos_simulation,
+)
+from gns3_config_adaptor.impl.juniper_vjunos_router_23_2R1_15_config_mapping_handler.operations import (
+    validation as junos_validation,
+)
+from gns3_config_adaptor.impl.juniper_vjunos_router_23_2R1_15_config_mapping_handler.rules import (
+    pruning as junos_rule_pruning,
+)
+from gns3_config_adaptor.impl.juniper_vjunos_router_23_2R1_15_config_mapping_handler.rules import (
+    simulation as junos_rule_simulation,
+)
+
+CISCO_HANDLER_PACKAGE = "cisco_iosxrv9k_7_11_1_config_mapping_handler"
+JUNIPER_HANDLER_PACKAGE = (
+    "juniper_vjunos_router_23_2R1_15_config_mapping_handler"
+)
+VENDOR_HANDLER_PACKAGES = (CISCO_HANDLER_PACKAGE, JUNIPER_HANDLER_PACKAGE)
+VENDOR_HANDLER_BY_VENDOR = {
+    "cisco_iosxr": CISCO_HANDLER_PACKAGE,
+    "juniper_junos": JUNIPER_HANDLER_PACKAGE,
+}
+
+
+def _first_imported_package(parts: list[str]) -> str:
+    """返回导入目标在统一根包下的首个业务包名。"""
+    if parts[:1] == ["gns3_config_adaptor"] and len(parts) > 1:
+        return parts[1]
+    return parts[0] if parts else ""
+
+
+IMPLEMENTATION_PACKAGE_MODULES = (
+    "gns3_config_adaptor.impl.common.domain.contracts",
+    "gns3_config_adaptor.impl.common.domain.interface",
+    "gns3_config_adaptor.impl.common.domain.outcomes",
+    "gns3_config_adaptor.impl.common.domain.policies",
+    "gns3_config_adaptor.impl.common.rules.engine",
+    "gns3_config_adaptor.impl.common.rules.cleaning",
+    "gns3_config_adaptor.impl.common.rules.empty_blocks",
+    "gns3_config_adaptor.impl.common.support.config_paths",
+    "gns3_config_adaptor.impl.common.support.errors",
+    "gns3_config_adaptor.impl.common.support.interface_cache",
+    "gns3_config_adaptor.impl.common.support.lab_account",
+    "gns3_config_adaptor.impl.cisco_iosxrv9k_7_11_1_config_mapping_handler.syntax.ast",
+    "gns3_config_adaptor.impl.cisco_iosxrv9k_7_11_1_config_mapping_handler.syntax.parser",
+    "gns3_config_adaptor.impl.cisco_iosxrv9k_7_11_1_config_mapping_handler.syntax.writer",
+    "gns3_config_adaptor.impl.cisco_iosxrv9k_7_11_1_config_mapping_handler.syntax.semantics",
+    "gns3_config_adaptor.impl.cisco_iosxrv9k_7_11_1_config_mapping_handler.syntax.rewrite_helpers",
+    "gns3_config_adaptor.impl.cisco_iosxrv9k_7_11_1_config_mapping_handler.operations.groups",
+    "gns3_config_adaptor.impl.cisco_iosxrv9k_7_11_1_config_mapping_handler.operations.interfaces",
+    "gns3_config_adaptor.impl.cisco_iosxrv9k_7_11_1_config_mapping_handler.operations.bundles",
+    "gns3_config_adaptor.impl.cisco_iosxrv9k_7_11_1_config_mapping_handler.operations.cleaning",
+    "gns3_config_adaptor.impl.cisco_iosxrv9k_7_11_1_config_mapping_handler.operations.declarative_cleaning",
+    "gns3_config_adaptor.impl.cisco_iosxrv9k_7_11_1_config_mapping_handler.operations.management_cleaning",
+    "gns3_config_adaptor.impl.cisco_iosxrv9k_7_11_1_config_mapping_handler.operations.compatibility",
+    "gns3_config_adaptor.impl.cisco_iosxrv9k_7_11_1_config_mapping_handler.operations.pruning",
+    "gns3_config_adaptor.impl.cisco_iosxrv9k_7_11_1_config_mapping_handler.operations.references",
+    "gns3_config_adaptor.impl.cisco_iosxrv9k_7_11_1_config_mapping_handler.operations.simulation",
+    "gns3_config_adaptor.impl.cisco_iosxrv9k_7_11_1_config_mapping_handler.operations.validation",
+    "gns3_config_adaptor.impl.cisco_iosxrv9k_7_11_1_config_mapping_handler.support.clone_constraints",
+    "gns3_config_adaptor.impl.cisco_iosxrv9k_7_11_1_config_mapping_handler.support.empty_blocks",
+    "gns3_config_adaptor.impl.cisco_iosxrv9k_7_11_1_config_mapping_handler.support.identity",
+    "gns3_config_adaptor.impl.juniper_vjunos_router_23_2R1_15_config_mapping_handler.syntax.ast",
+    "gns3_config_adaptor.impl.juniper_vjunos_router_23_2R1_15_config_mapping_handler.syntax.parser",
+    "gns3_config_adaptor.impl.juniper_vjunos_router_23_2R1_15_config_mapping_handler.syntax.writer",
+    "gns3_config_adaptor.impl.juniper_vjunos_router_23_2R1_15_config_mapping_handler.operations.groups",
+    "gns3_config_adaptor.impl.juniper_vjunos_router_23_2R1_15_config_mapping_handler.operations.interfaces",
+    "gns3_config_adaptor.impl.juniper_vjunos_router_23_2R1_15_config_mapping_handler.operations.bundles",
+    "gns3_config_adaptor.impl.juniper_vjunos_router_23_2R1_15_config_mapping_handler.operations.cleaning",
+    "gns3_config_adaptor.impl.juniper_vjunos_router_23_2R1_15_config_mapping_handler.operations.declarative_cleaning",
+    "gns3_config_adaptor.impl.juniper_vjunos_router_23_2R1_15_config_mapping_handler.operations.management_cleaning",
+    "gns3_config_adaptor.impl.juniper_vjunos_router_23_2R1_15_config_mapping_handler.operations.compatibility",
+    "gns3_config_adaptor.impl.juniper_vjunos_router_23_2R1_15_config_mapping_handler.operations.pruning",
+    "gns3_config_adaptor.impl.juniper_vjunos_router_23_2R1_15_config_mapping_handler.operations.references",
+    "gns3_config_adaptor.impl.juniper_vjunos_router_23_2R1_15_config_mapping_handler.operations.simulation",
+    "gns3_config_adaptor.impl.juniper_vjunos_router_23_2R1_15_config_mapping_handler.operations.validation",
+    "gns3_config_adaptor.impl.juniper_vjunos_router_23_2R1_15_config_mapping_handler.support.clone_constraints",
+    "gns3_config_adaptor.impl.juniper_vjunos_router_23_2R1_15_config_mapping_handler.support.empty_blocks",
+    "gns3_config_adaptor.impl.juniper_vjunos_router_23_2R1_15_config_mapping_handler.support.identity",
+)
+
+CAPABILITY_IMPLEMENTATION_PAIRS = (
+    (
+        capabilities.InterfaceAnalysis,
+        cisco_interfaces.CiscoInterfaceAnalysis,
+    ),
+    (
+        capabilities.InterfaceAnalysis,
+        junos_interfaces.JunosInterfaceAnalysis,
+    ),
+    (
+        capabilities.InterfaceTransform,
+        cisco_interfaces.CiscoInterfaceTransform,
+    ),
+    (
+        capabilities.InterfaceTransform,
+        junos_interfaces.JunosInterfaceTransform,
+    ),
+    (
+        capabilities.BundleOperations,
+        cisco_bundles.CiscoBundleOperations,
+    ),
+    (
+        capabilities.BundleOperations,
+        junos_bundles.JunosBundleOperations,
+    ),
+    (
+        capabilities.GroupOperations,
+        cisco_groups.CiscoGroupOperations,
+    ),
+    (
+        capabilities.GroupOperations,
+        junos_groups.JunosGroupOperations,
+    ),
+    (
+        capabilities.CleaningOperations,
+        cisco_cleaning.CiscoCleaningOperations,
+    ),
+    (
+        capabilities.CleaningOperations,
+        junos_cleaning.JunosCleaningOperations,
+    ),
+    (
+        capabilities.PruningOperations,
+        cisco_pruning.CiscoPruningOperations,
+    ),
+    (
+        capabilities.PruningOperations,
+        junos_pruning.JunosPruningOperations,
+    ),
+    (
+        capabilities.CompatibilityOperations,
+        cisco_compatibility.CiscoCompatibilityOperations,
+    ),
+    (
+        capabilities.CompatibilityOperations,
+        junos_compatibility.JunosCompatibilityOperations,
+    ),
+    (
+        capabilities.ValidationOperations,
+        cisco_validation.CiscoValidationOperations,
+    ),
+    (
+        capabilities.ValidationOperations,
+        junos_validation.JunosValidationOperations,
+    ),
+    (
+        capabilities.ReferenceOperations,
+        cisco_references.CiscoReferenceOperations,
+    ),
+    (
+        capabilities.ReferenceOperations,
+        junos_references.JunosReferenceOperations,
+    ),
+    (
+        capabilities.SimulationOperations,
+        cisco_simulation.CiscoSimulationOperations,
+    ),
+    (
+        capabilities.SimulationOperations,
+        junos_simulation.JunosSimulationOperations,
+    ),
+)
 
 
 class NniPlanningTest(unittest.TestCase):
@@ -179,49 +411,150 @@ class VendorConfigurationContractTest(unittest.TestCase):
         self.assertIsInstance(JunosDocument(""), VendorConfiguration)
 
 
+class UnifiedPackageRootTest(unittest.TestCase):
+
+    def test_source_packages_live_under_one_importable_root(self):
+        source_root = Path(__file__).parents[1] / "src"
+        root_package = source_root / "gns3_config_adaptor"
+
+        self.assertTrue(root_package.is_dir())
+        self.assertTrue((root_package / "adaptation").is_dir())
+        self.assertTrue((root_package / "impl").is_dir())
+        self.assertFalse((source_root / "adaptation").exists())
+        self.assertFalse((source_root / "impl").exists())
+        self.assertIsNone(importlib.util.find_spec("adaptation"))
+        self.assertIsNone(importlib.util.find_spec("impl"))
+
+        module = importlib.import_module("gns3_config_adaptor.adaptation")
+        self.assertTrue(callable(module.convert))
+
+    def test_source_internal_imports_are_relative(self):
+        source_root = Path(__file__).parents[1] / "src"
+        internal_roots = {
+            "adaptation",
+            "gns3_config_adaptor",
+            "impl",
+        }
+        violations = []
+
+        for source_path in source_root.rglob("*.py"):
+            tree = ast.parse(source_path.read_text(encoding="utf-8"))
+            for node in ast.walk(tree):
+                if isinstance(node, ast.ImportFrom) and node.level == 0:
+                    root = (node.module or "").split(".", 1)[0]
+                    if root in internal_roots:
+                        violations.append(
+                            f"{source_path}:{node.lineno}: from {node.module}"
+                        )
+                if isinstance(node, ast.Import):
+                    for alias in node.names:
+                        root = alias.name.split(".", 1)[0]
+                        if root in internal_roots:
+                            violations.append(
+                                f"{source_path}:{node.lineno}: import "
+                                f"{alias.name}"
+                            )
+
+        self.assertEqual(violations, [])
+
+    def test_vendor_handler_packages_use_mapping_specific_names(self):
+        impl = (
+            Path(__file__).parents[1] / "src" / "gns3_config_adaptor" / "impl"
+        )
+        self.assertTrue((impl / CISCO_HANDLER_PACKAGE).is_dir())
+        self.assertTrue((impl / JUNIPER_HANDLER_PACKAGE).is_dir())
+        self.assertFalse((impl / "cisco").exists())
+        self.assertFalse((impl / "juniper").exists())
+        self.assertIsNone(
+            importlib.util.find_spec("gns3_config_adaptor.impl.cisco")
+        )
+        self.assertIsNone(
+            importlib.util.find_spec("gns3_config_adaptor.impl.juniper")
+        )
+        cisco_module = importlib.import_module(
+            f"gns3_config_adaptor.impl.{CISCO_HANDLER_PACKAGE}"
+        )
+        juniper_module = importlib.import_module(
+            f"gns3_config_adaptor.impl.{JUNIPER_HANDLER_PACKAGE}"
+        )
+        self.assertTrue(hasattr(cisco_module, "CiscoDocument"))
+        self.assertTrue(hasattr(juniper_module, "JunosDocument"))
+
+    def test_support_does_not_export_generic_config_path(self):
+        from gns3_config_adaptor.impl.common import support
+
+        self.assertFalse(hasattr(support, "config_path"))
+
+
 class PackageDependencyTest(unittest.TestCase):
 
-    def test_vendor_implementations_live_under_impl(self):
+    def test_vendor_implementations_live_under_unified_root(self):
         source_root = Path(__file__).parents[1] / "src"
 
         self.assertFalse((source_root / "config_adaptor").exists())
         self.assertIsNone(importlib.util.find_spec("config_adaptor"))
+        self.assertIsNone(importlib.util.find_spec("adaptation"))
+        self.assertIsNone(importlib.util.find_spec("impl"))
+        self.assertIsNotNone(importlib.util.find_spec("gns3_config_adaptor"))
         for package in ("adaptation", "impl"):
-            self.assertIsNotNone(importlib.util.find_spec(package))
-        for package in ("cisco", "common", "juniper"):
+            self.assertIsNotNone(
+                importlib.util.find_spec(f"gns3_config_adaptor.{package}")
+            )
+        for package in (*VENDOR_HANDLER_PACKAGES, "common"):
             self.assertFalse((source_root / package).exists())
-            self.assertIsNotNone(importlib.util.find_spec(f"impl.{package}"))
+            self.assertIsNotNone(
+                importlib.util.find_spec(f"gns3_config_adaptor.impl.{package}")
+            )
 
     def test_lower_level_packages_do_not_import_orchestration(self):
-        package_root = Path(__file__).parents[1] / "src"
+        source_root = Path(__file__).parents[1] / "src"
+        package_root = source_root / "gns3_config_adaptor"
         forbidden = {
-            "common": {"adaptation", "cisco", "juniper"},
-            "cisco": {"adaptation", "juniper"},
-            "juniper": {"adaptation", "cisco"},
+            "common": {"adaptation", *VENDOR_HANDLER_PACKAGES},
+            CISCO_HANDLER_PACKAGE: {"adaptation", JUNIPER_HANDLER_PACKAGE},
+            JUNIPER_HANDLER_PACKAGE: {"adaptation", CISCO_HANDLER_PACKAGE},
         }
 
         for package, blocked in forbidden.items():
             for source_path in (package_root / "impl" / package).rglob("*.py"):
                 tree = ast.parse(source_path.read_text(encoding="utf-8"))
-                imported = {
-                    node.module.removeprefix("impl.").split(".", 1)[0]
-                    for node in ast.walk(tree)
-                    if isinstance(node, ast.ImportFrom) and node.module
-                }
-                imported.update(
-                    alias.name.removeprefix("impl.").split(".", 1)[0]
-                    for node in ast.walk(tree)
-                    if isinstance(node, ast.Import)
-                    for alias in node.names
+                current_package = list(
+                    source_path.relative_to(source_root)
+                    .with_suffix("")
+                    .parts[:-1]
                 )
+                imported = set()
+                for node in ast.walk(tree):
+                    if isinstance(node, ast.ImportFrom):
+                        if node.level:
+                            end = len(current_package) - (node.level - 1)
+                            base = current_package[:end]
+                            target = [
+                                *base,
+                                *((node.module or "").split(".")),
+                            ]
+                        else:
+                            target = (node.module or "").split(".")
+                    elif isinstance(node, ast.Import):
+                        for alias in node.names:
+                            target = alias.name.split(".")
+                            imported.add(_first_imported_package(target))
+                        continue
+                    else:
+                        continue
+                    imported.add(_first_imported_package(target))
                 self.assertFalse(
                     imported & blocked,
                     f"{source_path} 违反依赖方向: {sorted(imported & blocked)}",
                 )
 
     def test_cisco_rewrite_helpers_have_a_non_rule_owner(self):
-        from impl.cisco.rules import support
-        from impl.cisco.syntax import rewrite_helpers
+        from gns3_config_adaptor.impl.cisco_iosxrv9k_7_11_1_config_mapping_handler.rules import (
+            support,
+        )
+        from gns3_config_adaptor.impl.cisco_iosxrv9k_7_11_1_config_mapping_handler.syntax import (
+            rewrite_helpers,
+        )
 
         for name in ("append_top_level", "delete_matching"):
             with self.subTest(name=name):
@@ -235,8 +568,12 @@ class ProjectConfigLayoutTest(unittest.TestCase):
     def test_vendor_rule_yaml_lives_under_project_config(self):
         project_root = Path(__file__).parents[1]
         locations = (
-            ("cisco", "xrv9000"),
-            ("juniper", "vmx"),
+            ("cisco_iosxr", "xrv9000"),
+            ("juniper_junos", "vmx"),
+        )
+        self.assertFalse((project_root / "config" / "rules" / "cisco").exists())
+        self.assertFalse(
+            (project_root / "config" / "rules" / "juniper").exists()
         )
         for vendor, image in locations:
             with self.subTest(vendor=vendor):
@@ -244,22 +581,37 @@ class ProjectConfigLayoutTest(unittest.TestCase):
                 self.assertTrue((target / "manifest.yaml").is_file())
                 self.assertFalse(
                     (
-                        project_root / "src" / "impl" / vendor / "rules" / image
+                        project_root
+                        / "src"
+                        / "gns3_config_adaptor"
+                        / "impl"
+                        / VENDOR_HANDLER_BY_VENDOR[vendor]
+                        / "rules"
+                        / image
                     ).exists()
                 )
 
-        from impl.common.support.config_paths import config_path
+        from gns3_config_adaptor.impl.common.support.config_paths import (
+            rule_pack_dir,
+        )
 
         for vendor, image in locations:
             with self.subTest(vendor=vendor, helper=True):
                 self.assertEqual(
-                    config_path("rules", vendor, image),
+                    rule_pack_dir(vendor_dir=vendor, image=image),
                     project_root / "config" / "rules" / vendor / image,
                 )
 
     def test_rule_yaml_paths_are_owned_by_config_paths(self):
         source_root = Path(__file__).parents[1] / "src"
-        owner = source_root / "impl" / "common" / "support" / "config_paths.py"
+        owner = (
+            source_root
+            / "gns3_config_adaptor"
+            / "impl"
+            / "common"
+            / "support"
+            / "config_paths.py"
+        )
         fixed_rule_files = {
             "manifest.yaml",
             "cleaning.yaml",
@@ -280,22 +632,6 @@ class ProjectConfigLayoutTest(unittest.TestCase):
                     violations.append(
                         f"{source_path}: 固定规则文件名 {node.value}"
                     )
-                if not isinstance(node, ast.Call):
-                    continue
-                function = node.func
-                if not (
-                    isinstance(function, ast.Name)
-                    and function.id == "config_path"
-                ):
-                    continue
-                if (
-                    node.args
-                    and isinstance(node.args[0], ast.Constant)
-                    and node.args[0].value == "rules"
-                ):
-                    violations.append(
-                        f"{source_path}:{node.lineno}: 直接构造 rules 路径"
-                    )
 
         self.assertEqual(violations, [])
 
@@ -303,7 +639,7 @@ class ProjectConfigLayoutTest(unittest.TestCase):
 class InterfacePackageLayoutTest(unittest.TestCase):
 
     def test_interface_handlers_are_owned_by_interfaces_module(self):
-        from adaptation import interfaces
+        from gns3_config_adaptor.adaptation import interfaces
 
         for name in (
             "NonNNICleanupHandler",
@@ -318,11 +654,13 @@ class InterfacePackageLayoutTest(unittest.TestCase):
                         interfaces.__name__,
                     )
         self.assertIsNone(
-            importlib.util.find_spec("adaptation.core_interfaces")
+            importlib.util.find_spec(
+                "gns3_config_adaptor.adaptation.core_interfaces"
+            )
         )
 
     def test_interface_outcome_reporting_is_owned_by_interfaces_module(self):
-        from adaptation import interfaces
+        from gns3_config_adaptor.adaptation import interfaces
 
         for name in ("_report", "_report_diagnostics"):
             with self.subTest(name=name):
@@ -337,7 +675,7 @@ class InterfacePackageLayoutTest(unittest.TestCase):
 class CleaningTargetModuleLayoutTest(unittest.TestCase):
 
     def test_cleaning_target_helpers_are_owned_by_cleaning_rules(self):
-        from adaptation import cleaning_rules
+        from gns3_config_adaptor.adaptation import cleaning_rules
 
         self.assertTrue(hasattr(cleaning_rules, "target_parents"))
         self.assertEqual(
@@ -347,7 +685,9 @@ class CleaningTargetModuleLayoutTest(unittest.TestCase):
         self.assertFalse(hasattr(cleaning_rules, "CLEANING_SCOPES"))
         self.assertFalse(hasattr(cleaning_rules, "resolve_cleaning_scope"))
         self.assertIsNone(
-            importlib.util.find_spec("adaptation.cleaning_scopes")
+            importlib.util.find_spec(
+                "gns3_config_adaptor.adaptation.cleaning_scopes"
+            )
         )
 
 
@@ -356,10 +696,22 @@ class NoCliLayoutTest(unittest.TestCase):
     def test_adaptation_has_no_cli_module_or_console_script(self):
         project_root = Path(__file__).parents[1]
         self.assertFalse(
-            (project_root / "src" / "adaptation" / "cli.py").exists()
+            (
+                project_root
+                / "src"
+                / "gns3_config_adaptor"
+                / "adaptation"
+                / "cli.py"
+            ).exists()
         )
         self.assertFalse(
-            (project_root / "src" / "adaptation" / "__main__.py").exists()
+            (
+                project_root
+                / "src"
+                / "gns3_config_adaptor"
+                / "adaptation"
+                / "__main__.py"
+            ).exists()
         )
         payload = tomllib.loads(
             (project_root / "pyproject.toml").read_text(encoding="utf-8")
@@ -372,97 +724,48 @@ class NoCliLayoutTest(unittest.TestCase):
 class ImplementationPackageLayoutTest(unittest.TestCase):
 
     def test_target_packages_are_importable(self):
-        modules = (
-            "impl.common.domain.contracts",
-            "impl.common.domain.interface",
-            "impl.common.domain.outcomes",
-            "impl.common.domain.policies",
-            "impl.common.rules.engine",
-            "impl.common.rules.cleaning",
-            "impl.common.rules.empty_blocks",
-            "impl.common.support.config_paths",
-            "impl.common.support.errors",
-            "impl.common.support.interface_cache",
-            "impl.common.support.lab_account",
-            "impl.cisco.syntax.ast",
-            "impl.cisco.syntax.parser",
-            "impl.cisco.syntax.writer",
-            "impl.cisco.syntax.semantics",
-            "impl.cisco.syntax.rewrite_helpers",
-            "impl.cisco.operations.groups",
-            "impl.cisco.operations.interfaces",
-            "impl.cisco.operations.bundles",
-            "impl.cisco.operations.cleaning",
-            "impl.cisco.operations.declarative_cleaning",
-            "impl.cisco.operations.management_cleaning",
-            "impl.cisco.operations.compatibility",
-            "impl.cisco.operations.pruning",
-            "impl.cisco.operations.references",
-            "impl.cisco.operations.simulation",
-            "impl.cisco.operations.validation",
-            "impl.cisco.support.clone_constraints",
-            "impl.cisco.support.empty_blocks",
-            "impl.cisco.support.identity",
-            "impl.juniper.syntax.ast",
-            "impl.juniper.syntax.parser",
-            "impl.juniper.syntax.writer",
-            "impl.juniper.operations.groups",
-            "impl.juniper.operations.interfaces",
-            "impl.juniper.operations.bundles",
-            "impl.juniper.operations.cleaning",
-            "impl.juniper.operations.declarative_cleaning",
-            "impl.juniper.operations.management_cleaning",
-            "impl.juniper.operations.compatibility",
-            "impl.juniper.operations.pruning",
-            "impl.juniper.operations.references",
-            "impl.juniper.operations.simulation",
-            "impl.juniper.operations.validation",
-            "impl.juniper.support.clone_constraints",
-            "impl.juniper.support.empty_blocks",
-            "impl.juniper.support.identity",
-        )
-        for module in modules:
+        for module in IMPLEMENTATION_PACKAGE_MODULES:
             with self.subTest(module=module):
                 self.assertIsNotNone(importlib.util.find_spec(module))
 
     def test_old_flat_modules_are_removed(self):
         modules = (
-            "impl.common.contracts",
-            "impl.common.interface",
-            "impl.common.outcomes",
-            "impl.common.policies",
-            "impl.common.cleaning",
-            "impl.common.empty_blocks",
-            "impl.common.config_paths",
-            "impl.common.errors",
-            "impl.common.interface_cache",
-            "impl.common.lab_account",
-            "impl.cisco.ast",
-            "impl.cisco.parser",
-            "impl.cisco.writer",
-            "impl.cisco.semantics",
-            "impl.cisco.rewrite_helpers",
-            "impl.cisco.groups",
-            "impl.cisco.interfaces",
-            "impl.cisco.bundles",
-            "impl.cisco.cleaning",
-            "impl.cisco.configuration_cleaning",
-            "impl.cisco.references",
-            "impl.cisco.clone_constraints",
-            "impl.cisco.empty_blocks",
-            "impl.cisco.identity",
-            "impl.juniper.ast",
-            "impl.juniper.parser",
-            "impl.juniper.writer",
-            "impl.juniper.groups",
-            "impl.juniper.interfaces",
-            "impl.juniper.bundles",
-            "impl.juniper.cleaning",
-            "impl.juniper.configuration_cleaning",
-            "impl.juniper.references",
-            "impl.juniper.clone_constraints",
-            "impl.juniper.empty_blocks",
-            "impl.juniper.identity",
+            "gns3_config_adaptor.impl.common.contracts",
+            "gns3_config_adaptor.impl.common.interface",
+            "gns3_config_adaptor.impl.common.outcomes",
+            "gns3_config_adaptor.impl.common.policies",
+            "gns3_config_adaptor.impl.common.cleaning",
+            "gns3_config_adaptor.impl.common.empty_blocks",
+            "gns3_config_adaptor.impl.common.config_paths",
+            "gns3_config_adaptor.impl.common.errors",
+            "gns3_config_adaptor.impl.common.interface_cache",
+            "gns3_config_adaptor.impl.common.lab_account",
+            "gns3_config_adaptor.impl.cisco_iosxrv9k_7_11_1_config_mapping_handler.ast",
+            "gns3_config_adaptor.impl.cisco_iosxrv9k_7_11_1_config_mapping_handler.parser",
+            "gns3_config_adaptor.impl.cisco_iosxrv9k_7_11_1_config_mapping_handler.writer",
+            "gns3_config_adaptor.impl.cisco_iosxrv9k_7_11_1_config_mapping_handler.semantics",
+            "gns3_config_adaptor.impl.cisco_iosxrv9k_7_11_1_config_mapping_handler.rewrite_helpers",
+            "gns3_config_adaptor.impl.cisco_iosxrv9k_7_11_1_config_mapping_handler.groups",
+            "gns3_config_adaptor.impl.cisco_iosxrv9k_7_11_1_config_mapping_handler.interfaces",
+            "gns3_config_adaptor.impl.cisco_iosxrv9k_7_11_1_config_mapping_handler.bundles",
+            "gns3_config_adaptor.impl.cisco_iosxrv9k_7_11_1_config_mapping_handler.cleaning",
+            "gns3_config_adaptor.impl.cisco_iosxrv9k_7_11_1_config_mapping_handler.configuration_cleaning",
+            "gns3_config_adaptor.impl.cisco_iosxrv9k_7_11_1_config_mapping_handler.references",
+            "gns3_config_adaptor.impl.cisco_iosxrv9k_7_11_1_config_mapping_handler.clone_constraints",
+            "gns3_config_adaptor.impl.cisco_iosxrv9k_7_11_1_config_mapping_handler.empty_blocks",
+            "gns3_config_adaptor.impl.cisco_iosxrv9k_7_11_1_config_mapping_handler.identity",
+            "gns3_config_adaptor.impl.juniper_vjunos_router_23_2R1_15_config_mapping_handler.ast",
+            "gns3_config_adaptor.impl.juniper_vjunos_router_23_2R1_15_config_mapping_handler.parser",
+            "gns3_config_adaptor.impl.juniper_vjunos_router_23_2R1_15_config_mapping_handler.writer",
+            "gns3_config_adaptor.impl.juniper_vjunos_router_23_2R1_15_config_mapping_handler.groups",
+            "gns3_config_adaptor.impl.juniper_vjunos_router_23_2R1_15_config_mapping_handler.interfaces",
+            "gns3_config_adaptor.impl.juniper_vjunos_router_23_2R1_15_config_mapping_handler.bundles",
+            "gns3_config_adaptor.impl.juniper_vjunos_router_23_2R1_15_config_mapping_handler.cleaning",
+            "gns3_config_adaptor.impl.juniper_vjunos_router_23_2R1_15_config_mapping_handler.configuration_cleaning",
+            "gns3_config_adaptor.impl.juniper_vjunos_router_23_2R1_15_config_mapping_handler.references",
+            "gns3_config_adaptor.impl.juniper_vjunos_router_23_2R1_15_config_mapping_handler.clone_constraints",
+            "gns3_config_adaptor.impl.juniper_vjunos_router_23_2R1_15_config_mapping_handler.empty_blocks",
+            "gns3_config_adaptor.impl.juniper_vjunos_router_23_2R1_15_config_mapping_handler.identity",
         )
         for module in modules:
             with self.subTest(module=module):
@@ -470,19 +773,28 @@ class ImplementationPackageLayoutTest(unittest.TestCase):
 
 
 class HeaderParserOwnershipTest(unittest.TestCase):
+
     def test_header_parsers_are_owned_by_syntax_modules(self):
-        from impl.cisco import CiscoDocument
-        from impl.cisco.syntax.header_parser import _CiscoHeaderParser
-        from impl.juniper import JunosDocument
-        from impl.juniper.syntax.header_parser import _JunosHeaderParser
+        from gns3_config_adaptor.impl.cisco_iosxrv9k_7_11_1_config_mapping_handler import (
+            CiscoDocument,
+        )
+        from gns3_config_adaptor.impl.cisco_iosxrv9k_7_11_1_config_mapping_handler.syntax.header_parser import (
+            _CiscoHeaderParser,
+        )
+        from gns3_config_adaptor.impl.juniper_vjunos_router_23_2R1_15_config_mapping_handler import (
+            JunosDocument,
+        )
+        from gns3_config_adaptor.impl.juniper_vjunos_router_23_2R1_15_config_mapping_handler.syntax.header_parser import (
+            _JunosHeaderParser,
+        )
 
         self.assertEqual(
             _CiscoHeaderParser.__module__,
-            "impl.cisco.syntax.header_parser",
+            "gns3_config_adaptor.impl.cisco_iosxrv9k_7_11_1_config_mapping_handler.syntax.header_parser",
         )
         self.assertEqual(
             _JunosHeaderParser.__module__,
-            "impl.juniper.syntax.header_parser",
+            "gns3_config_adaptor.impl.juniper_vjunos_router_23_2R1_15_config_mapping_handler.syntax.header_parser",
         )
         self.assertIsInstance(CiscoDocument("")._parser, _CiscoHeaderParser)
         self.assertIsInstance(JunosDocument("")._parser, _JunosHeaderParser)
@@ -490,11 +802,18 @@ class HeaderParserOwnershipTest(unittest.TestCase):
     def test_header_parser_classes_are_not_defined_in_document(self):
         project_root = Path(__file__).parents[1]
         blocked = {
-            "cisco": "_CiscoHeaderParser",
-            "juniper": "_JunosHeaderParser",
+            CISCO_HANDLER_PACKAGE: "_CiscoHeaderParser",
+            JUNIPER_HANDLER_PACKAGE: "_JunosHeaderParser",
         }
         for vendor, class_name in blocked.items():
-            path = project_root / "src" / "impl" / vendor / "document.py"
+            path = (
+                project_root
+                / "src"
+                / "gns3_config_adaptor"
+                / "impl"
+                / vendor
+                / "document.py"
+            )
             tree = ast.parse(path.read_text(encoding="utf-8"))
             names = {
                 node.name
@@ -508,7 +827,7 @@ class HeaderParserOwnershipTest(unittest.TestCase):
 class CapabilityProtocolLayoutTest(unittest.TestCase):
 
     def test_capability_protocols_are_importable(self):
-        from impl.common.domain import capabilities
+        from gns3_config_adaptor.impl.common.domain import capabilities
 
         expected = (
             "DocumentCore",
@@ -528,65 +847,62 @@ class CapabilityProtocolLayoutTest(unittest.TestCase):
         self.assertEqual(set(expected), set(capabilities.__all__))
 
     def test_interface_protocols_do_not_contain_mutation_methods(self):
-        from impl.common.domain.capabilities import InterfaceAnalysis
+        from gns3_config_adaptor.impl.common.domain.capabilities import (
+            InterfaceAnalysis,
+        )
 
         self.assertFalse(hasattr(InterfaceAnalysis, "rename"))
         self.assertFalse(hasattr(InterfaceAnalysis, "clone"))
         self.assertFalse(hasattr(InterfaceAnalysis, "remove"))
 
     def test_validation_protocol_has_no_editing_methods(self):
-        from impl.common.domain.capabilities import ValidationOperations
+        from gns3_config_adaptor.impl.common.domain.capabilities import (
+            ValidationOperations,
+        )
 
         self.assertFalse(hasattr(ValidationOperations, "edit"))
         self.assertFalse(hasattr(ValidationOperations, "apply_cleaning_rules"))
 
 
 class CleaningModuleLayoutTest(unittest.TestCase):
+
     def test_cleaning_modules_have_distinct_responsibilities(self):
-        from impl.cisco.operations import (
+        from gns3_config_adaptor.impl.cisco_iosxrv9k_7_11_1_config_mapping_handler.operations import (
             cleaning as cisco_cleaning,
         )
-        from impl.cisco.operations import (
+        from gns3_config_adaptor.impl.cisco_iosxrv9k_7_11_1_config_mapping_handler.operations import (
             declarative_cleaning as cisco_declarative,
         )
-        from impl.cisco.operations import (
+        from gns3_config_adaptor.impl.cisco_iosxrv9k_7_11_1_config_mapping_handler.operations import (
             management_cleaning as cisco_management,
         )
-        from impl.juniper.operations import (
+        from gns3_config_adaptor.impl.juniper_vjunos_router_23_2R1_15_config_mapping_handler.operations import (
             cleaning as juniper_cleaning,
         )
-        from impl.juniper.operations import (
+        from gns3_config_adaptor.impl.juniper_vjunos_router_23_2R1_15_config_mapping_handler.operations import (
             declarative_cleaning as juniper_declarative,
         )
-        from impl.juniper.operations import (
+        from gns3_config_adaptor.impl.juniper_vjunos_router_23_2R1_15_config_mapping_handler.operations import (
             management_cleaning as juniper_management,
         )
 
         self.assertTrue(hasattr(cisco_cleaning, "CiscoCleaningOperations"))
         self.assertFalse(hasattr(cisco_cleaning, "_MANAGEMENT_TOP_LEVEL"))
-        self.assertTrue(
-            hasattr(cisco_management, "clean_management_access")
-        )
-        self.assertTrue(
-            hasattr(cisco_declarative, "apply_cleaning_rules")
-        )
+        self.assertTrue(hasattr(cisco_management, "clean_management_access"))
+        self.assertTrue(hasattr(cisco_declarative, "apply_cleaning_rules"))
         self.assertIsNone(
             importlib.util.find_spec(
-                "impl.cisco.operations.configuration_cleaning"
+                "gns3_config_adaptor.impl.cisco_iosxrv9k_7_11_1_config_mapping_handler.operations.configuration_cleaning"
             )
         )
 
         self.assertTrue(hasattr(juniper_cleaning, "JunosCleaningOperations"))
         self.assertFalse(hasattr(juniper_cleaning, "_disable_matching"))
-        self.assertTrue(
-            hasattr(juniper_management, "clean_management_access")
-        )
-        self.assertTrue(
-            hasattr(juniper_declarative, "apply_cleaning_rules")
-        )
+        self.assertTrue(hasattr(juniper_management, "clean_management_access"))
+        self.assertTrue(hasattr(juniper_declarative, "apply_cleaning_rules"))
         self.assertIsNone(
             importlib.util.find_spec(
-                "impl.juniper.operations.configuration_cleaning"
+                "gns3_config_adaptor.impl.juniper_vjunos_router_23_2R1_15_config_mapping_handler.operations.configuration_cleaning"
             )
         )
 
@@ -594,7 +910,9 @@ class CleaningModuleLayoutTest(unittest.TestCase):
 class CiscoCapabilityObjectTest(unittest.TestCase):
 
     def test_document_exposes_narrow_capabilities(self):
-        from impl.cisco import CiscoDocument
+        from gns3_config_adaptor.impl.cisco_iosxrv9k_7_11_1_config_mapping_handler import (
+            CiscoDocument,
+        )
 
         document = CiscoDocument("interface Gi0\n!\n")
         self.assertEqual(
@@ -608,7 +926,9 @@ class CiscoCapabilityObjectTest(unittest.TestCase):
         self.assertFalse(hasattr(document, "_bundles_cache"))
 
     def test_capability_access_does_not_create_long_lived_services(self):
-        from impl.cisco import CiscoDocument
+        from gns3_config_adaptor.impl.cisco_iosxrv9k_7_11_1_config_mapping_handler import (
+            CiscoDocument,
+        )
 
         document = CiscoDocument("")
         first = document.interfaces
@@ -620,7 +940,9 @@ class CiscoCapabilityObjectTest(unittest.TestCase):
 class JuniperCapabilityObjectTest(unittest.TestCase):
 
     def test_document_exposes_narrow_capabilities(self):
-        from impl.juniper import JunosDocument
+        from gns3_config_adaptor.impl.juniper_vjunos_router_23_2R1_15_config_mapping_handler import (
+            JunosDocument,
+        )
 
         document = JunosDocument("interfaces { ge-0/0/0 {} }")
         self.assertEqual(
@@ -633,7 +955,9 @@ class JuniperCapabilityObjectTest(unittest.TestCase):
         )
 
     def test_private_interface_helpers_are_no_longer_document_methods(self):
-        from impl.juniper import JunosDocument
+        from gns3_config_adaptor.impl.juniper_vjunos_router_23_2R1_15_config_mapping_handler import (
+            JunosDocument,
+        )
 
         for name in (
             "_top_block",
@@ -649,75 +973,7 @@ class JuniperCapabilityObjectTest(unittest.TestCase):
 class CapabilityImplementationContractTest(unittest.TestCase):
 
     def test_vendor_capability_objects_match_protocol_methods(self):
-        import inspect
-
-        from impl.cisco.operations.bundles import CiscoBundleOperations
-        from impl.cisco.operations.cleaning import CiscoCleaningOperations
-        from impl.cisco.operations.compatibility import (
-            CiscoCompatibilityOperations,
-        )
-        from impl.cisco.operations.groups import CiscoGroupOperations
-        from impl.cisco.operations.interfaces import (
-            CiscoInterfaceAnalysis,
-            CiscoInterfaceTransform,
-        )
-        from impl.cisco.operations.pruning import CiscoPruningOperations
-        from impl.cisco.operations.references import CiscoReferenceOperations
-        from impl.cisco.operations.simulation import (
-            CiscoSimulationOperations,
-        )
-        from impl.cisco.operations.validation import (
-            CiscoValidationOperations,
-        )
-        from impl.common.domain import capabilities
-        from impl.juniper.operations.bundles import JunosBundleOperations
-        from impl.juniper.operations.cleaning import JunosCleaningOperations
-        from impl.juniper.operations.compatibility import (
-            JunosCompatibilityOperations,
-        )
-        from impl.juniper.operations.groups import JunosGroupOperations
-        from impl.juniper.operations.interfaces import (
-            JunosInterfaceAnalysis,
-            JunosInterfaceTransform,
-        )
-        from impl.juniper.operations.pruning import JunosPruningOperations
-        from impl.juniper.operations.references import JunosReferenceOperations
-        from impl.juniper.operations.simulation import (
-            JunosSimulationOperations,
-        )
-        from impl.juniper.operations.validation import (
-            JunosValidationOperations,
-        )
-
-        pairs = (
-            (capabilities.InterfaceAnalysis, CiscoInterfaceAnalysis),
-            (capabilities.InterfaceAnalysis, JunosInterfaceAnalysis),
-            (capabilities.InterfaceTransform, CiscoInterfaceTransform),
-            (capabilities.InterfaceTransform, JunosInterfaceTransform),
-            (capabilities.BundleOperations, CiscoBundleOperations),
-            (capabilities.BundleOperations, JunosBundleOperations),
-            (capabilities.GroupOperations, CiscoGroupOperations),
-            (capabilities.GroupOperations, JunosGroupOperations),
-            (capabilities.CleaningOperations, CiscoCleaningOperations),
-            (capabilities.CleaningOperations, JunosCleaningOperations),
-            (capabilities.PruningOperations, CiscoPruningOperations),
-            (capabilities.PruningOperations, JunosPruningOperations),
-            (
-                capabilities.CompatibilityOperations,
-                CiscoCompatibilityOperations,
-            ),
-            (
-                capabilities.CompatibilityOperations,
-                JunosCompatibilityOperations,
-            ),
-            (capabilities.ValidationOperations, CiscoValidationOperations),
-            (capabilities.ValidationOperations, JunosValidationOperations),
-            (capabilities.ReferenceOperations, CiscoReferenceOperations),
-            (capabilities.ReferenceOperations, JunosReferenceOperations),
-            (capabilities.SimulationOperations, CiscoSimulationOperations),
-            (capabilities.SimulationOperations, JunosSimulationOperations),
-        )
-        for protocol, implementation in pairs:
+        for protocol, implementation in CAPABILITY_IMPLEMENTATION_PAIRS:
             with self.subTest(
                 protocol=protocol.__name__,
                 implementation=implementation.__name__,
@@ -735,33 +991,34 @@ class CapabilityImplementationContractTest(unittest.TestCase):
                 self.assertEqual(required - provided, set())
 
     def test_rule_backed_capability_wrappers_live_in_operations(self):
-        from impl.cisco.operations import compatibility as cisco_compat
-        from impl.cisco.operations import pruning as cisco_pruning
-        from impl.cisco.operations import simulation as cisco_simulation
-        from impl.cisco.operations import validation as cisco_validation
-        from impl.cisco.rules import compatibility as cisco_rule_compat
-        from impl.cisco.rules import pruning as cisco_rule_pruning
-        from impl.cisco.rules import simulation as cisco_rule_simulation
-        from impl.juniper import rules as junos_rule_root
-        from impl.juniper.operations import compatibility as junos_compat
-        from impl.juniper.operations import pruning as junos_pruning
-        from impl.juniper.operations import simulation as junos_simulation
-        from impl.juniper.operations import validation as junos_validation
-        from impl.juniper.rules import pruning as junos_rule_pruning
-        from impl.juniper.rules import simulation as junos_rule_simulation
-
         pairs = (
             (cisco_pruning, cisco_rule_pruning, "CiscoPruningOperations"),
-            (cisco_compat, cisco_rule_compat, "CiscoCompatibilityOperations"),
-            (cisco_validation, cisco_rule_compat, "CiscoValidationOperations"),
+            (
+                cisco_compatibility,
+                cisco_rule_compatibility,
+                "CiscoCompatibilityOperations",
+            ),
+            (
+                cisco_validation,
+                cisco_rule_compatibility,
+                "CiscoValidationOperations",
+            ),
             (
                 cisco_simulation,
                 cisco_rule_simulation,
                 "CiscoSimulationOperations",
             ),
             (junos_pruning, junos_rule_pruning, "JunosPruningOperations"),
-            (junos_compat, junos_rule_root, "JunosCompatibilityOperations"),
-            (junos_validation, junos_rule_root, "JunosValidationOperations"),
+            (
+                junos_compatibility,
+                junos_rules,
+                "JunosCompatibilityOperations",
+            ),
+            (
+                junos_validation,
+                junos_rules,
+                "JunosValidationOperations",
+            ),
             (
                 junos_simulation,
                 junos_rule_simulation,
@@ -775,8 +1032,12 @@ class CapabilityImplementationContractTest(unittest.TestCase):
                 self.assertFalse(hasattr(rules, class_name))
 
     def test_capability_attributes_are_created_on_demand(self):
-        from impl.cisco import CiscoDocument
-        from impl.juniper import JunosDocument
+        from gns3_config_adaptor.impl.cisco_iosxrv9k_7_11_1_config_mapping_handler import (
+            CiscoDocument,
+        )
+        from gns3_config_adaptor.impl.juniper_vjunos_router_23_2R1_15_config_mapping_handler import (
+            JunosDocument,
+        )
 
         for document in (
             CiscoDocument("interface Gi0\n!\n"),
@@ -798,7 +1059,12 @@ class CapabilityImplementationContractTest(unittest.TestCase):
 class CapabilityCallerTest(unittest.TestCase):
 
     def test_adaptation_uses_capabilities_not_legacy_document_methods(self):
-        source_root = Path(__file__).parents[1] / "src" / "adaptation"
+        source_root = (
+            Path(__file__).parents[1]
+            / "src"
+            / "gns3_config_adaptor"
+            / "adaptation"
+        )
         source = "\n".join(
             path.read_text(encoding="utf-8")
             for path in sorted(source_root.glob("*.py"))
@@ -817,8 +1083,12 @@ class CapabilityCallerTest(unittest.TestCase):
 class DocumentSurfaceTest(unittest.TestCase):
 
     def test_documents_do_not_define_business_methods(self):
-        from impl.cisco import CiscoDocument
-        from impl.juniper import JunosDocument
+        from gns3_config_adaptor.impl.cisco_iosxrv9k_7_11_1_config_mapping_handler import (
+            CiscoDocument,
+        )
+        from gns3_config_adaptor.impl.juniper_vjunos_router_23_2R1_15_config_mapping_handler import (
+            JunosDocument,
+        )
 
         removed = {
             "expand_groups",
@@ -848,25 +1118,28 @@ class DocumentSurfaceTest(unittest.TestCase):
                     self.assertFalse(hasattr(document_type, name))
 
     def test_vendor_configuration_alias_is_vendor_document(self):
-        from impl.common import VendorConfiguration
-        from impl.common.domain.capabilities import VendorDocument
+        from gns3_config_adaptor.impl.common import VendorConfiguration
+        from gns3_config_adaptor.impl.common.domain.capabilities import (
+            VendorDocument,
+        )
 
         self.assertIs(VendorConfiguration, VendorDocument)
 
 
 class InterfaceModuleLayoutTest(unittest.TestCase):
+
     def test_interface_packages_have_required_modules(self):
         modules = (
-            "impl.cisco.operations.interfaces.access",
-            "impl.cisco.operations.interfaces.analysis",
-            "impl.cisco.operations.interfaces.business",
-            "impl.cisco.operations.interfaces.capabilities",
-            "impl.cisco.operations.interfaces.transform",
-            "impl.juniper.operations.interfaces.access",
-            "impl.juniper.operations.interfaces.analysis",
-            "impl.juniper.operations.interfaces.business",
-            "impl.juniper.operations.interfaces.capabilities",
-            "impl.juniper.operations.interfaces.transform",
+            "gns3_config_adaptor.impl.cisco_iosxrv9k_7_11_1_config_mapping_handler.operations.interfaces.access",
+            "gns3_config_adaptor.impl.cisco_iosxrv9k_7_11_1_config_mapping_handler.operations.interfaces.analysis",
+            "gns3_config_adaptor.impl.cisco_iosxrv9k_7_11_1_config_mapping_handler.operations.interfaces.business",
+            "gns3_config_adaptor.impl.cisco_iosxrv9k_7_11_1_config_mapping_handler.operations.interfaces.capabilities",
+            "gns3_config_adaptor.impl.cisco_iosxrv9k_7_11_1_config_mapping_handler.operations.interfaces.transform",
+            "gns3_config_adaptor.impl.juniper_vjunos_router_23_2R1_15_config_mapping_handler.operations.interfaces.access",
+            "gns3_config_adaptor.impl.juniper_vjunos_router_23_2R1_15_config_mapping_handler.operations.interfaces.analysis",
+            "gns3_config_adaptor.impl.juniper_vjunos_router_23_2R1_15_config_mapping_handler.operations.interfaces.business",
+            "gns3_config_adaptor.impl.juniper_vjunos_router_23_2R1_15_config_mapping_handler.operations.interfaces.capabilities",
+            "gns3_config_adaptor.impl.juniper_vjunos_router_23_2R1_15_config_mapping_handler.operations.interfaces.transform",
         )
         for module in modules:
             with self.subTest(module=module):
@@ -874,11 +1147,12 @@ class InterfaceModuleLayoutTest(unittest.TestCase):
 
     def test_interface_single_files_are_removed(self):
         project_root = Path(__file__).parents[1]
-        for vendor in ("cisco", "juniper"):
+        for vendor in VENDOR_HANDLER_PACKAGES:
             with self.subTest(vendor=vendor):
                 path = (
                     project_root
                     / "src"
+                    / "gns3_config_adaptor"
                     / "impl"
                     / vendor
                     / "operations"
@@ -894,10 +1168,11 @@ class InterfaceModuleLayoutTest(unittest.TestCase):
             "analysis": {"transform"},
             "transform": {"analysis"},
         }
-        for vendor in ("cisco", "juniper"):
+        for vendor in VENDOR_HANDLER_PACKAGES:
             package = (
                 project_root
                 / "src"
+                / "gns3_config_adaptor"
                 / "impl"
                 / vendor
                 / "operations"
@@ -916,49 +1191,50 @@ class InterfaceModuleLayoutTest(unittest.TestCase):
                     self.assertFalse(imported & blocked)
 
     def test_capability_classes_remain_compatible(self):
-        from impl.cisco.operations.interfaces import (
+        from gns3_config_adaptor.impl.cisco_iosxrv9k_7_11_1_config_mapping_handler.operations.interfaces import (
             CiscoInterfaceAnalysis,
             CiscoInterfaceTransform,
         )
-        from impl.juniper.operations.interfaces import (
+        from gns3_config_adaptor.impl.juniper_vjunos_router_23_2R1_15_config_mapping_handler.operations.interfaces import (
             JunosInterfaceAnalysis,
             JunosInterfaceTransform,
         )
 
         self.assertEqual(
             CiscoInterfaceAnalysis.__module__,
-            "impl.cisco.operations.interfaces.analysis",
+            "gns3_config_adaptor.impl.cisco_iosxrv9k_7_11_1_config_mapping_handler.operations.interfaces.analysis",
         )
         self.assertEqual(
             CiscoInterfaceTransform.__module__,
-            "impl.cisco.operations.interfaces.transform",
+            "gns3_config_adaptor.impl.cisco_iosxrv9k_7_11_1_config_mapping_handler.operations.interfaces.transform",
         )
         self.assertEqual(
             JunosInterfaceAnalysis.__module__,
-            "impl.juniper.operations.interfaces.analysis",
+            "gns3_config_adaptor.impl.juniper_vjunos_router_23_2R1_15_config_mapping_handler.operations.interfaces.analysis",
         )
         self.assertEqual(
             JunosInterfaceTransform.__module__,
-            "impl.juniper.operations.interfaces.transform",
+            "gns3_config_adaptor.impl.juniper_vjunos_router_23_2R1_15_config_mapping_handler.operations.interfaces.transform",
         )
 
 
 class GroupModuleLayoutTest(unittest.TestCase):
+
     def test_group_packages_have_required_modules(self):
         modules = (
-            "impl.cisco.operations.groups.models",
-            "impl.cisco.operations.groups.selectors",
-            "impl.cisco.operations.groups.definitions",
-            "impl.cisco.operations.groups.merger",
-            "impl.cisco.operations.groups.expander",
-            "impl.cisco.operations.groups.publishing",
-            "impl.cisco.operations.groups.capabilities",
-            "impl.juniper.operations.groups.models",
-            "impl.juniper.operations.groups.selectors",
-            "impl.juniper.operations.groups.definitions",
-            "impl.juniper.operations.groups.merger",
-            "impl.juniper.operations.groups.expander",
-            "impl.juniper.operations.groups.capabilities",
+            "gns3_config_adaptor.impl.cisco_iosxrv9k_7_11_1_config_mapping_handler.operations.groups.models",
+            "gns3_config_adaptor.impl.cisco_iosxrv9k_7_11_1_config_mapping_handler.operations.groups.selectors",
+            "gns3_config_adaptor.impl.cisco_iosxrv9k_7_11_1_config_mapping_handler.operations.groups.definitions",
+            "gns3_config_adaptor.impl.cisco_iosxrv9k_7_11_1_config_mapping_handler.operations.groups.merger",
+            "gns3_config_adaptor.impl.cisco_iosxrv9k_7_11_1_config_mapping_handler.operations.groups.expander",
+            "gns3_config_adaptor.impl.cisco_iosxrv9k_7_11_1_config_mapping_handler.operations.groups.publishing",
+            "gns3_config_adaptor.impl.cisco_iosxrv9k_7_11_1_config_mapping_handler.operations.groups.capabilities",
+            "gns3_config_adaptor.impl.juniper_vjunos_router_23_2R1_15_config_mapping_handler.operations.groups.models",
+            "gns3_config_adaptor.impl.juniper_vjunos_router_23_2R1_15_config_mapping_handler.operations.groups.selectors",
+            "gns3_config_adaptor.impl.juniper_vjunos_router_23_2R1_15_config_mapping_handler.operations.groups.definitions",
+            "gns3_config_adaptor.impl.juniper_vjunos_router_23_2R1_15_config_mapping_handler.operations.groups.merger",
+            "gns3_config_adaptor.impl.juniper_vjunos_router_23_2R1_15_config_mapping_handler.operations.groups.expander",
+            "gns3_config_adaptor.impl.juniper_vjunos_router_23_2R1_15_config_mapping_handler.operations.groups.capabilities",
         )
         for module in modules:
             with self.subTest(module=module):
@@ -966,11 +1242,12 @@ class GroupModuleLayoutTest(unittest.TestCase):
 
     def test_group_single_files_are_removed(self):
         project_root = Path(__file__).parents[1]
-        for vendor in ("cisco", "juniper"):
+        for vendor in VENDOR_HANDLER_PACKAGES:
             with self.subTest(vendor=vendor):
                 path = (
                     project_root
                     / "src"
+                    / "gns3_config_adaptor"
                     / "impl"
                     / vendor
                     / "operations"
@@ -998,10 +1275,11 @@ class GroupModuleLayoutTest(unittest.TestCase):
             "merger": {"definitions", "expander", "capabilities"},
             "publishing": {"definitions", "merger", "expander", "capabilities"},
         }
-        for vendor in ("cisco", "juniper"):
+        for vendor in VENDOR_HANDLER_PACKAGES:
             package = (
                 project_root
                 / "src"
+                / "gns3_config_adaptor"
                 / "impl"
                 / vendor
                 / "operations"
@@ -1022,30 +1300,30 @@ class GroupModuleLayoutTest(unittest.TestCase):
                     self.assertFalse(imported & blocked)
 
     def test_group_capability_classes_remain_compatible(self):
-        from impl.cisco.operations.groups import (
+        from gns3_config_adaptor.impl.cisco_iosxrv9k_7_11_1_config_mapping_handler.operations.groups import (
             CiscoGroupExpander,
             CiscoGroupOperations,
         )
-        from impl.juniper.operations.groups import (
+        from gns3_config_adaptor.impl.juniper_vjunos_router_23_2R1_15_config_mapping_handler.operations.groups import (
             JunosGroupExpander,
             JunosGroupOperations,
         )
 
         self.assertEqual(
             CiscoGroupExpander.__module__,
-            "impl.cisco.operations.groups.expander",
+            "gns3_config_adaptor.impl.cisco_iosxrv9k_7_11_1_config_mapping_handler.operations.groups.expander",
         )
         self.assertEqual(
             CiscoGroupOperations.__module__,
-            "impl.cisco.operations.groups.capabilities",
+            "gns3_config_adaptor.impl.cisco_iosxrv9k_7_11_1_config_mapping_handler.operations.groups.capabilities",
         )
         self.assertEqual(
             JunosGroupExpander.__module__,
-            "impl.juniper.operations.groups.expander",
+            "gns3_config_adaptor.impl.juniper_vjunos_router_23_2R1_15_config_mapping_handler.operations.groups.expander",
         )
         self.assertEqual(
             JunosGroupOperations.__module__,
-            "impl.juniper.operations.groups.capabilities",
+            "gns3_config_adaptor.impl.juniper_vjunos_router_23_2R1_15_config_mapping_handler.operations.groups.capabilities",
         )
 
 

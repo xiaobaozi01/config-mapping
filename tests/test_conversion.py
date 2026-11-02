@@ -11,8 +11,8 @@ from unittest.mock import patch
 
 from openpyxl import load_workbook
 
-from adaptation.service import convert
-from impl.common.support.errors import InvariantViolation
+from gns3_config_adaptor.adaptation.service import convert
+from gns3_config_adaptor.impl.common.support.errors import InvariantViolation
 
 FIXTURES = Path(__file__).parent / "fixtures"
 
@@ -817,7 +817,7 @@ class ConversionTest(unittest.TestCase):
             output = Path(directory) / "output"
             with (
                 patch(
-                    "adaptation.service.build_default_pipeline",
+                    "gns3_config_adaptor.adaptation.service.build_default_pipeline",
                     return_value=BrokenPipeline(),
                 ),
                 self.assertRaisesRegex(
@@ -865,7 +865,7 @@ class ConversionTest(unittest.TestCase):
             output = Path(directory) / "output"
             with (
                 patch(
-                    "adaptation.service.build_default_pipeline",
+                    "gns3_config_adaptor.adaptation.service.build_default_pipeline",
                     return_value=CorruptingPipeline(),
                 ),
                 self.assertRaisesRegex(

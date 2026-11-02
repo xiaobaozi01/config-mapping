@@ -7,16 +7,28 @@ from copy import deepcopy
 
 import pytest
 
-from impl.cisco.document import CiscoDocument
-from impl.cisco.operations.interfaces import access as cisco
-from impl.cisco.operations.interfaces.analysis import (
+from gns3_config_adaptor.impl.cisco_iosxrv9k_7_11_1_config_mapping_handler.document import (
+    CiscoDocument,
+)
+from gns3_config_adaptor.impl.cisco_iosxrv9k_7_11_1_config_mapping_handler.operations.interfaces import (
+    access as cisco,
+)
+from gns3_config_adaptor.impl.cisco_iosxrv9k_7_11_1_config_mapping_handler.operations.interfaces.analysis import (
     logical_names_under as cisco_logical,
 )
-from impl.common.support.interface_lookup import interface_lookup
-from impl.common.support.optimization_cache import optimization_scope
-from impl.juniper.document import JunosDocument
-from impl.juniper.operations.interfaces import access as junos
-from impl.juniper.operations.interfaces.analysis import (
+from gns3_config_adaptor.impl.common.support.interface_lookup import (
+    interface_lookup,
+)
+from gns3_config_adaptor.impl.common.support.optimization_cache import (
+    optimization_scope,
+)
+from gns3_config_adaptor.impl.juniper_vjunos_router_23_2R1_15_config_mapping_handler.document import (
+    JunosDocument,
+)
+from gns3_config_adaptor.impl.juniper_vjunos_router_23_2R1_15_config_mapping_handler.operations.interfaces import (
+    access as junos,
+)
+from gns3_config_adaptor.impl.juniper_vjunos_router_23_2R1_15_config_mapping_handler.operations.interfaces.analysis import (
     logical_names_under as junos_logical,
 )
 

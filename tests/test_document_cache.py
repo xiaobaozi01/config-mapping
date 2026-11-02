@@ -7,11 +7,19 @@ import gc
 import unittest
 import weakref
 
-from impl.cisco import document as cisco
-from impl.cisco.operations import interfaces as cisco_interfaces
-from impl.common.domain.interface import InterfaceKind
-from impl.juniper import document as junos
-from impl.juniper.operations import interfaces as junos_interfaces
+from gns3_config_adaptor.impl.cisco_iosxrv9k_7_11_1_config_mapping_handler import (
+    document as cisco,
+)
+from gns3_config_adaptor.impl.cisco_iosxrv9k_7_11_1_config_mapping_handler.operations import (
+    interfaces as cisco_interfaces,
+)
+from gns3_config_adaptor.impl.common.domain.interface import InterfaceKind
+from gns3_config_adaptor.impl.juniper_vjunos_router_23_2R1_15_config_mapping_handler import (
+    document as junos,
+)
+from gns3_config_adaptor.impl.juniper_vjunos_router_23_2R1_15_config_mapping_handler.operations import (
+    interfaces as junos_interfaces,
+)
 
 
 class DocumentCacheTest(unittest.TestCase):

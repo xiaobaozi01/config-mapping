@@ -2,7 +2,7 @@
 
 将 IOS XR 和 Junos 大括号配置转换为适用于 GNS3 XRv9000/vMX 的配置。第一次接触项目请从 [新人导读](docs/onboarding-guide.md) 开始；需求基线见 [docs/requirements.md](docs/requirements.md)，完整转换过程见 [docs/processing-flow.md](docs/processing-flow.md)，新增 group 语义规则见 [语义 identity 规则编写指南](docs/semantic-rule-authoring.md)。裁剪、适配、模拟与校验的扩展方式见 [配置处理规则指南](docs/configuration-rule-authoring.md)。
 
-Cisco 和 Juniper 使用纯 Python 手写 Parser 和可变 AST，提供统一 Visitor、Listener、Editor 和 Writer。规则失败时恢复树副本，输出统一排版；详见[手写 AST 指南](docs/config-ast.md)。Cisco 可运行规则模板位于 `impl/cisco/rules/examples.py`，简单清洗继续使用 YAML。
+Cisco 和 Juniper 使用纯 Python 手写 Parser 和可变 AST，提供统一 Visitor、Listener、Editor 和 Writer。规则失败时恢复树副本，输出统一排版；详见[手写 AST 指南](docs/config-ast.md)。Cisco 可运行规则模板位于 `gns3_config_adaptor/impl/cisco_iosxrv9k_7_11_1_config_mapping_handler/rules/examples.py`，简单清洗继续使用 YAML。
 
 拓扑预检后会展开常见的 IOS XR `group/apply-group` 和 Junos `groups/apply-groups` 配置，使继承的接口及认证配置进入后续转换。已应用 group 无法静态求值时转换失败，不输出可能不完整的设备配置。
 
@@ -10,23 +10,23 @@ group 展开是事务式的，并遵循显式配置、嵌套层级和 group 列�
 
 ## 代码边界
 
-- `impl/cisco/syntax/`、`impl/cisco/operations/`、`impl/cisco/support/`：IOS XR 语法、业务操作和镜像约束；XRv9000 规则仍位于 `impl/cisco/rules/`。
-- `impl/juniper/syntax/`、`impl/juniper/operations/`、`impl/juniper/support/`：Junos 语法、业务操作和镜像约束；vMX 规则仍位于 `impl/juniper/rules/`。
-- `impl/<vendor>/operations/interfaces/`：按 `access`、`analysis`、`business`、`transform` 和 `capabilities` 拆分接口能力。
-- `impl/common/config_ast/`：两家厂商共享的 AST、遍历、Editor 和 Writer 协议。
-- `impl/common/domain/`、`impl/common/rules/`、`impl/common/support/`：公共领域数据、规则引擎、路径清洗及基础设施能力。
-- `impl/common/domain/capabilities/`：Document 核心协议，以及接口、聚合、Group、清洗、裁剪、兼容、校验、引用和模拟等窄能力协议。
-- `impl/common/semantic_identity/`：路径感知的语义 identity 规则引擎。
-- `impl/common/domain/contracts.py`：保留 `VendorConfiguration` 兼容别名；最终类型为组合窄能力的 `VendorDocument`。
-- `adaptation/topology.py`：Excel 拓扑读取、预检和输出。
-- `adaptation/groups.py`：Group 展开的跨设备调度和诊断汇总。
-- `adaptation/interfaces.py`：接口预清理、分类、非 NNI 裁剪、引用改写、目标兼容与最终校验。
-- `adaptation/nni.py`：NNI 聚合规划、M-LAG 边界、端口分配和配置迁移。
-- `adaptation/cleaning_rules.py`：声明式与代码型清洗规则、内置注册表及固定执行点调度。
-- `adaptation/input_normalization.py`：按厂商规则删除原始配置两端的采集回显，再交给语法解析器。
-- `adaptation/simulation.py`：模拟参数适配调度。
-- `adaptation/pipeline.py`：显式组合转换阶段，并在首次错误后停止。
-- `adaptation/service.py`：组织输入加载、完整转换和最终输出。
+- `gns3_config_adaptor/impl/cisco_iosxrv9k_7_11_1_config_mapping_handler/syntax/`、`gns3_config_adaptor/impl/cisco_iosxrv9k_7_11_1_config_mapping_handler/operations/`、`gns3_config_adaptor/impl/cisco_iosxrv9k_7_11_1_config_mapping_handler/support/`：IOS XR 语法、业务操作和镜像约束；XRv9000 规则仍位于 `gns3_config_adaptor/impl/cisco_iosxrv9k_7_11_1_config_mapping_handler/rules/`。
+- `gns3_config_adaptor/impl/juniper_vjunos_router_23_2R1_15_config_mapping_handler/syntax/`、`gns3_config_adaptor/impl/juniper_vjunos_router_23_2R1_15_config_mapping_handler/operations/`、`gns3_config_adaptor/impl/juniper_vjunos_router_23_2R1_15_config_mapping_handler/support/`：Junos 语法、业务操作和镜像约束；vMX 规则仍位于 `gns3_config_adaptor/impl/juniper_vjunos_router_23_2R1_15_config_mapping_handler/rules/`。
+- `gns3_config_adaptor/impl/<vendor>/operations/interfaces/`：按 `access`、`analysis`、`business`、`transform` 和 `capabilities` 拆分接口能力。
+- `gns3_config_adaptor/impl/common/config_ast/`：两家厂商共享的 AST、遍历、Editor 和 Writer 协议。
+- `gns3_config_adaptor/impl/common/domain/`、`gns3_config_adaptor/impl/common/rules/`、`gns3_config_adaptor/impl/common/support/`：公共领域数据、规则引擎、路径清洗及基础设施能力。
+- `gns3_config_adaptor/impl/common/domain/capabilities/`：Document 核心协议，以及接口、聚合、Group、清洗、裁剪、兼容、校验、引用和模拟等窄能力协议。
+- `gns3_config_adaptor/impl/common/semantic_identity/`：路径感知的语义 identity 规则引擎。
+- `gns3_config_adaptor/impl/common/domain/contracts.py`：保留 `VendorConfiguration` 兼容别名；最终类型为组合窄能力的 `VendorDocument`。
+- `gns3_config_adaptor/adaptation/topology.py`：Excel 拓扑读取、预检和输出。
+- `gns3_config_adaptor/adaptation/groups.py`：Group 展开的跨设备调度和诊断汇总。
+- `gns3_config_adaptor/adaptation/interfaces.py`：接口预清理、分类、非 NNI 裁剪、引用改写、目标兼容与最终校验。
+- `gns3_config_adaptor/adaptation/nni.py`：NNI 聚合规划、M-LAG 边界、端口分配和配置迁移。
+- `gns3_config_adaptor/adaptation/cleaning_rules.py`：声明式与代码型清洗规则、内置注册表及固定执行点调度。
+- `gns3_config_adaptor/adaptation/input_normalization.py`：按厂商规则删除原始配置两端的采集回显，再交给语法解析器。
+- `gns3_config_adaptor/adaptation/simulation.py`：模拟参数适配调度。
+- `gns3_config_adaptor/adaptation/pipeline.py`：显式组合转换阶段，并在首次错误后停止。
+- `gns3_config_adaptor/adaptation/service.py`：组织输入加载、完整转换和最终输出。
 
 `CiscoDocument` 和 `JunosDocument` 是配置树聚合根，只负责语法、树状态、修订、
 编辑事务、分析缓存和最终渲染。业务动作通过按需创建的轻量能力入口执行，例如
@@ -66,7 +66,7 @@ python3 -m pip install -e .
 ```python
 from pathlib import Path
 
-from adaptation.service import convert
+from gns3_config_adaptor.adaptation import convert
 
 context = convert(
     topology_path=Path("topology.xlsx"),
@@ -78,7 +78,7 @@ if context.has_errors:
     raise RuntimeError(context.errors)
 ```
 
-`profiles_path` 可配置镜像名称/版本、数据接口列表和模拟参数适配策略；列表最后三个接口全部空置预留，其余接口可分配给 NNI（默认八口中的前五口）。清洗规则位于项目配置目录，按厂商分别位于 `config/rules/cisco/xrv9000/cleaning.yaml` 和 `config/rules/juniper/vmx/cleaning.yaml`，转换时不接受外部规则文件。
+`profiles_path` 可配置镜像名称/版本、数据接口列表和模拟参数适配策略；列表最后三个接口全部空置预留，其余接口可分配给 NNI（默认八口中的前五口）。清洗规则位于项目配置目录，按厂商分别位于 `config/rules/cisco_iosxr/xrv9000/cleaning.yaml` 和 `config/rules/juniper_junos/vmx/cleaning.yaml`，转换时不接受外部规则文件。
 
 转换流程已移除原始配置语义审计，不再在映射前扫描原配置的标量冲突或接口角色等语义问题。必要语法解析、拓扑与接口映射冲突检查、最终目标兼容和残留引用校验继续执行。`convert()` 和 `prepare_context()` 保留 keyword-only 参数 `strict_input_validation=False`，该参数只影响仍保留的业务校验，不会重新启用源配置审计。两厂商校验能力不再提供专用的 `validate_source_semantics()` 入口。
 

@@ -6,8 +6,10 @@ from tempfile import TemporaryDirectory
 
 import yaml
 
-from impl.common.rules.empty_blocks import EmptyBlockPolicy as CommonEmptyBlockPolicy
-from impl.juniper.support.empty_blocks import (
+from gns3_config_adaptor.impl.common.rules.empty_blocks import (
+    EmptyBlockPolicy as CommonEmptyBlockPolicy,
+)
+from gns3_config_adaptor.impl.juniper_vjunos_router_23_2R1_15_config_mapping_handler.support.empty_blocks import (
     EmptyBlockPolicy,
     load_empty_block_policy,
     vmx_empty_block_policy,
@@ -15,13 +17,16 @@ from impl.juniper.support.empty_blocks import (
 
 
 class JunosEmptyBlockRulesTest(unittest.TestCase):
+
     def test_vmx_empty_block_policy_is_explicit(self):
         policy = vmx_empty_block_policy()
         self.assertEqual(policy.default, "semicolon")
         self.assertEqual(policy.action_for(("security",)), "omit")
         self.assertEqual(policy.action_for(("system", "services")), "omit")
         self.assertEqual(policy.action_for(("system", "login")), "omit")
-        self.assertEqual(policy.action_for(("interfaces", "ge-0/0/0")), "semicolon")
+        self.assertEqual(
+            policy.action_for(("interfaces", "ge-0/0/0")), "semicolon"
+        )
         self.assertIs(EmptyBlockPolicy, CommonEmptyBlockPolicy)
         self.assertIs(policy, vmx_empty_block_policy())
 
@@ -42,7 +47,9 @@ class JunosEmptyBlockRulesTest(unittest.TestCase):
             path = Path(directory) / "empty_blocks.yaml"
             for change in invalid:
                 with self.subTest(change=change):
-                    path.write_text(yaml.safe_dump(base | change), encoding="utf-8")
+                    path.write_text(
+                        yaml.safe_dump(base | change), encoding="utf-8"
+                    )
                     with self.assertRaises(ValueError):
                         load_empty_block_policy(path)
 
@@ -58,7 +65,9 @@ class JunosEmptyBlockRulesTest(unittest.TestCase):
                 encoding="utf-8",
             )
             policy = load_empty_block_policy(path)
-        self.assertEqual(policy.action_for(("interfaces", "ge-0/0/0")), "semicolon")
+        self.assertEqual(
+            policy.action_for(("interfaces", "ge-0/0/0")), "semicolon"
+        )
         self.assertEqual(policy.action_for(("security",)), "omit")
         self.assertEqual(policy.action_for(("system", "services")), "braces")
 
