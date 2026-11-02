@@ -66,8 +66,8 @@ class SemanticResolver:
     ):
         """创建持有编译后规则的解析器实例。
 
-        规则在构造前已由 ``load_rule_pack`` 校验，这里只保存引用；保持构造无副作用
-        可让解析器安全地被模块级 ``lru_cache`` 复用。
+        规则在构造前由 loader 校验；此处只预编译静态路径和候选桶。
+        局部缓存不预分配容量，模块级实例可将容量设为零以避免跨任务留存输入。
         """
         self._rules = rules
         self._cache = BudgetCache(cache_budget_bytes)
@@ -85,6 +85,26 @@ class SemanticResolver:
             (self._cache_key, context),
             lambda: self._resolve_uncached(context),
             local=self._cache,
+            charge=lambda value: self._decision_charge(context, value),
+        )
+
+    @staticmethod
+    def _decision_charge(context, value):
+        """Charge fixed immutable types without reflection on every cache miss.
+
+        Four bytes per character plus object allowances conservatively account
+        for Unicode strings and container references without inspecting the AST.
+        """
+        return (
+            768
+            + 4
+            * (
+                len(context.vendor)
+                + len(context.statement)
+                + len(value.normalized)
+            )
+            + sum(64 + 4 * len(part) for part in context.path)
+            + sum(64 + 4 * len(part) for part in value.identity)
         )
 
     def _compile_candidates(self):
@@ -119,7 +139,13 @@ class SemanticResolver:
         This cache never stores nodes and shares the same byte budget as decisions.
         """
         return memoized(
-            "tokens", value, lambda: tokenize(value), local=self._cache
+            "tokens",
+            value,
+            lambda: tokenize(value),
+            local=self._cache,
+            charge=lambda tokens: 384
+            + 4 * len(value)
+            + sum(64 + 4 * len(token) for token in tokens),
         )
 
     def _matches(self, context):
@@ -127,7 +153,7 @@ class SemanticResolver:
 
         Literal prefiltering does not shortcut ambiguity detection or capture rules.
         """
-        statement = self._tokens(context.statement)
+        statement = tokenize(context.statement)
         path = tuple(self._tokens(component) for component in context.path)
         prefix = statement[0] if statement else ""
         candidates = self._buckets.get(

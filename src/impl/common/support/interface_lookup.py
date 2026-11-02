@@ -223,6 +223,7 @@ class InterfaceLookup:
         self.removed, self.added = set(), []
         self.structural = True
         self.rejected = False
+        self.budget_rejected = False
         document._tracker.listeners.add(self)
 
     def reset(self):
@@ -235,6 +236,7 @@ class InterfaceLookup:
         self.added.clear()
         self.structural = True
         self.rejected = False
+        self.budget_rejected = False
 
     def discard(self):
         """Remove this index from its current pool when its document retires.
@@ -257,7 +259,8 @@ class InterfaceLookup:
             self.pool.peek(self.key) if self.pool is not None else CACHE_MISS
         )
         if state is CACHE_MISS:
-            self.rejected = False
+            if not self.budget_rejected or name == "children":
+                self.rejected = False
             return
         if name not in {
             "header",
@@ -380,6 +383,7 @@ class InterfaceLookup:
         pool.discard(self.key)
         if 512 + 128 * len(document.root.children) > pool.budget:
             self.rejected = True
+            self.budget_rejected = True
             pool.note("interfaces", "bypasses")
             return None
         state = InterfaceState(document)
@@ -388,6 +392,7 @@ class InterfaceLookup:
             self.key, state, state.cost, "interfaces", WeakMethod(self.reset)
         ):
             self.rejected = True
+            self.budget_rejected = True
             return None
         self.structural = False
         self.dirty.clear()

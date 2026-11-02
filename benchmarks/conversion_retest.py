@@ -105,7 +105,9 @@ def parse_args():
     parser.add_argument("--strict-input-validation", action="store_true")
     args = parser.parse_args()
     if args.repeat < 1 or args.warmup < 0 or args.cache_budget_mib < 0:
-        parser.error("repeat must be positive and warmup must be nonnegative")
+        parser.error(
+            "repeat must be positive; warmup and cache budget must be nonnegative"
+        )
     if args.profile and (args.repeat != 1 or args.warmup != 0):
         parser.error("profile mode requires --repeat 1 --warmup 0")
     output, configs, topology = (

@@ -382,3 +382,36 @@ def test_metrics_write_failure_never_masks_conversion_exception(tmp_path):
     ):
         with pytest.raises(ValueError, match="primary conversion error"):
             convert(tmp_path)
+
+
+def test_zero_budget_and_cache_metrics_are_frozen_and_input_free(tmp_path):
+    context = service.convert(
+        FIXTURES / "topology.xlsx",
+        FIXTURES / "configs",
+        tmp_path,
+        cache_budget_bytes=0,
+    )
+    assert not context.has_errors
+    metrics = load(tmp_path)
+    cache = metrics["cache"]
+    assert cache["closed"] and cache["entries"] == 0
+    assert cache["budget_bytes"] == cache["estimated_peak_bytes"] == 0
+    first = context.performance.snapshot()
+    first["cache"]["namespaces"]["private"] = {"input": "secret"}
+    assert (
+        "private" not in context.performance.snapshot()["cache"]["namespaces"]
+    )
+
+
+def test_budget_validation_happens_before_reading_input(tmp_path):
+    with patch.object(
+        service, "prepare_context", side_effect=AssertionError("input read")
+    ):
+        with pytest.raises(ValueError, match="cache_budget_bytes"):
+            service.convert(
+                FIXTURES / "topology.xlsx",
+                FIXTURES / "configs",
+                tmp_path,
+                cache_budget_bytes=-1,
+            )
+    assert not (tmp_path / "configs").exists()

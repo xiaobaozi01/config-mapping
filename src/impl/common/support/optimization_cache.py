@@ -159,6 +159,7 @@ class BudgetCache:
             self.closed = True
             while self.entries:
                 self.discard(next(iter(self.entries)), "releases")
+            self.entries.clear()
 
     def snapshot(self):
         """Copy budget and counters without exposing cached inputs.
@@ -192,7 +193,7 @@ def optimization_scope(cache_budget_bytes=DEFAULT_CACHE_BUDGET):
         _CURRENT.reset(token)
 
 
-def memoized(namespace, key, collect, *, local=None):
+def memoized(namespace, key, collect, *, local=None, charge=None):
     """Compute a pure immutable result with the active or instance-local pool.
 
     Failed computations are never inserted and mutable AST objects are excluded.
@@ -204,5 +205,10 @@ def memoized(namespace, key, collect, *, local=None):
     value = cache.get(full_key, namespace)
     if value is CACHE_MISS:
         value = collect()
-        cache.put(full_key, value, estimate_size(full_key, value), namespace)
+        size = (
+            charge(value)
+            if charge is not None
+            else estimate_size(full_key, value)
+        )
+        cache.put(full_key, value, size, namespace)
     return value

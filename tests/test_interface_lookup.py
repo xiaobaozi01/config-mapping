@@ -243,3 +243,26 @@ def test_seeded_mixed_mutations_remain_equivalent(case):
                     candidates[0].comment = "change"
                 verify(case)
             verify(case)
+
+
+def test_eviction_rebuilds_fresh_nodes_after_mutation():
+    doc = CiscoDocument("interface Gi0\n!\ninterface Gi1\n!\n")
+    with optimization_scope(8192) as pool:
+        node = cisco.find_interface_node(doc, "Gi0")
+        pool.put("pressure", (), 8000, "pressure")
+        node.header = "interface Gi2"
+        assert cisco.find_interface_node(doc, "Gi0") is None
+        assert cisco.find_interface_node(doc, "Gi2") is node
+        assert pool.stats["interfaces"]["builds"] == 2
+        assert pool.snapshot()["estimated_peak_bytes"] <= 8192
+
+
+def test_oversized_index_does_not_retry_build_on_every_scalar_edit():
+    doc = CiscoDocument("".join(f"interface Gi{i}\n!\n" for i in range(10)))
+    with optimization_scope(5000) as pool:
+        node = cisco.find_interface_node(doc, "Gi0")
+        for i in range(10):
+            node.header = f"interface Gi{100 + i}"
+            assert cisco.find_interface_node(doc, f"Gi{100+i}") is node
+        assert pool.stats["interfaces"]["builds"] == 1
+        assert not pool.entries
