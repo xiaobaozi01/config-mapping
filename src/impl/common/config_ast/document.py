@@ -14,11 +14,19 @@ class AstDocument:
 
     @property
     def root(self):
+        """Return the root currently owned by the mutation tracker.
+
+        Keeping the root in the tracker makes root swaps participate in nested transaction rollback.
+        """
         tracker = vars(self).get("_tracker")
         return tracker.root if tracker is not None else self._root
 
     @root.setter
     def root(self, root):
+        """Install the initial root or journal a replacement.
+
+        Initial installation builds ownership once; later replacements advance the same document mutation sequence.
+        """
         tracker = vars(self).get("_tracker")
         if tracker is None:
             self._tracker = TreeTracker(root)
@@ -27,7 +35,10 @@ class AstDocument:
 
     @property
     def mutation_epoch(self):
-        """Immediate mutation sequence, including writes inside an open bulk."""
+        """Expose the immediate AST mutation sequence.
+
+        Unlike the published revision, this changes during open batches so callback checks and warm caches see direct writes.
+        """
         return self._tracker.epoch
 
     @property

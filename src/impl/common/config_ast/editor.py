@@ -392,8 +392,6 @@ class EditScope:
             tracker.parents = {}
             tracker.detached = set()
             tracker.dirty = set()
-            tracker.adopt(restored)
-            tracker.repair()
             tracker.replace_root(restored.clone(), restoring=True)
             tracker.repair()
             tracker.sync_index = len(tracker.journal)
@@ -402,10 +400,6 @@ class EditScope:
                 self.document._interface_analysis_cache
             )()
             self.rolled_back = True
-
-    @property
-    def changed(self):
-        return self.document._tracker.changed_since(self.checkpoint)
 
     def synchronize(self):
         """在发布缓存和修订号变化前校验树结构。

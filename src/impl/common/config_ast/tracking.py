@@ -13,13 +13,24 @@ _MISSING = object()
 
 
 class TrackedChildren(list):
-    """A normal list whose mutating operations record reversible splices."""
+    """Intercept ordinary child-list mutations.
+
+    List reads retain their usual behavior; writes describe reversible splices before exposing the new contents.
+    """
 
     def __init__(self, owner, values=()):
+        """Bind a child sequence to its owning node.
+
+        A weak owner reference avoids adding another ownership cycle to the AST.
+        """
         super().__init__(values)
         self._owner = ref(owner)
 
     def _splice(self, start, stop, values):
+        """Replace one contiguous range and record its inverse.
+
+        Materializing incoming values first supports generators and self-extension without partially publishing a mutation.
+        """
         values = list(values)
         old = self[start:stop]
         if old == values:
@@ -31,6 +42,10 @@ class TrackedChildren(list):
         list.__setitem__(self, slice(start, stop), values)
 
     def __setitem__(self, key, value):
+        """Apply item, slice or extended-slice assignment.
+
+        Index validation precedes journal updates so failed list operations leave tree state unchanged.
+        """
         if isinstance(key, slice):
             start, stop, step = key.indices(len(self))
             if step == 1:
@@ -48,6 +63,10 @@ class TrackedChildren(list):
             self._splice(index, index + 1, [value])
 
     def __delitem__(self, key):
+        """Remove an item or slice through a reversible splice.
+
+        Extended slices are rebuilt locally to preserve Python list ordering and index semantics.
+        """
         if isinstance(key, slice):
             rebuilt = list(self)
             del rebuilt[key]
@@ -61,12 +80,24 @@ class TrackedChildren(list):
             self._splice(index, index + 1, [])
 
     def append(self, value):
+        """Append one child.
+
+        The splice records only the inserted edge rather than copying the whole sibling sequence.
+        """
         self._splice(len(self), len(self), [value])
 
     def extend(self, values):
+        """Append an iterable of children.
+
+        The iterable is materialized before updating ownership, including when the source is this list.
+        """
         self._splice(len(self), len(self), values)
 
     def insert(self, index, value):
+        """Insert a child using normal list index clamping.
+
+        The normalized insertion offset is stored in the undo journal.
+        """
         index = integer_index(index)
         index = (
             max(0, len(self) + index) if index < 0 else min(index, len(self))
@@ -74,47 +105,89 @@ class TrackedChildren(list):
         self._splice(index, index, [value])
 
     def pop(self, index=-1):
+        """Remove and return the child at an index.
+
+        Reading first preserves the standard error behavior for empty lists and invalid indices.
+        """
         value = self[index]
         del self[index]
         return value
 
     def remove(self, value):
+        """Remove the first matching child.
+
+        Lookup uses list semantics and the resulting removal participates in transaction rollback.
+        """
         del self[self.index(value)]
 
     def clear(self):
+        """Remove all children.
+
+        The removed range remains in the journal only as long as an active rollback boundary needs it.
+        """
         self._splice(0, len(self), [])
 
     def reverse(self):
+        """Reverse the child order.
+
+        The replacement is tracked because source ordering is part of configuration semantics.
+        """
         self._splice(0, len(self), reversed(self))
 
     def sort(self, *, key=None, reverse=False):
+        """Sort children with the supplied key and direction.
+
+        Sorting a temporary list prevents a failing key function from partially changing the live tree.
+        """
         self._splice(0, len(self), sorted(self, key=key, reverse=reverse))
 
     def __iadd__(self, values):
+        """Extend this list in place.
+
+        Returning the same container preserves aliases and supports augmented assignment to node.children.
+        """
         self.extend(values)
         return self
 
     def __imul__(self, count):
+        """Repeat or empty this list in place.
+
+        Ownership validation rejects repeated shared children at the transaction synchronization boundary.
+        """
         self._splice(0, len(self), list(self) * count)
         return self
 
 
 def tracker_for(node):
-    """Return the live tracker without retaining a document from a node."""
+    """Resolve the live tracker for a node.
+
+    Weak references allow retained nodes to outlive their document without keeping its analysis caches alive.
+    """
     weak = vars(node).get("_tracking")
-    return weak() if weak is not None else None
+    tracker = weak() if weak is not None else None
+    return tracker if tracker is not None and node in tracker.edges else None
 
 
 def cache_token(root):
-    """O(1) token for tracked trees; detached roots have no cached analysis."""
+    """Return the root identity and immediate mutation epoch.
+
+    Untracked roots receive a fresh token so detached mutable trees cannot reuse stale analysis results.
+    """
     tracker = root._tracker()
     return (root, tracker.epoch) if tracker is not None else object()
 
 
 class TreeTracker:
-    """Own an edge index and inverse journal independently of a Document."""
+    """Maintain incremental ownership and reversible mutations.
+
+    The edge index belongs to one document; nodes reference it weakly and successful rules never need whole-tree snapshots.
+    """
 
     def __init__(self, root):
+        """Index and validate an installed configuration tree once.
+
+        Subsequent synchronization visits changed relationships instead of rebuilding this index for each rule.
+        """
         self.root = root
         self.epoch = 0
         self.journal = []
@@ -131,7 +204,10 @@ class TreeTracker:
         self.clear()
 
     def adopt(self, root):
-        """Index only previously unseen subtrees, rejecting foreign ownership."""
+        """Index only previously unseen subtrees.
+
+        Cross-document sharing is rejected before publication; incoming edges are tracked separately from visited nodes to detect cycles.
+        """
         pending = [root]
         while pending:
             node = pending.pop()
@@ -150,6 +226,10 @@ class TreeTracker:
 
     def _incoming(self, child, parent, delta):
         # Incoming entries are separate from the visited/adopted marker.
+        """Adjust the multiplicity of a child-to-parent edge.
+
+        Changed children are queued for structural validation and eventual removal of disconnected index entries.
+        """
         parents = self.parents.setdefault(child, {})
         count = parents.get(parent, 0) + delta
         if count:
@@ -161,6 +241,10 @@ class TreeTracker:
 
     @contextmanager
     def readonly(self, error, message):
+        """Temporarily reject live writes with a caller-selected exception.
+
+        Nested callback phases restore the previous restriction even when a callback raises.
+        """
         previous = self.write_error
         self.write_error = (error, message)
         try:
@@ -169,12 +253,19 @@ class TreeTracker:
             self.write_error = previous
 
     def check_write(self):
+        """Enforce the active rule callback restriction.
+
+        Checking before publication prevents visitors and result mappers from committing through another Editor.
+        """
         if self.write_error is not None:
             error, message = self.write_error
             raise error(message)
 
     def belongs(self, node):
-        """Check reachability through indexed edges, without scanning siblings."""
+        """Check whether indexed parent edges reach the current root.
+
+        Walking ancestors avoids linear sibling searches and rejects detached, retired, cyclic and multiply owned nodes.
+        """
         seen = set()
         while node is not self.root:
             if node in seen:
@@ -189,7 +280,10 @@ class TreeTracker:
         return True
 
     def field(self, node, name, old, new):
-        """Record an attribute write before exposing it to readers."""
+        """Record a field mutation before it becomes visible.
+
+        Child-container replacement updates the edge index while scalar writes only advance the immediate epoch.
+        """
         self.check_write()
         if name == "children":
             self._change_edges(node, old, new)
@@ -199,6 +293,10 @@ class TreeTracker:
             self.dirty.add(node)
 
     def _change_edges(self, node, old, new):
+        """Apply the edge delta between old and new child ranges.
+
+        Multiplicity counts retain detection of duplicate children while unchanged edges require no subtree traversal.
+        """
         removed, added = Counter(old), Counter(new)
         for child, count in (removed - added).items():
             self._incoming(child, node, -count)
@@ -207,12 +305,22 @@ class TreeTracker:
             self._incoming(child, node, count)
 
     def splice(self, node, children, index, old, new):
-        self.check_write()
-        self._change_edges(node, old, new)
+        """Record the inverse of a child-container splice.
+
+        A retired list alias remains reversible but does not contribute edges or invalidate the current configuration.
+        """
+        active = node.children is children
+        if active:
+            self.check_write()
+            self._change_edges(node, old, new)
+            self.epoch += 1
         self.journal.append(("splice", children, index, old, new))
-        self.epoch += 1
 
     def replace_root(self, root, *, restoring=False):
+        """Install a root and journal its predecessor.
+
+        Rollback can bypass callback restrictions internally; recording that swap preserves enclosing transaction checkpoints.
+        """
         if not restoring:
             self.check_write()
         self.adopt(root)
@@ -223,7 +331,10 @@ class TreeTracker:
         self.epoch += 1
 
     def repair(self):
-        """Validate changed incoming edges and reconnect only affected nodes."""
+        """Validate changed incoming edges and reconnect affected nodes.
+
+        Ancestor checks detect cycles while raw parent repair avoids recursively invoking the mutation hooks.
+        """
         dirty, self.dirty = self.dirty, set()
         for node in dirty:
             parents = self.parents.get(node, {})
@@ -248,7 +359,10 @@ class TreeTracker:
                 self.epoch += 1
 
     def changed_since(self, index):
-        """Compare touched values only, including batches that cancel out."""
+        """Compare only values touched since a journal checkpoint.
+
+        Reversing local list splices for comparison recognizes batches whose mutations cancel out without hashing the whole tree.
+        """
         fields, lists = {}, {}
         for kind, target, key, old, new in self.journal[index:]:
             if kind == "splice":
@@ -263,6 +377,9 @@ class TreeTracker:
         ):
             return True
         for target, operations in lists.values():
+            owner = target._owner()
+            if owner is None or owner.children is not target:
+                continue
             before = list(target)
             for key, old, new in reversed(operations):
                 before[key : key + len(new)] = old
@@ -271,6 +388,10 @@ class TreeTracker:
         return False
 
     def synchronize(self):
+        """Repair pending edges and report a net configuration change.
+
+        The synchronization cursor prevents nested scope exits from repeating work already published by an inner batch.
+        """
         self.repair()
         changed = self.changed_since(self.sync_index)
         self.sync_index = len(self.journal)
@@ -279,7 +400,10 @@ class TreeTracker:
         return changed
 
     def undo(self, index):
-        """Restore raw values; the caller rebuilds ownership on the cold path."""
+        """Restore journaled values in reverse order.
+
+        Ownership is rebuilt from the restored tree on this failure path; inverse root swaps keep outer records usable.
+        """
         for kind, target, key, old, new in reversed(self.journal[index:]):
             if kind == "splice":
                 list.__setitem__(target, slice(key, key + len(new)), old)
@@ -293,7 +417,15 @@ class TreeTracker:
     def clear(self):
         # Remove only disconnected components affected by this batch. Keeping
         # every retired subtree would turn the index into an unbounded cache.
-        pending = [node for node in self.detached if not self.belongs(node)]
+        """Release committed journal entries and disconnected index components.
+
+        Only affected components are visited so repeated successful rules cannot accumulate retired trees or scan unchanged nodes.
+        """
+        pending = [
+            node
+            for node in self.detached
+            if node in self.edges and not self.belongs(node)
+        ]
         seen = set()
         while pending:
             node = pending.pop()

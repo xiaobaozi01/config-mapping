@@ -290,3 +290,32 @@ def test_removed_subtrees_do_not_accumulate_and_copy_is_independent(document):
     with clone.edit().bulk() as root:
         root.nodes[0].comment = "copy only"
     assert clone.root.nodes[0].comment != document.root.nodes[0].comment
+
+
+def test_retired_children_alias_is_not_an_edge_in_the_live_tree(document):
+    alias = document.root.children
+    original = document.source
+    with pytest.raises(RuntimeError):
+        with document.edit().bulk() as root:
+            root.children = []
+            alias.append(root.clone())
+            assert not root.children
+            raise RuntimeError()
+    assert document.source == original
+    with document.edit().bulk() as root:
+        alias = root.children
+        root.children = []
+        orphan = ConfigNode("orphan")
+        alias.append(orphan)
+    assert not document._tracker.belongs(orphan)
+
+
+def test_invalid_list_indices_do_not_mutate_or_invalidate(document):
+    children = document.root.children
+    epoch = document.mutation_epoch
+    for index in (-len(children) - 1, len(children)):
+        with pytest.raises(IndexError):
+            children[index] = ConfigNode("invalid")
+        with pytest.raises(IndexError):
+            del children[index]
+    assert document.mutation_epoch == epoch

@@ -39,9 +39,17 @@ class ConfigNode:
     )
 
     def _tracker(self):
+        """Resolve the optional weak mutation tracker.
+
+        Detached parser nodes and clones remain independent until a document adopts them.
+        """
         return tracker_for(self)
 
     def __setattr__(self, name, value):
+        """Track configuration fields while preserving vendor descriptors.
+
+        Juniper header normalization records its backing field once; child sequences are wrapped before installation.
+        """
         if name not in self._TRACKED_FIELDS:
             object.__setattr__(self, name, value)
             return
@@ -62,6 +70,10 @@ class ConfigNode:
         object.__setattr__(self, name, value)
 
     def __delattr__(self, name):
+        """Track deletion of editable configuration fields.
+
+        Recording the old value allows rollback even when a callback removes a field instead of assigning one.
+        """
         old = getattr(self, name)
         tracker = self._tracker()
         if name in self._TRACKED_FIELDS and tracker is not None:
@@ -174,6 +186,10 @@ class ConfigNode:
         """
 
         def shell(original, parent):
+            """Allocate one detached node without invoking mutation hooks.
+
+            The copy excludes ownership state and allocates an independent child container for nonrecursive subtree cloning.
+            """
             cloned = object.__new__(type(original))
             cloned.__dict__.update(
                 {
