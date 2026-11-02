@@ -17,6 +17,7 @@ from .interfaces import (
 )
 from .models import ConversionContext
 from .nni import NNIHandler
+from .performance import ConversionPerformance
 from .simulation import SimulationAdaptationHandler
 from .topology import TopologyPreflightHandler
 
@@ -61,8 +62,17 @@ class ConversionPipeline:
 
         每阶段结束后检查统一错误状态，使失败处理集中在流水线而不依赖各阶段约定。
         """
+        metrics = (
+            getattr(context, "performance", None) or ConversionPerformance()
+        )
         for stage in self._stages:
-            stage.process(context)
+            name = type(stage).__name__
+            if isinstance(stage, CleaningRulesHandler):
+                name = f"cleaning.{stage.point.value}"
+            with metrics.measure(name) as record:
+                stage.process(context)
+                if context.has_errors:
+                    record["status"] = "failed"
             if context.has_errors:
                 break
         return context

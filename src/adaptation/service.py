@@ -3,9 +3,11 @@
 from __future__ import annotations
 
 import json
+import logging
 import re
 import shutil
 import tempfile
+from contextlib import suppress
 from pathlib import Path
 
 from impl.common.domain.policies import WashingPolicy
@@ -34,6 +36,7 @@ OUTPUT_TOPOLOGY = "topology-adapted.xlsx"
 OUTPUT_README = "README.txt"
 OUTPUT_MAPPING = "interface-mapping.json"
 OUTPUT_REPORT = "report.json"
+OUTPUT_PERFORMANCE = "performance.json"
 PREVIOUS_OUTPUTS_DIR = ".previous-outputs"
 
 
@@ -313,6 +316,82 @@ def prepare_context(
     )
 
 
+def _prepare_timed_context(
+    metrics, topology_path, config_dir, profiles_path, strict_input_validation
+):
+    """在输入加载前开始计时，并把同一指标实例交给实际上下文。
+
+    失败时仍由外层空上下文持有指标，因此输入加载异常也能留下阶段耗时。
+    """
+    with metrics.measure("input_preparation") as record:
+        context = prepare_context(
+            topology_path,
+            config_dir,
+            profiles_path,
+            strict_input_validation=strict_input_validation,
+        )
+        if context.has_errors:
+            record["status"] = "failed"
+    context.performance = metrics
+    return context
+
+
+def _write_timed_outputs(context, output_dir, stage="output"):
+    """覆盖完整结果发布和诊断文件写入的耗时。
+
+    使用独立性能文件保存最终指标，避免 report.json 尚未写完就结束输出阶段计时。
+    """
+    with context.performance.measure(stage) as record:
+        write_outputs(context, output_dir)
+        if context.has_errors:
+            record["status"] = "failed"
+
+
+def _write_performance(context, output_dir, failed=False):
+    """在任务完成后原子写入不含配置内容的性能文件。
+
+    性能文件写入失败只记录固定日志，不掩盖转换异常或把成功的业务输出改判为失败。
+    """
+    try:
+        context.performance.finish(failed or context.has_errors)
+        output_dir.mkdir(parents=True, exist_ok=True)
+        _write_text(
+            output_dir,
+            OUTPUT_PERFORMANCE,
+            json.dumps(context.performance.snapshot(), indent=2) + "\n",
+        )
+    except Exception:
+        with suppress(Exception):
+            _output_path(output_dir, OUTPUT_PERFORMANCE).unlink(missing_ok=True)
+        logging.getLogger(__name__).warning(
+            "Unable to write aggregate performance metrics"
+        )
+
+
+def _report_conversion_failure(context, output_dir, phase, exc):
+    """记录转换异常并尝试发布失败诊断。
+
+    诊断写入也失败时保留原始异常说明；性能记录由入口 finally 独立完成。
+    """
+    detail = str(exc).strip() or "异常未提供详细信息"
+    message = f"{phase}发生内部异常 ({type(exc).__name__}): {detail}"
+    context.errors.append(message)
+    context.add_event(
+        EventKind.INTERNAL_ERROR,
+        message,
+        phase=phase,
+        exception_type=type(exc).__name__,
+    )
+    try:
+        _write_timed_outputs(context, output_dir, "failure_output")
+    except Exception as report_exc:
+        report_failure = RuntimeError(
+            f"转换失败后无法写入诊断报告: {report_exc}"
+        )
+        report_failure.add_note(f"原始转换异常: {type(exc).__name__}: {detail}")
+        raise report_failure from report_exc
+
+
 def convert(
     topology_path: Path,
     config_dir: Path,
@@ -334,43 +413,30 @@ def convert(
         devices={},
     )
     phase = "输入加载"
+    completed = False
     try:
-        context = prepare_context(
+        context = _prepare_timed_context(
+            context.performance,
             topology_path,
             config_dir,
             profiles_path,
-            strict_input_validation=strict_input_validation,
+            strict_input_validation,
         )
         if not context.errors:
             phase = "清洗规则加载"
-            pipeline = build_default_pipeline()
+            with context.performance.measure("pipeline_setup"):
+                pipeline = build_default_pipeline()
             phase = "核心转换流水线"
             # 清洗规则在接口迁移和引用改写之后执行，不改变原始 NNI 分类依据。
             pipeline.execute(context)
         phase = "输出结果"
-        write_outputs(context, output_dir)
+        _write_timed_outputs(context, output_dir)
+        completed = True
     except Exception as exc:
-        detail = str(exc).strip() or "异常未提供详细信息"
-        message = f"{phase}发生内部异常 " f"({type(exc).__name__}): {detail}"
-        context.errors.append(message)
-        context.add_event(
-            EventKind.INTERNAL_ERROR,
-            message,
-            phase=phase,
-            exception_type=type(exc).__name__,
-        )
-        try:
-            # context 已标记失败，此次调用只写诊断文件，不再渲染设备配置。
-            write_outputs(context, output_dir)
-        except Exception as report_exc:
-            report_failure = RuntimeError(
-                f"转换失败后无法写入诊断报告: {report_exc}"
-            )
-            report_failure.add_note(
-                f"原始转换异常: {type(exc).__name__}: {detail}"
-            )
-            raise report_failure from report_exc
+        _report_conversion_failure(context, output_dir, phase, exc)
         raise
+    finally:
+        _write_performance(context, output_dir, failed=not completed)
     return context
 
 

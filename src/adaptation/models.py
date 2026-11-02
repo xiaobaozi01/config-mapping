@@ -13,6 +13,8 @@ from impl.common.domain.policies import (
     WashingPolicy,
 )
 
+from .performance import ConversionPerformance
+
 if TYPE_CHECKING:
     from impl.common.domain.contracts import VendorConfiguration
 
@@ -336,6 +338,9 @@ class ConversionContext:
     external_devices: set[str] = field(default_factory=set)
     # 保留的业务校验策略；不会启用已移除的源配置语义审计。
     strict_input_validation: bool = False
+    performance: ConversionPerformance = field(
+        default_factory=ConversionPerformance, repr=False, compare=False
+    )
 
     def add_event(
         self, kind: EventKind | str, message: str, **details: Any

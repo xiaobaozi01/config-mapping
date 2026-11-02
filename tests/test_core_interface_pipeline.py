@@ -1,4 +1,4 @@
-"""转换入口区分源配置语义告警、严格输入校验和映射完整性失败。"""
+"""转换入口跳过源语义审计，继续拒绝映射完整性失败。"""
 
 import json
 import shutil
@@ -44,6 +44,7 @@ class CoreInterfacePipelineTest(unittest.TestCase):
             ".generated-artifacts.json",
             "report.json",
             "interface-mapping.json",
+            "performance.json",
         )
         for relative in paths:
             with (
