@@ -3,7 +3,7 @@
 from copy import copy, deepcopy
 
 from .editor import ConfigEditor
-from .model import tree_signature
+from .tracking import TreeTracker
 
 
 class AstDocument:
@@ -11,6 +11,24 @@ class AstDocument:
 
     原始文本不是第二份配置状态；``source`` 始终由当前树派生。
     """
+
+    @property
+    def root(self):
+        tracker = vars(self).get("_tracker")
+        return tracker.root if tracker is not None else self._root
+
+    @root.setter
+    def root(self, root):
+        tracker = vars(self).get("_tracker")
+        if tracker is None:
+            self._tracker = TreeTracker(root)
+        elif root is not tracker.root:
+            tracker.replace_root(root)
+
+    @property
+    def mutation_epoch(self):
+        """Immediate mutation sequence, including writes inside an open bulk."""
+        return self._tracker.epoch
 
     @property
     def source(self):
@@ -38,15 +56,10 @@ class AstDocument:
     def tree_changed(self):
         """把已校验的树修改同步到修订号和查询缓存。
 
-        树签名可避免无实际变化的批量作用域使可复用分析结果失效。
+        仅比较日志涉及的值；即时变更序号同时保护作用域内的缓存读取。
         """
-        signature = tree_signature(self.root)
-        if signature != getattr(self, "_last_signature", None):
+        if self._tracker.synchronize():
             self._revision += 1
-            self._interface_analysis_cache = type(
-                self._interface_analysis_cache
-            )()
-            self._last_signature = signature
 
     def restore_tree(self, root, revision=None):
         """恢复规则备份，并使旧节点引用和缓存失效。
@@ -54,7 +67,6 @@ class AstDocument:
         被替换树中的节点必须重新查询后，才能用于后续编辑。
         """
         self.root = root
-        self._last_signature = None
         self.tree_changed()
         if revision is not None:
             self._revision = revision
@@ -65,7 +77,7 @@ class AstDocument:
         父节点关系和派生缓存不得继续引用原文档。
         """
         cloned = copy(self)
-        cloned.root = self.root.clone()
+        cloned._tracker = TreeTracker(self.root.clone())
         cloned._edit_scope = None
         cloned._parser = deepcopy(self._parser)
         cloned._interface_analysis_cache = type(

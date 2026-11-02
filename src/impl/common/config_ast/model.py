@@ -1,7 +1,8 @@
 """可变的配置节点及源位置诊断。"""
 
-from copy import copy
 from dataclasses import dataclass
+
+from .tracking import _MISSING, TrackedChildren, tracker_for
 
 
 @dataclass(frozen=True)
@@ -20,6 +21,52 @@ class ConfigNode:
 
     子节点持有父节点引用；``kind`` 独立记录空块语义，不以子节点数量作为判断依据。
     """
+
+    _TRACKED_FIELDS = frozenset(
+        {
+            "header",
+            "_header",
+            "kind",
+            "comment",
+            "active",
+            "origin",
+            "rank",
+            "declared_in_source",
+            "location",
+            "children",
+            "parent",
+        }
+    )
+
+    def _tracker(self):
+        return tracker_for(self)
+
+    def __setattr__(self, name, value):
+        if name not in self._TRACKED_FIELDS:
+            object.__setattr__(self, name, value)
+            return
+        # Juniper's descriptor normalizes header and writes _header itself.
+        if name == "header" and isinstance(
+            getattr(type(self), name, None), property
+        ):
+            object.__setattr__(self, name, value)
+            return
+        old = vars(self).get(name, _MISSING)
+        if old is value or (old is not _MISSING and old == value):
+            return
+        if name == "children":
+            value = TrackedChildren(self, value)
+        tracker = self._tracker()
+        if tracker is not None:
+            tracker.field(self, name, old, value)
+        object.__setattr__(self, name, value)
+
+    def __delattr__(self, name):
+        old = getattr(self, name)
+        tracker = self._tracker()
+        if name in self._TRACKED_FIELDS and tracker is not None:
+            tracker.field(self, name, old, _MISSING)
+        object.__delattr__(self, name)
 
     def __init__(
         self,
@@ -107,27 +154,45 @@ class ConfigNode:
 
         显式栈避免递归深度限制，并通过反向压入待处理子节点保持源码顺序。
         """
-        pending = [self] if include_self else list(reversed(self.nodes))
+        pending = (
+            [self]
+            if include_self
+            else [child for child in reversed(self.children) if child.active]
+        )
         while pending:
             node = pending.pop()
             if include_formatting or not node.is_formatting:
                 yield node
-            pending.extend(reversed(node.nodes))
+            pending.extend(
+                child for child in reversed(node.children) if child.active
+            )
 
     def clone(self):
         """复制子树，但不沿着父节点把文档其他部分一并复制。
 
         副本拥有独立的子节点列表，并止步于当前子树边界。
         """
-        root = copy(self)
-        root.parent, root.children = None, []
+
+        def shell(original, parent):
+            cloned = object.__new__(type(original))
+            cloned.__dict__.update(
+                {
+                    key: value
+                    for key, value in vars(original).items()
+                    if key not in {"_tracking", "children", "parent"}
+                }
+            )
+            object.__setattr__(cloned, "parent", parent)
+            object.__setattr__(cloned, "children", TrackedChildren(cloned))
+            return cloned
+
+        root = shell(self, None)
         pending = [(self, root)]
         while pending:
             original, target = pending.pop()
             for child in original.children:
-                cloned = copy(child)
-                cloned.parent, cloned.children = target, []
-                target.children.append(cloned)
+                cloned = shell(child, target)
+                list.append(target.children, cloned)
                 pending.append((child, cloned))
         return root
 

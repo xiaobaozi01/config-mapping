@@ -5,6 +5,7 @@ from __future__ import annotations
 from collections.abc import Callable, Sequence
 from typing import Protocol, TypeVar, cast
 
+from ..config_ast.tracking import cache_token
 from ..domain.interface import InterfaceSpec
 
 
@@ -125,9 +126,9 @@ class InterfaceAnalysisCache:
     ) -> _Result:
         """返回指定查询的结果，并在树结构变化时自动失效缓存。
 
-        每次读取先比较轻量树签名，使直接修改 AST 的调用方也能得到当前修订的数据。
+        使用根身份和即时变更序号判断有效性，直接修改 AST 后也会立即刷新。
         """
-        signature = _tree_signature(root)
+        signature = cache_token(root)
         if signature != self._signature:
             self._signature = signature
             self._results.clear()

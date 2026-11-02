@@ -5,7 +5,6 @@ from __future__ import annotations
 import re
 
 from impl.common.config_ast.document import AstDocument
-from impl.common.config_ast.model import tree_signature
 from impl.common.domain.contracts import VendorConfiguration
 from impl.common.support.interface_cache import InterfaceAnalysisCache
 
@@ -121,14 +120,13 @@ class JunosDocument(AstDocument, VendorConfiguration):
     def __init__(self, text: str):
         """把配置解析为唯一的可变文档树。
 
-        构造阶段建立解析器、写入器、接口缓存和初始树签名。
+        构造阶段建立解析器、写入器、接口缓存和增量归属索引。
         """
         self._parser = _JunosHeaderParser()
         self._interface_analysis_cache = InterfaceAnalysisCache()
         self._revision = 0
         self.writer = JuniperWriter()
         self.root = JuniperParser().parse(text)
-        self._last_signature = tree_signature(self.root)
 
     def parse_fragment(self, text):
         """在挂接到配置树前解析独立片段。
@@ -174,7 +172,7 @@ class JunosDocument(AstDocument, VendorConfiguration):
     def _read_interface_analysis(self, query, collect, copy_result):
         """从文档缓存读取接口分析结果。
 
-        能力对象通过该入口复用统一树签名和失效规则。
+        能力对象通过该入口复用统一变更序号和失效规则。
         """
         return self._interface_analysis_cache.read(
             self.root,

@@ -17,9 +17,7 @@ from impl.juniper.rules.runtime import JunosVisitorRule
 
 @pytest.mark.parametrize("vendor", ["cisco", "juniper"])
 def test_nodes_have_no_document_or_output_dependencies(vendor):
-    module = ast.parse(
-        Path(f"src/impl/{vendor}/syntax/ast.py").read_text()
-    )
+    module = ast.parse(Path(f"src/impl/{vendor}/syntax/ast.py").read_text())
     imports = [
         node.module
         for node in ast.walk(module)
@@ -75,13 +73,11 @@ def test_junos_queries_never_enter_editing_scopes():
         document.interfaces.analysis.business_interface_names()
         document.interfaces.analysis.logical_names_under("ge-0/0/0")
         document.interfaces.analysis.interface_has_business("ge-0/0/0")
-        document.interfaces.analysis.bundle_binding_is_ambiguous(
-            "ge-0/0/0"
-        )
+        document.interfaces.analysis.bundle_binding_is_ambiguous("ge-0/0/0")
 
 
 @pytest.mark.parametrize("vendor", ["cisco", "juniper"])
-def test_managed_rule_creates_exactly_one_rollback_copy(vendor):
+def test_successful_managed_rule_does_not_copy_for_rollback(vendor):
     document = (
         CiscoDocument("hostname old\n")
         if vendor == "cisco"
@@ -113,7 +109,7 @@ def test_managed_rule_creates_exactly_one_rollback_copy(vendor):
         ConfigNode, "clone", autospec=True, side_effect=original_clone
     ) as clone:
         rule.apply(document, None)
-    assert clone.call_count == 1
+    assert clone.call_count == 0
     assert document.hostname() == "new"
     assert document._edit_scope is None
 

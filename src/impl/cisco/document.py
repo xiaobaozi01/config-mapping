@@ -5,7 +5,7 @@ from __future__ import annotations
 import re
 
 from impl.common.config_ast.document import AstDocument
-from impl.common.config_ast.model import tree_signature
+from impl.common.config_ast.tracking import cache_token
 from impl.common.domain.contracts import VendorConfiguration
 
 from .support.empty_blocks import xrv9000_empty_block_policy
@@ -117,14 +117,13 @@ class CiscoDocument(AstDocument, VendorConfiguration):
     def __init__(self, text: str):
         """把配置解析为唯一的可变文档树。
 
-        构造阶段建立解析器、写入器、接口缓存和初始树签名。
+        构造阶段建立解析器、写入器、接口缓存和增量归属索引。
         """
         self._parser = _CiscoHeaderParser()
         self._interface_analysis_cache = _CiscoAnalysisCache()
         self._revision = 0
         self.writer = CiscoWriter()
         self.root = CiscoParser().parse(text)
-        self._last_signature = tree_signature(self.root)
 
     def parse_fragment(self, text):
         """在挂接到配置树前解析独立片段。
@@ -155,7 +154,7 @@ class CiscoDocument(AstDocument, VendorConfiguration):
     def _read_interface_analysis(self, query, collect, copy_result):
         """从文档缓存读取接口分析结果。
 
-        能力对象通过该入口复用统一树签名和失效规则。
+        能力对象通过该入口复用统一变更序号和失效规则。
         """
         return self._interface_analysis_cache.read(
             self.root,
@@ -191,7 +190,7 @@ class _CiscoAnalysisCache:
 
         复制结果可防止调用方修改列表或集合时污染后续查询。
         """
-        signature = tree_signature(root)
+        signature = cache_token(root)
         if signature != self.signature:
             self.results.clear()
             self.signature = signature

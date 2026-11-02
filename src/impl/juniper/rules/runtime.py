@@ -8,7 +8,6 @@ from typing import TYPE_CHECKING, Generic, TypeVar
 
 from impl.common.config_ast import ConfigVisitor
 from impl.common.config_ast.editor import EditResult, EditScope
-from impl.common.config_ast.model import tree_signature
 from impl.common.domain.outcomes import (
     InterfaceAdaptationOutcome,
     InterfacePruningOutcome,
@@ -100,7 +99,7 @@ class RuleSession(Generic[ContextT, OutcomeT]):
         self.document = document
         self.context = context
         self.result = result
-        self.baseline = tree_signature(document.root)
+        self.baseline = document.mutation_epoch
         self.readonly = readonly
         self._transaction = None if readonly else document.edit()
         self._edits = None if readonly else RuleEdits(self._transaction)
@@ -120,7 +119,7 @@ class RuleSession(Generic[ContextT, OutcomeT]):
 
         Visitor 必须通过会话收集编辑；直接修改会绕过执行器的审计和回滚边界。
         """
-        if tree_signature(self.document.root) != self.baseline:
+        if self.document.mutation_epoch != self.baseline:
             raise RuleContractError("规则绕过 Editor 修改了配置")
 
     def apply_edits(self):
@@ -200,15 +199,10 @@ def _validate_roots(roots, document_root):
 
     重复覆盖会导致同一子树被多次编辑并触发冲突，因此在 Visitor 启动前统一拒绝。
     """
-    members = {
-        id(node)
-        for node in document_root.walk(
-            include_self=True, include_formatting=True
-        )
-    }
+    tracker = document_root._tracker()
     identities = set()
     for root in roots:
-        if not isinstance(root, JuniperNode) or id(root) not in members:
+        if not isinstance(root, JuniperNode) or not tracker.belongs(root):
             raise RuleContractError("访问根不属于当前文档树状态")
         if id(root) in identities:
             raise RuleContractError("访问根不能重复")
@@ -283,28 +277,35 @@ class JunosVisitorRule(Generic[ContextT, OutcomeT]):
         if self.document_action is not None:
             return self._apply_document_action(document, context)
         with EditScope(document, independent=True) as scope:
-            original = scope.backup
+            original = document.mutation_epoch
             result = None
             try:
-                result = self.outcome_factory()
+                with document._tracker.readonly(
+                    RuleContractError, "Outcome 工厂不能绕过 Editor 修改配置"
+                ):
+                    result = self.outcome_factory()
                 if not isinstance(
                     result,
                     (InterfaceAdaptationOutcome, SimulationAdaptationOutcome),
                 ):
                     raise RuleContractError("规则工厂必须返回受支持的 Outcome")
-                if tree_signature(document.root) != tree_signature(original):
+                if document.mutation_epoch != original:
                     raise RuleContractError("Outcome 工厂不能修改配置")
                 session = RuleSession(document, context, result, self.readonly)
-                roots = tuple(self.selector(document, context))
+                with document._tracker.readonly(
+                    RuleContractError, "selector 不能绕过 Editor 修改配置"
+                ):
+                    roots = tuple(self.selector(document, context))
                 _validate_roots(roots, document.root)
                 session.assert_unchanged()
                 if roots:
-                    visitor = self._visit(session, roots)
+                    with document._tracker.readonly(
+                        RuleContractError, "规则绕过 Editor 修改了配置"
+                    ):
+                        visitor = self._visit(session, roots)
                     self._finish(session, visitor)
                 if _has_errors(result):
-                    if tree_signature(original) != tree_signature(
-                        document.root
-                    ):
+                    if original != document.mutation_epoch:
                         scope.rollback()
                     _discard_changes(result)
                 return result
@@ -346,10 +347,13 @@ class JunosVisitorRule(Generic[ContextT, OutcomeT]):
         if _has_errors(session.result):
             return
         edits = session.apply_edits()
-        baseline = tree_signature(session.document.root)
+        baseline = session.document.mutation_epoch
         mapper = self.result_mapper or _default_result
-        mapper(session, visitor, edits)
-        if tree_signature(session.document.root) != baseline:
+        with session.document._tracker.readonly(
+            RuleContractError, "结果映射不能绕过 Editor 修改配置"
+        ):
+            mapper(session, visitor, edits)
+        if session.document.mutation_epoch != baseline:
             raise RuleContractError("结果映射不能修改配置")
         if self.readonly:
             _check_readonly_result(session.result)
@@ -369,7 +373,10 @@ class JunosVisitorRule(Generic[ContextT, OutcomeT]):
         只读动作不会获取 Editor；规则作用域仍会检测绕过修改。
         """
         if self.readonly:
-            return self.document_action(document, context)
+            with document._tracker.readonly(
+                RuleContractError, "只读规则不能绕过 Editor 修改配置"
+            ):
+                return self.document_action(document, context)
         with document.edit().bulk():
             return self.document_action(document, context)
 
@@ -379,7 +386,7 @@ class JunosVisitorRule(Generic[ContextT, OutcomeT]):
         备份同时覆盖厂商直接操作和返回的业务错误，防止留下部分规则结果。
         """
         with EditScope(document, independent=True) as scope:
-            original = scope.backup
+            original = document.mutation_epoch
             result = None
             try:
                 result = self._run_action(document, context)
@@ -390,14 +397,10 @@ class JunosVisitorRule(Generic[ContextT, OutcomeT]):
                     raise RuleContractError("规则动作必须返回受支持的 Outcome")
                 if self.readonly:
                     _check_readonly_result(result)
-                    if tree_signature(original) != tree_signature(
-                        document.root
-                    ):
+                    if original != document.mutation_epoch:
                         raise RuleContractError("只读规则修改了配置")
                 if _has_errors(result):
-                    if tree_signature(original) != tree_signature(
-                        document.root
-                    ):
+                    if original != document.mutation_epoch:
                         scope.rollback()
                     _discard_changes(result)
                 self._tag_changes(result)

@@ -74,12 +74,7 @@ class ConfigEditor:
         """
         if self.finished or self.root is not self.document.root:
             raise EditConflictError("Editor is no longer current")
-        current = node
-        while current.parent is not None:
-            if current not in current.parent.children:
-                raise EditConflictError("Detached node")
-            current = current.parent
-        if current is not self.root or not node.active:
+        if not self.document._tracker.belongs(node) or not node.active:
             raise EditConflictError("Node does not belong to this document")
 
     def _record(self, action, node, payload, reason, details):
@@ -287,7 +282,7 @@ class ConfigEditor:
     def apply(self):
         """在当前回滚边界内应用已收集的编辑。
 
-        独立批次自行持有备份；受管规则则提供已有备份。
+        独立批次自行持有日志检查点；受管规则复用活动边界。
         """
         self._check(self.root)
         if not self.operations:
@@ -351,7 +346,7 @@ class ConfigEditor:
 
 
 class EditScope:
-    """为规则或独立结构编辑持有一份回滚副本。
+    """为规则或独立结构编辑持有可撤销日志检查点。
 
     嵌套 Editor 批次共享活动作用域；显式规则边界则独立嵌套。
     """
@@ -359,13 +354,13 @@ class EditScope:
     def __init__(self, document, *, independent=False):
         """记录所需回滚边界，但暂不复制配置树。
 
-        真正进入上下文时才判断是否可以复用外层作用域。
+        进入上下文时决定是否复用外层日志检查点。
         """
         self.document, self.independent = document, independent
         self.failed = self.rolled_back = False
 
     def __enter__(self):
-        """仅在当前作用域拥有回滚边界时获取备份。
+        """为边界所有者记录日志位置，不复制配置树。
 
         返回边界所有者，使嵌套算法可以请求回滚共享修改。
         """
@@ -374,7 +369,8 @@ class EditScope:
             self if self.independent or self.previous is None else self.previous
         )
         if self.owner is self:
-            self.backup = self.document.root.clone()
+            self.checkpoint = len(self.document._tracker.journal)
+            self.document._tracker.scopes += 1
             self.revision = self.document.revision
             self.document._edit_scope = self
         elif self.owner.failed or self.owner.rolled_back:
@@ -387,15 +383,35 @@ class EditScope:
         业务校验失败时可以直接请求回滚，而无需抛出异常。
         """
         if not self.rolled_back:
-            self.document.restore_tree(self.backup, self.revision)
+            tracker = self.document._tracker
+            tracker.undo(self.checkpoint)
+            # Only failure paths copy; the inverse root swap lets outer scopes
+            # continue to undo records that reference the retired tree.
+            restored = tracker.root
+            tracker.edges = set()
+            tracker.parents = {}
+            tracker.detached = set()
+            tracker.dirty = set()
+            tracker.adopt(restored)
+            tracker.repair()
+            tracker.replace_root(restored.clone(), restoring=True)
+            tracker.repair()
+            tracker.sync_index = len(tracker.journal)
+            self.document._revision = self.revision
+            self.document._interface_analysis_cache = type(
+                self.document._interface_analysis_cache
+            )()
             self.rolled_back = True
+
+    @property
+    def changed(self):
+        return self.document._tracker.changed_since(self.checkpoint)
 
     def synchronize(self):
         """在发布缓存和修订号变化前校验树结构。
 
         Writer 和后续规则只会看到父子关系一致的配置树。
         """
-        bind_parents(self.document.root)
         self.document.tree_changed()
 
     def __exit__(self, exc_type, exc, traceback):
@@ -419,5 +435,9 @@ class EditScope:
         finally:
             if self.owner is self:
                 self.document._edit_scope = self.previous
+                tracker = self.document._tracker
+                tracker.scopes -= 1
+                if not tracker.scopes:
+                    tracker.clear()
             self.owner = None
         return False
