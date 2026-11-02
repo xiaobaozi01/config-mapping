@@ -17,7 +17,7 @@ from impl.cisco.document import CiscoDocument
 from impl.common.domain.contracts import VendorConfiguration
 from impl.common.domain.interface import interface_parent
 from impl.common.rules.cleaning import CleaningAction, CleaningOperation
-from impl.common.support.config_paths import config_path
+from impl.common.support.config_paths import RuleYamlFile, rule_yaml_path
 
 from .models import (
     ConversionContext,
@@ -308,20 +308,18 @@ class CleaningRulesHandler:
     # YAML 路径与期望厂商成对声明，用于加载时阻止规则放错镜像目录。
     _RULE_SOURCES = (
         (
-            config_path(
-                "rules",
-                Vendor.CISCO_IOSXR.rule_prefix,
-                Vendor.CISCO_IOSXR.target_image,
-                "cleaning.yaml",
+            rule_yaml_path(
+                vendor_dir=Vendor.CISCO_IOSXR.rule_prefix,
+                image=Vendor.CISCO_IOSXR.target_image,
+                rule_file=RuleYamlFile.CLEANING,
             ),
             Vendor.CISCO_IOSXR,
         ),
         (
-            config_path(
-                "rules",
-                Vendor.JUNIPER_JUNOS.rule_prefix,
-                Vendor.JUNIPER_JUNOS.target_image,
-                "cleaning.yaml",
+            rule_yaml_path(
+                vendor_dir=Vendor.JUNIPER_JUNOS.rule_prefix,
+                image=Vendor.JUNIPER_JUNOS.target_image,
+                rule_file=RuleYamlFile.CLEANING,
             ),
             Vendor.JUNIPER_JUNOS,
         ),

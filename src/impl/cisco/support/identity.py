@@ -11,7 +11,7 @@ from impl.common.semantic_identity import (
     load_rule_pack,
 )
 from impl.common.semantic_identity.matcher import normalize
-from impl.common.support.config_paths import config_path
+from impl.common.support.config_paths import rule_pack_dir
 from impl.common.support.optimization_cache import memoized
 
 
@@ -21,7 +21,7 @@ def _resolver() -> SemanticResolver:
 
     规则包只依赖镜像静态文件，单例复用已校验规则和候选桶；输入结果只保留在任务作用域中。
     """
-    directory = config_path("rules", "cisco", "xrv9000")
+    directory = rule_pack_dir(vendor_dir="cisco", image="xrv9000")
     return SemanticResolver(
         load_rule_pack(directory, vendor="cisco_iosxr", image="xrv9000"),
         cache_budget_bytes=0,

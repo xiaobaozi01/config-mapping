@@ -12,9 +12,13 @@ from impl.common.rules.empty_blocks import (
 from impl.common.rules.empty_blocks import (
     load_empty_block_policy as _load_empty_block_policy,
 )
-from impl.common.support.config_paths import config_path
+from impl.common.support.config_paths import RuleYamlFile, rule_yaml_path
 
-_RULE_FILE = config_path("rules", "cisco", "xrv9000", "empty_blocks.yaml")
+_RULE_FILE = rule_yaml_path(
+    vendor_dir="cisco",
+    image="xrv9000",
+    rule_file=RuleYamlFile.EMPTY_BLOCKS,
+)
 _ACTIONS = (EmptyBlockAction.OMIT, EmptyBlockAction.KEEP)
 
 

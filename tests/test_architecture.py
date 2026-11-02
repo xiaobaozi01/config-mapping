@@ -257,6 +257,48 @@ class ProjectConfigLayoutTest(unittest.TestCase):
                     project_root / "config" / "rules" / vendor / image,
                 )
 
+    def test_rule_yaml_paths_are_owned_by_config_paths(self):
+        source_root = Path(__file__).parents[1] / "src"
+        owner = source_root / "impl" / "common" / "support" / "config_paths.py"
+        fixed_rule_files = {
+            "manifest.yaml",
+            "cleaning.yaml",
+            "input_normalization.yaml",
+            "empty_blocks.yaml",
+        }
+        violations = []
+
+        for source_path in source_root.rglob("*.py"):
+            if source_path == owner:
+                continue
+            tree = ast.parse(source_path.read_text(encoding="utf-8"))
+            for node in ast.walk(tree):
+                if (
+                    isinstance(node, ast.Constant)
+                    and node.value in fixed_rule_files
+                ):
+                    violations.append(
+                        f"{source_path}: 固定规则文件名 {node.value}"
+                    )
+                if not isinstance(node, ast.Call):
+                    continue
+                function = node.func
+                if not (
+                    isinstance(function, ast.Name)
+                    and function.id == "config_path"
+                ):
+                    continue
+                if (
+                    node.args
+                    and isinstance(node.args[0], ast.Constant)
+                    and node.args[0].value == "rules"
+                ):
+                    violations.append(
+                        f"{source_path}:{node.lineno}: 直接构造 rules 路径"
+                    )
+
+        self.assertEqual(violations, [])
+
 
 class InterfacePackageLayoutTest(unittest.TestCase):
 

@@ -9,22 +9,20 @@ from pathlib import Path
 
 import yaml
 
-from impl.common.support.config_paths import config_path
+from impl.common.support.config_paths import RuleYamlFile, rule_yaml_path
 
 from .models import Vendor
 
 _RULE_PATHS = {
-    Vendor.CISCO_IOSXR: config_path(
-        "rules",
-        Vendor.CISCO_IOSXR.rule_prefix,
-        Vendor.CISCO_IOSXR.target_image,
-        "input_normalization.yaml",
+    Vendor.CISCO_IOSXR: rule_yaml_path(
+        vendor_dir=Vendor.CISCO_IOSXR.rule_prefix,
+        image=Vendor.CISCO_IOSXR.target_image,
+        rule_file=RuleYamlFile.INPUT_NORMALIZATION,
     ),
-    Vendor.JUNIPER_JUNOS: config_path(
-        "rules",
-        Vendor.JUNIPER_JUNOS.rule_prefix,
-        Vendor.JUNIPER_JUNOS.target_image,
-        "input_normalization.yaml",
+    Vendor.JUNIPER_JUNOS: rule_yaml_path(
+        vendor_dir=Vendor.JUNIPER_JUNOS.rule_prefix,
+        image=Vendor.JUNIPER_JUNOS.target_image,
+        rule_file=RuleYamlFile.INPUT_NORMALIZATION,
     ),
 }
 _VENDOR_PREFIX = {

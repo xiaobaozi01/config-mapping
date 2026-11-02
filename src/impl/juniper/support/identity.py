@@ -11,7 +11,7 @@ from impl.common.semantic_identity import (
     load_rule_pack,
 )
 from impl.common.semantic_identity.matcher import normalize
-from impl.common.support.config_paths import config_path
+from impl.common.support.config_paths import rule_pack_dir
 from impl.common.support.optimization_cache import memoized
 
 
@@ -21,7 +21,7 @@ def _resolver() -> SemanticResolver:
 
     规则包和编译缓存创建成本较高且内容固定，单例缓存可避免每次语句解析重复加载。
     """
-    directory = config_path("rules", "juniper", "vmx")
+    directory = rule_pack_dir(vendor_dir="juniper", image="vmx")
     return SemanticResolver(
         load_rule_pack(directory, vendor="juniper_junos", image="vmx"),
         cache_budget_bytes=0,
