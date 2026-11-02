@@ -149,26 +149,6 @@ def validate_compatibility(
     return merge_interface_results(results, InterfaceAdaptationOutcome())
 
 
-def validate_source_semantics(
-    document: CiscoDocument,
-    target_interfaces: Iterable[str],
-) -> InterfaceAdaptationOutcome:
-    """在映射前执行只属于源配置语义的校验。
-
-    目标镜像兼容、聚合绑定完整性和删除引用校验不进入该入口。
-    """
-    context = ValidationContext(
-        frozenset(target_interfaces),
-        strict_input_validation=True,
-    )
-    results = execute_rules(
-        SOURCE_SEMANTIC_VALIDATION_RULES,
-        document,
-        context,
-    )
-    return merge_interface_results(results, InterfaceAdaptationOutcome())
-
-
 def validate_interfaces(
     document: CiscoDocument,
     target_interfaces: Iterable[str],

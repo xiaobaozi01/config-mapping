@@ -80,7 +80,7 @@ if context.has_errors:
 
 `profiles_path` 可配置镜像名称/版本、数据接口列表和模拟参数适配策略；列表最后三个接口全部空置预留，其余接口可分配给 NNI（默认八口中的前五口）。清洗规则位于项目配置目录，按厂商分别位于 `config/rules/cisco/xrv9000/cleaning.yaml` 和 `config/rules/juniper/vmx/cleaning.yaml`，转换时不接受外部规则文件。
 
-`convert()` 和 `prepare_context()` 支持 keyword-only 参数 `strict_input_validation=False`。流程在接口裁剪和映射前检查一次源配置语义：默认写 warning 并继续，传入 `True` 时写 error 并阻止转换。最终阶段只检查目标镜像兼容、聚合绑定和引用完整性，不再重复执行源语义规则。该开关不影响解析安全、映射唯一性和转换完整性校验。
+转换流程已移除原始配置语义审计，不再在映射前扫描原配置的标量冲突或接口角色等语义问题。必要语法解析、拓扑与接口映射冲突检查、最终目标兼容和残留引用校验继续执行。`convert()` 和 `prepare_context()` 保留 keyword-only 参数 `strict_input_validation=False`，该参数只影响仍保留的业务校验，不会重新启用源配置审计。两厂商校验能力不再提供专用的 `validate_source_semantics()` 入口。
 
 原始采集文本的输入整理规则分别位于两家厂商镜像目录的 `input_normalization.yaml`。每条规则的 `match` 都是逐行正则列表；单项匹配一行，多项匹配连续多行。`region` 只能是 `leading` 或 `trailing`，匹配后的动作固定为删除。规则 `id` 可只写局部名称，加载时自动补上 `cisco.` 或 `juniper.` 前缀；已带本厂商前缀的 ID 原样使用。规则只从文件两端向内删除完整匹配的行序列；正文中的匹配内容原样保留，清理后只剩空白也直接返回。Juniper 默认规则识别 `show configuration` 回显、`Last commit`、常见尾部提示符、采集分隔符和三行 `{ / master / }` 尾块；Cisco 规则文件默认留空，待确认具体采集格式后添加。输入整理命中情况写入 `report.json` 的 `input-normalization` 事件，不记录被删除的原文。
 

@@ -135,7 +135,6 @@ class ConversionPipelineTest(unittest.TestCase):
                 "TopologyPreflightHandler",
                 "GroupExpansionHandler",
                 "PreconfiguredInterfaceCleanupHandler",
-                "SourceSemanticValidationHandler",
                 "InterfaceClassificationHandler",
                 "NonNNICleanupHandler",
                 "NNIHandler",

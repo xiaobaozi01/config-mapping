@@ -9,7 +9,7 @@ from ..outcomes import DeferredInterfaceReference, InterfaceAdaptationOutcome
 
 
 class ValidationOperations(Protocol):
-    """定义源配置与最终产物校验能力。
+    """定义转换前置约束与最终产物校验能力。
 
     所有方法必须保持只读，不得创建编辑事务或改变配置树。
     """
@@ -20,15 +20,6 @@ class ValidationOperations(Protocol):
         """检查源接口能否安全复制到全部目标。
 
         校验必须先于任何克隆修改执行。
-        """
-        ...
-
-    def validate_source_semantics(
-        self, target_interfaces: set[str]
-    ) -> InterfaceAdaptationOutcome:
-        """校验映射前的源配置语义。
-
-        结果不得包含目标引用完整性或最终镜像兼容检查。
         """
         ...
 

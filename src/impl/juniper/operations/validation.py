@@ -4,7 +4,6 @@ from ..document import JunosDocument
 from ..rules import (
     validate_final_integrity,
     validate_interfaces,
-    validate_source_semantics,
 )
 from ..support.clone_constraints import validate_nni_clone
 
@@ -30,13 +29,6 @@ class JunosValidationOperations:
         校验先于克隆执行。
         """
         return validate_nni_clone(self._document, source, target_interfaces)
-
-    def validate_source_semantics(self, target_interfaces):
-        """校验映射前的源配置语义。
-
-        该入口不执行最终引用检查。
-        """
-        return validate_source_semantics(self._document, target_interfaces)
 
     def validate_final_integrity(
         self,

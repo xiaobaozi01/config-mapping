@@ -14,6 +14,7 @@ FIXTURES = Path(__file__).parent / "fixtures"
 
 
 class CoreInterfacePipelineTest(unittest.TestCase):
+
     def test_input_loading_failure_invalidates_previous_success(self):
         with tempfile.TemporaryDirectory() as directory:
             root = Path(directory)
@@ -22,22 +23,33 @@ class CoreInterfacePipelineTest(unittest.TestCase):
             configs = FIXTURES / "iosxr_bundle" / "configs"
             self.assertFalse(convert(topology, configs, output).has_errors)
             profile = root / "invalid.yaml"
-            profile.write_text("profiles:\n  cisco_iosxr:\n    interfaces: [Gi0/0/0/0]\n")
+            profile.write_text(
+                "profiles:\n  cisco_iosxr:\n    interfaces: [Gi0/0/0/0]\n"
+            )
             with self.assertRaises(ValueError):
                 convert(topology, configs, output, profiles_path=profile)
             self.assertFalse((output / "configs" / "R1.cfg").exists())
             self.assertFalse((output / "topology-adapted.xlsx").exists())
             report = json.loads((output / "report.json").read_text())
             self.assertEqual(report["status"], "failed")
-            self.assertTrue(any("输入加载" in error for error in report["errors"]))
+            self.assertTrue(
+                any("输入加载" in error for error in report["errors"])
+            )
 
     def test_leaf_symlinks_never_overwrite_external_files(self):
         paths = (
-            "configs/R1.cfg", "topology-adapted.xlsx", "README.txt",
-            ".generated-artifacts.json", "report.json", "interface-mapping.json",
+            "configs/R1.cfg",
+            "topology-adapted.xlsx",
+            "README.txt",
+            ".generated-artifacts.json",
+            "report.json",
+            "interface-mapping.json",
         )
         for relative in paths:
-            with self.subTest(path=relative), tempfile.TemporaryDirectory() as directory:
+            with (
+                self.subTest(path=relative),
+                tempfile.TemporaryDirectory() as directory,
+            ):
                 root = Path(directory)
                 output = root / "output"
                 (output / "configs").mkdir(parents=True)
@@ -46,13 +58,16 @@ class CoreInterfacePipelineTest(unittest.TestCase):
                 (output / relative).symlink_to(external)
                 context = convert(
                     FIXTURES / "iosxr_bundle" / "topology.xlsx",
-                    FIXTURES / "iosxr_bundle" / "configs", output,
+                    FIXTURES / "iosxr_bundle" / "configs",
+                    output,
                 )
                 self.assertFalse(context.has_errors)
                 self.assertEqual(external.read_text(), "do not overwrite")
                 self.assertFalse((output / relative).is_symlink())
 
-    def test_parent_symlink_cannot_redirect_generated_configs_outside_output(self):
+    def test_parent_symlink_cannot_redirect_generated_configs_outside_output(
+        self,
+    ):
         with tempfile.TemporaryDirectory() as directory:
             root = Path(directory)
             output = root / "output"
@@ -63,12 +78,18 @@ class CoreInterfacePipelineTest(unittest.TestCase):
             with self.assertRaisesRegex(ValueError, "路径不安全"):
                 convert(
                     FIXTURES / "iosxr_bundle" / "topology.xlsx",
-                    FIXTURES / "iosxr_bundle" / "configs", output,
+                    FIXTURES / "iosxr_bundle" / "configs",
+                    output,
                 )
             self.assertEqual(list(external.iterdir()), [])
-            self.assertEqual(json.loads((output / "report.json").read_text())["status"], "failed")
+            self.assertEqual(
+                json.loads((output / "report.json").read_text())["status"],
+                "failed",
+            )
 
-    def test_failed_rerun_archives_generated_outputs_and_preserves_user_files(self):
+    def test_failed_rerun_archives_generated_outputs_and_preserves_user_files(
+        self,
+    ):
         with tempfile.TemporaryDirectory() as directory:
             root = Path(directory)
             configs = root / "input"
@@ -98,15 +119,23 @@ class CoreInterfacePipelineTest(unittest.TestCase):
                 if event["kind"] == "previous-output-archived"
             )
             archive = output / archived["archive"]
-            self.assertEqual((archive / "configs" / "R1.cfg").read_bytes(), old_config)
+            self.assertEqual(
+                (archive / "configs" / "R1.cfg").read_bytes(), old_config
+            )
             self.assertTrue((archive / "topology-adapted.xlsx").is_file())
 
-    def test_source_semantic_conflicts_warn_by_default_and_fail_in_strict_mode(self):
+    def test_source_semantic_conflicts_are_not_audited_even_in_strict_mode(
+        self,
+    ):
         with tempfile.TemporaryDirectory() as directory:
             root = Path(directory)
             configs = root / "configs"
             shutil.copytree(FIXTURES / "iosxr_bundle" / "configs", configs)
-            config = FIXTURES / "interface_compatibility" / "iosxr_scalar_conflicts.cfg"
+            config = (
+                FIXTURES
+                / "interface_compatibility"
+                / "iosxr_scalar_conflicts.cfg"
+            )
             shutil.copyfile(config, configs / "R1.cfg")
             shutil.copyfile(config, configs / "R2.cfg")
             topology = FIXTURES / "iosxr_bundle" / "topology.xlsx"
@@ -120,14 +149,17 @@ class CoreInterfacePipelineTest(unittest.TestCase):
 
             self.assertFalse(context.has_errors)
             warnings = context.warnings + context.devices["R1"].warnings
-            self.assertTrue(any("mtu 存在冲突" in warning for warning in warnings))
+            self.assertFalse(
+                any("mtu 存在冲突" in warning for warning in warnings)
+            )
             report = json.loads((default_output / "report.json").read_text())
             self.assertEqual(report["status"], "success")
-            self.assertTrue(any(
-                event["kind"] == "interface-validation-warning"
-                and "mtu 存在冲突" in event["message"]
-                for event in report["events"]
-            ))
+            self.assertFalse(
+                any(
+                    "mtu 存在冲突" in event["message"]
+                    for event in report["events"]
+                )
+            )
             self.assertTrue((default_output / "configs" / "R1.cfg").exists())
 
             strict_output = root / "strict-output"
@@ -138,11 +170,14 @@ class CoreInterfacePipelineTest(unittest.TestCase):
                 strict_input_validation=True,
             )
 
-            self.assertTrue(context.has_errors)
+            self.assertFalse(context.has_errors)
             errors = context.errors + context.devices["R1"].errors
-            self.assertTrue(any("mtu 存在冲突" in error for error in errors))
-            self.assertFalse((strict_output / "configs").exists())
-            self.assertFalse((strict_output / "topology-adapted.xlsx").exists())
+            warnings = context.warnings + context.devices["R1"].warnings
+            self.assertFalse(
+                any("mtu 存在冲突" in message for message in errors + warnings)
+            )
+            self.assertTrue((strict_output / "configs").exists())
+            self.assertTrue((strict_output / "topology-adapted.xlsx").exists())
 
     def test_unknown_removed_interface_dependency_is_warned_and_output(self):
         with tempfile.TemporaryDirectory() as directory:
@@ -174,12 +209,16 @@ class CoreInterfacePipelineTest(unittest.TestCase):
             report = json.loads((output / "report.json").read_text())
             self.assertEqual(report["status"], "success")
             self.assertTrue(
-                any("custom-service FOO" in warning for warning in report["warnings"])
+                any(
+                    "custom-service FOO" in warning
+                    for warning in report["warnings"]
+                )
             )
             self.assertIn(
                 "custom-service FOO",
                 (output / "configs" / "R1.cfg").read_text(),
             )
+
 
 if __name__ == "__main__":
     unittest.main()

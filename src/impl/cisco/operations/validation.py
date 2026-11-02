@@ -6,7 +6,6 @@ from ..document import CiscoDocument
 from ..rules import (
     validate_final_integrity,
     validate_interfaces,
-    validate_source_semantics,
 )
 from ..support.clone_constraints import validate_nni_clone
 
@@ -34,15 +33,6 @@ class CiscoValidationOperations:
         校验先于克隆执行。
         """
         return validate_nni_clone(self._document, source, target_interfaces)
-
-    def validate_source_semantics(
-        self, target_interfaces: set[str]
-    ) -> InterfaceAdaptationOutcome:
-        """校验映射前的源配置语义。
-
-        该入口不执行目标镜像和最终引用检查。
-        """
-        return validate_source_semantics(self._document, target_interfaces)
 
     def validate_final_integrity(
         self,

@@ -48,18 +48,6 @@ COMPATIBILITY_VALIDATION_RULES = (
         readonly=True,
     ),
 )
-SOURCE_SEMANTIC_VALIDATION_RULES = (
-    JunosVisitorRule(
-        "juniper.validate.gateway_role",
-        document_action=compatibility.validate_gateway_role,
-        readonly=True,
-    ),
-    JunosVisitorRule(
-        "juniper.validate.units",
-        document_action=compatibility.validate_units,
-        readonly=True,
-    ),
-)
 VALIDATION_RULES = COMPATIBILITY_VALIDATION_RULES
 FINAL_INTEGRITY_VALIDATION_RULES = (
     JunosVisitorRule(
@@ -118,19 +106,6 @@ def adapt_interfaces(document, target_interfaces):
         execute_rules(ADAPT_RULES, document, context),
         InterfaceAdaptationOutcome(),
     )
-
-
-def validate_source_semantics(document, target_interfaces):
-    """在映射前执行 Junos 源配置语义校验。
-
-    网关定义缺失和删除引用完整性不进入该入口。
-    """
-    context = ValidationContext(
-        frozenset(target_interfaces),
-        strict_input_validation=True,
-    )
-    results = execute_rules(SOURCE_SEMANTIC_VALIDATION_RULES, document, context)
-    return merge_interface_results(results, InterfaceAdaptationOutcome())
 
 
 def validate_interfaces(

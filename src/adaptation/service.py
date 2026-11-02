@@ -287,7 +287,8 @@ def prepare_context(
     """加载转换输入并创建所有阶段共享的初始上下文。
 
     拓扑、profile 和配置在此一次性读取，使后续阶段基于同一快照执行并统一
-    报告输入错误。``strict_input_validation`` 控制源配置语义问题的严重级别。
+    报告输入错误。``strict_input_validation`` 仅控制仍保留的业务校验策略，
+    不会启用已移除的源配置语义审计。
     """
     topology = load_topology(topology_path)
     profiles = load_profiles(profiles_path)
@@ -324,8 +325,8 @@ def convert(
 
     可预期的业务失败由各阶段写入 ``context.errors``。内部不变量或其他
     未预期异常仍会继续向调用方抛出，但在此之前先写入失败报告，使 CLI
-    操作者不会只得到一条无上下文的错误。源配置语义问题默认告警，显式严格
-    模式将其恢复为错误。
+    操作者不会只得到一条无上下文的错误。原始配置语义审计不再运行；严格
+    参数仅传递给仍保留的校验，不会恢复已移除的审计阶段。
     """
     # 输入加载本身也可能失败；空上下文只用于生成失败诊断和撤下旧成果。
     context = ConversionContext(
