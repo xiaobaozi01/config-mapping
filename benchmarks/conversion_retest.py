@@ -30,6 +30,7 @@ def sample(args, warmup):
                 directory,
                 args.profiles,
                 strict_input_validation=args.strict_input_validation,
+                cache_budget_bytes=args.cache_budget_mib * 2**20,
             )
         else:
             profile.runcall(
@@ -39,6 +40,7 @@ def sample(args, warmup):
                 directory,
                 args.profiles,
                 strict_input_validation=args.strict_input_validation,
+                cache_budget_bytes=args.cache_budget_mib * 2**20,
             )
     except Exception:
         print(
@@ -96,12 +98,13 @@ def parse_args():
     parser.add_argument("--configs", type=Path, required=True)
     parser.add_argument("--output", type=Path, required=True)
     parser.add_argument("--profiles", type=Path)
+    parser.add_argument("--cache-budget-mib", type=int, default=2048)
     parser.add_argument("--repeat", type=int, default=3)
     parser.add_argument("--warmup", type=int, default=1)
     parser.add_argument("--profile", action="store_true")
     parser.add_argument("--strict-input-validation", action="store_true")
     args = parser.parse_args()
-    if args.repeat < 1 or args.warmup < 0:
+    if args.repeat < 1 or args.warmup < 0 or args.cache_budget_mib < 0:
         parser.error("repeat must be positive and warmup must be nonnegative")
     if args.profile and (args.repeat != 1 or args.warmup != 0):
         parser.error("profile mode requires --repeat 1 --warmup 0")

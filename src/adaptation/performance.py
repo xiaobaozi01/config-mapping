@@ -113,6 +113,7 @@ class ConversionPerformance:
     """
 
     stages: list[dict[str, object]] = field(default_factory=list)
+    cache: dict[str, object] = field(default_factory=dict)
     _started: float = field(default_factory=perf_counter)
     _finished: float | None = None
     _status: str = "running"
@@ -155,6 +156,7 @@ class ConversionPerformance:
         """
         end = self._finished if self._finished is not None else perf_counter()
         return {
+            "cache": self.cache,
             "schema_version": 1,
             "status": self._status,
             "total_seconds": end - self._started,

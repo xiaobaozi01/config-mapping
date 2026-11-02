@@ -12,6 +12,10 @@ from pathlib import Path
 
 from impl.common.domain.policies import WashingPolicy
 from impl.common.support.lab_account import LAB_PASSWORD, LAB_USERNAME
+from impl.common.support.optimization_cache import (
+    DEFAULT_CACHE_BUDGET,
+    optimization_scope,
+)
 
 from .factory import parse_document
 from .input_normalization import normalize_input
@@ -392,6 +396,16 @@ def _report_conversion_failure(context, output_dir, phase, exc):
         raise report_failure from report_exc
 
 
+def _finish_conversion(context, output_dir, cache, failed):
+    """Release task caches before publishing the final aggregate metrics.
+
+    The returned context retains counters only, never the released task payloads.
+    """
+    cache.close()
+    context.performance.cache = cache.snapshot()
+    _write_performance(context, output_dir, failed=failed)
+
+
 def convert(
     topology_path: Path,
     config_dir: Path,
@@ -399,6 +413,7 @@ def convert(
     profiles_path: Path | None = None,
     *,
     strict_input_validation: bool = False,
+    cache_budget_bytes: int = DEFAULT_CACHE_BUDGET,
 ) -> ConversionContext:
     """执行完整转换；即使失败也写 report，便于定位输入问题。
 
@@ -407,37 +422,40 @@ def convert(
     操作者不会只得到一条无上下文的错误。原始配置语义审计不再运行；严格
     参数仅传递给仍保留的校验，不会恢复已移除的审计阶段。
     """
-    # 输入加载本身也可能失败；空上下文只用于生成失败诊断和撤下旧成果。
-    context = ConversionContext(
-        topology=TopologyWorkbook(topology_path, None, "", "", {}, {}, [], []),
-        devices={},
-    )
-    phase = "输入加载"
-    completed = False
-    try:
-        context = _prepare_timed_context(
-            context.performance,
-            topology_path,
-            config_dir,
-            profiles_path,
-            strict_input_validation,
+    with optimization_scope(cache_budget_bytes) as cache:
+        # 输入加载本身也可能失败；空上下文只用于生成失败诊断和撤下旧成果。
+        context = ConversionContext(
+            topology=TopologyWorkbook(
+                topology_path, None, "", "", {}, {}, [], []
+            ),
+            devices={},
         )
-        if not context.errors:
-            phase = "清洗规则加载"
-            with context.performance.measure("pipeline_setup"):
-                pipeline = build_default_pipeline()
-            phase = "核心转换流水线"
-            # 清洗规则在接口迁移和引用改写之后执行，不改变原始 NNI 分类依据。
-            pipeline.execute(context)
-        phase = "输出结果"
-        _write_timed_outputs(context, output_dir)
-        completed = True
-    except Exception as exc:
-        _report_conversion_failure(context, output_dir, phase, exc)
-        raise
-    finally:
-        _write_performance(context, output_dir, failed=not completed)
-    return context
+        phase = "输入加载"
+        completed = False
+        try:
+            context = _prepare_timed_context(
+                context.performance,
+                topology_path,
+                config_dir,
+                profiles_path,
+                strict_input_validation,
+            )
+            if not context.errors:
+                phase = "清洗规则加载"
+                with context.performance.measure("pipeline_setup"):
+                    pipeline = build_default_pipeline()
+                phase = "核心转换流水线"
+                # 清洗规则在接口迁移和引用改写之后执行，不改变原始 NNI 分类依据。
+                pipeline.execute(context)
+            phase = "输出结果"
+            _write_timed_outputs(context, output_dir)
+            completed = True
+        except Exception as exc:
+            _report_conversion_failure(context, output_dir, phase, exc)
+            raise
+        finally:
+            _finish_conversion(context, output_dir, cache, failed=not completed)
+        return context
 
 
 def _build_report(
