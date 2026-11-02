@@ -15,13 +15,13 @@ import time
 import tracemalloc
 
 from impl.cisco.document import CiscoDocument
-from impl.cisco.rules.pruning import interface_references
+from impl.cisco.rules import pruning
 from impl.cisco.rules.runtime import CiscoRuleVisitor, CiscoVisitorRule
 from impl.juniper.document import JunosDocument
 from impl.juniper.rules.runtime import JunosRuleVisitor, JunosVisitorRule
 
 
-def prepare(vendor, nodes, rules, edits, case):
+def prepare(vendor, nodes, rules, edits, case):  # noqa: C901 - scenario matrix
     """Build a fresh document and the same deterministic workload each run."""
     cisco = vendor == "cisco"
     if cisco:
@@ -64,6 +64,12 @@ def prepare(vendor, nodes, rules, edits, case):
     )
     names = {f"GigabitEthernet0/0/{i}" for i in range(edits)}
 
+    match = (
+        pruning.reference_matcher(document, names)
+        if hasattr(pruning, "reference_matcher")
+        else lambda text: pruning.interface_references(text, names)
+    )
+
     def execute():
         changes = 0
         for index in range(rules):
@@ -71,11 +77,7 @@ def prepare(vendor, nodes, rules, edits, case):
                 changes += len(rule.apply(document, index).changes)
             elif case == "references":
                 for number in range(100):
-                    changes += len(
-                        interface_references(
-                            f"interface Gi0/0/{number % 10}", names
-                        )
-                    )
+                    changes += len(match(f"interface Gi0/0/{number % 10}"))
             else:
                 try:
                     with document.edit().bulk() as root:

@@ -18,8 +18,7 @@ from ..document import (
 )
 from ..operations.interfaces.access import interface_nodes
 from ..syntax.semantics import (
-    _CISCO_INTERFACE_TOKEN,
-    canonical_cisco_interface,
+    interface_reference_candidates,
 )
 from .support import CiscoRuleVisitor, CiscoVisitorRule, document_scope
 
@@ -27,22 +26,31 @@ from .support import CiscoRuleVisitor, CiscoVisitorRule, document_scope
 _ADDRESS = re.compile(r"^(?:ipv4|ipv6)\s+address\s+(\S+)", re.I)
 
 
-def interface_references(text: str, names: set[str]) -> set[str]:
-    """返回文本中属于指定集合的完整接口引用。
+class InterfaceReferenceMatcher:
+    """Snapshot a name index once; share only text extraction with the document."""
 
-    先排除桥域和描述等定义性语句，再使用规范化名称可避免把相似接口误判为引用。
-    """
-    # 桥组/桥域的标识符可以恰好等于 BVI 名称，它们是定义名称而非引用。
-    if re.match(
-        r"^(?:bridge\s+group|bridge-domain|description|remark)\b", text, re.I
-    ):
-        return set()
-    indexed = {name.lower(): name for name in names}
-    return {
-        indexed[canonical_cisco_interface(match.group()).lower()]
-        for match in _CISCO_INTERFACE_TOKEN.finditer(text)
-        if canonical_cisco_interface(match.group()).lower() in indexed
-    }
+    def __init__(self, names, extract=interface_reference_candidates):
+        self.index = {name.lower(): name for name in names}
+        self.extract = extract
+
+    def __call__(self, text):
+        return {
+            self.index[name]
+            for name in self.extract(text)
+            if name in self.index
+        }
+
+
+def reference_matcher(document, names):
+    """Build a context-local matcher using a bounded document text cache."""
+    return InterfaceReferenceMatcher(
+        names, document._parser.interface_references
+    )
+
+
+def interface_references(text: str, names: set[str]) -> set[str]:
+    """Compatibility entry point returning an independent matching-name set."""
+    return InterfaceReferenceMatcher(names)(text)
 
 
 def _defer_interface_references(outcome, path, references, reason):
@@ -139,6 +147,7 @@ class _BgpSourcePruner:
         """
         self.document = document
         self.removed_interfaces = removed_interfaces
+        self.references = reference_matcher(document, removed_interfaces)
         self.all_removed_addresses = (
             set().union(*removed_addresses.values())
             if removed_addresses
@@ -167,9 +176,7 @@ class _BgpSourcePruner:
                 _, statement_path, source = self.statements[statement_id]
                 if source[0] != "interface":
                     continue
-                references = interface_references(
-                    source[1], self.removed_interfaces
-                )
+                references = self.references(source[1])
                 _defer_interface_references(
                     self.outcome,
                     statement_path,
@@ -211,7 +218,7 @@ class _BgpSourcePruner:
         """
         kind, value = source
         if kind == "interface":
-            return bool(interface_references(value, self.removed_interfaces))
+            return bool(self.references(value))
         # 全局模板的 IP 源也必须在实际邻居的 VRF 内存在，不能借用别的 VRF。
         return (
             value in self.all_removed_addresses
@@ -224,7 +231,7 @@ class _BgpSourcePruner:
         纯 IP 源没有直接接口身份，因此返回空集合供审计记录使用。
         """
         if source[0] == "interface":
-            return interface_references(source[1], self.removed_interfaces)
+            return self.references(source[1])
         return set()
 
     def index(self, root):
@@ -687,26 +694,31 @@ class _CiscoPruner:
         已知绑定自动删除，未知引用保留并记录 warning；递归依赖当前节点是否已被整节点
         处理，避免删除后的子树继续产生重复诊断。
         """
+        matcher = reference_matcher(self.document, self.removed)
+        self._clean(nodes, path, matcher)
+
+    def _clean(self, nodes, path, matcher):
         for node in nodes:
             if not node.active or node.is_formatting:
                 continue
             current = (*path, node.header)
             if re.match(r"^(?:description|remark)\b", node.header, re.I):
                 continue
-            references = interface_references(node.header, self.removed)
+            references = matcher(node.header)
             if references and self._handle_removed_reference(
                 node,
                 current,
                 references,
             ):
                 continue
-            self.clean(node.nodes, current)
+            self._clean(node.nodes, current, matcher)
 
     def prune_monitor_sessions(self):
         """删除目的接口已消失的镜像会话。
 
         只有会话自身明确引用已删除目的接口时才删除，避免影响其他镜像会话。
         """
+        matcher = reference_matcher(self.document, self.removed)
         for node in self.document.root.nodes:
             if not node.active or not re.match(
                 r"^monitor-session\b", node.header, re.I
@@ -715,9 +727,7 @@ class _CiscoPruner:
             references = set()
             for child in node.walk():
                 if re.match(r"^destination\s+interface\s+", child.header, re.I):
-                    references.update(
-                        interface_references(child.header, self.removed)
-                    )
+                    references.update(matcher(child.header))
             if references:
                 self.record(
                     node, (node.header,), "镜像会话的目的接口已删除", references
@@ -763,6 +773,7 @@ class InterfaceDependencyCascade:
         """
         self.document = document
         self.removed_interfaces = removed_interfaces
+        self.references = reference_matcher(document, removed_interfaces)
         self.removed_addresses = removed_addresses
         self.retained_addresses = retained_addresses
         self.outcome = outcome
@@ -1015,9 +1026,10 @@ def _defer_track_references(outcome, nodes, interfaces, reason):
 
     该操作在当前文档的业务处理边界内运行，调用方继续负责统一的结果记录和失败处理。
     """
+    matcher = InterfaceReferenceMatcher(interfaces)
     for node in nodes:
         for child, path in _walk([node]):
-            references = interface_references(child.header, interfaces)
+            references = matcher(child.header)
             _defer_interface_references(outcome, path, references, reason)
 
 

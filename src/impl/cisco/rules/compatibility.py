@@ -588,7 +588,10 @@ class RemovedReferencesVisitor(CiscoRuleVisitor):
             block.interface_name for block in interface_nodes(session.document)
         }
         defined.update(interface_parent(name) for name in list(defined) if name)
+        from .pruning import reference_matcher
+
         self.deleted = session.context.removed_interfaces - defined
+        self.references = reference_matcher(session.document, self.deleted)
         self.deferred = {
             (reference.path, reference.interface)
             for reference in session.context.deferred_interface_references
@@ -599,12 +602,10 @@ class RemovedReferencesVisitor(CiscoRuleVisitor):
 
         描述和备注属于说明文本，不参与接口依赖判断。
         """
-        from .pruning import interface_references
-
         if not node.is_formatting and not re.match(
             r"^(?:description|remark)\b", node.header, re.I
         ):
-            refs = interface_references(node.header, self.deleted)
+            refs = self.references(node.header)
             if refs:
                 path = (*node.path, node.header)
                 unexpected = {

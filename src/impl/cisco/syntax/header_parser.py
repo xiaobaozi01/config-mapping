@@ -12,6 +12,7 @@ from .semantics import (
     _interface_name_from_header,
     _is_l2transport_header,
     canonical_cisco_interface,
+    interface_reference_candidates,
 )
 
 _CISCO_PHYSICAL_INTERFACE = re.compile(
@@ -68,6 +69,9 @@ class _CiscoHeaderParser:
 
         每份文档拥有独立缓存，避免不同配置之间互相污染。
         """
+        self.interface_references = lru_cache(maxsize=PARSER_HEADER_CACHE_SIZE)(
+            interface_reference_candidates
+        )
         self.canonical_interface = lru_cache(maxsize=PARSER_HEADER_CACHE_SIZE)(
             canonical_cisco_interface
         )

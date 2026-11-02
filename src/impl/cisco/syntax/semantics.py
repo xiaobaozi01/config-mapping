@@ -87,3 +87,19 @@ def canonical_cisco_interface(value: str) -> str:
     prefix, suffix = match.groups()
     expanded = _CISCO_PREFIXES.get(prefix.lower(), prefix)
     return f"{expanded}{suffix}"
+
+
+_REFERENCE_DEFINITION = re.compile(
+    r"^(?:bridge\s+group|bridge-domain|description|remark)\b", re.I
+)
+_HAS_DIGIT = re.compile(r"\d")
+
+
+def interface_reference_candidates(text: str) -> frozenset[str]:
+    """Extract normalized candidates independently of the current name set."""
+    if _REFERENCE_DEFINITION.match(text) or not _HAS_DIGIT.search(text):
+        return frozenset()
+    return frozenset(
+        canonical_cisco_interface(match.group()).lower()
+        for match in _CISCO_INTERFACE_TOKEN.finditer(text)
+    )
