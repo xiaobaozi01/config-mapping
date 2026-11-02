@@ -99,9 +99,11 @@ class InterfaceState:
 
         This estimate is updated only for changed nodes, never by scanning on hits.
         """
+        prefixes = 1 + entry[0].count(".")
         return (
             512
             + len(entry[0]) * 4
+            + prefixes * (160 + 4 * len(entry[0]))
             + sum(96 + len(name) * 4 for name in entry[1])
         )
 

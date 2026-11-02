@@ -157,9 +157,19 @@ class BudgetCache:
         """
         if not self.closed:
             self.closed = True
-            while self.entries:
-                self.discard(next(iter(self.entries)), "releases")
+            releases, callbacks = {}, []
+            for _, _, namespace, callback in self.entries.values():
+                releases[namespace] = releases.get(namespace, 0) + 1
+                if callback is not None:
+                    callbacks.append(callback)
             self.entries.clear()
+            self.bytes = 0
+            for namespace, count in releases.items():
+                self.note(namespace, "releases", count)
+            for callback in callbacks:
+                method = callback()
+                if method is not None:
+                    method()
 
     def snapshot(self):
         """Copy budget and counters without exposing cached inputs.
