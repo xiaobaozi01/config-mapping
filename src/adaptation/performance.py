@@ -8,6 +8,7 @@ from __future__ import annotations
 import ctypes
 import sys
 from contextlib import contextmanager
+from copy import deepcopy
 from dataclasses import dataclass, field
 from time import perf_counter
 
@@ -156,7 +157,7 @@ class ConversionPerformance:
         """
         end = self._finished if self._finished is not None else perf_counter()
         return {
-            "cache": self.cache,
+            "cache": deepcopy(self.cache),
             "schema_version": 1,
             "status": self._status,
             "total_seconds": end - self._started,

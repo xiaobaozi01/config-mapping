@@ -1,5 +1,7 @@
 """Cisco IOS XR 接口树只读访问。"""
 
+from impl.common.support.interface_lookup import interface_lookup
+
 from ...document import CiscoDocument, CiscoNode
 
 
@@ -8,6 +10,9 @@ def interface_nodes(document: CiscoDocument) -> list[CiscoNode]:
 
     后续分析和修改统一从这里取数，避免处理逻辑删除节点或普通顶层配置。
     """
+    indexed = interface_lookup(document)
+    if indexed is not None:
+        return indexed.all_nodes()
     parser = document._parser
     return [
         block
@@ -31,6 +36,10 @@ def find_interface_node(document: CiscoDocument, name: str) -> CiscoNode | None:
     """
     parser = document._parser
     canonical = parser.canonical_interface(name)
+    indexed = interface_lookup(document)
+    if indexed is not None:
+        nodes = indexed.matching(canonical)
+        return nodes[0] if nodes else None
     return next(
         (
             block
@@ -39,3 +48,34 @@ def find_interface_node(document: CiscoDocument, name: str) -> CiscoNode | None:
         ),
         None,
     )
+
+
+def interface_tree_nodes(document, name):
+    """Select a canonical interface and its dotted descendants in source order.
+
+    The fallback retains exact prefix semantics even for nested dotted names.
+    """
+    indexed = interface_lookup(document)
+    if indexed is not None:
+        return indexed.matching(name, tree=True)
+    return [
+        node
+        for node in interface_nodes(document)
+        if node.interface_name == name
+        or node.interface_name.startswith(name + ".")
+    ]
+
+
+def named_interface_nodes(document, name):
+    """Return all active definitions of a canonical interface name.
+
+    Duplicate merging must not collapse these nodes into one dictionary value.
+    """
+    indexed = interface_lookup(document)
+    if indexed is not None:
+        return indexed.matching(name)
+    return [
+        node
+        for node in interface_nodes(document)
+        if node.interface_name == name
+    ]

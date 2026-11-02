@@ -9,7 +9,11 @@ from impl.common.config_ast.editor import format_fragment
 from ...document import CiscoDocument, CiscoNode
 from ...syntax.rewrite_helpers import append_top_level, delete_matching
 from ...syntax.writer import CiscoWriter
-from .access import find_interface_node, interface_nodes
+from .access import (
+    find_interface_node,
+    interface_tree_nodes,
+    named_interface_nodes,
+)
 
 
 def node_identity(node: CiscoNode) -> tuple[object, ...]:
@@ -37,12 +41,13 @@ def remove_interface(
     """
     canonical = document._parser.canonical_interface(name)
     transaction = document.edit()
-    for block in interface_nodes(document):
-        current = block.interface_name
-        if current == canonical or (
-            include_children and current and current.startswith(canonical + ".")
-        ):
-            transaction.delete(block, "删除接口及其业务子树")
+    nodes = (
+        interface_tree_nodes(document, canonical)
+        if include_children
+        else named_interface_nodes(document, canonical)
+    )
+    for block in nodes:
+        transaction.delete(block, "删除接口及其业务子树")
     transaction.apply()
 
 
@@ -56,7 +61,7 @@ def rename_interface_tree(document, source, target, strip_bundle=False):
     ), document._parser.canonical_interface(target)
     transaction = document.edit()
     renamed = []
-    for block in interface_nodes(document):
+    for block in interface_tree_nodes(document, source):
         current = block.interface_name
         if current != source and not (
             current and current.startswith(source + ".")
@@ -112,12 +117,7 @@ def clone_interface_tree(document, source, target, strip_bundle=False):
     source, target = document._parser.canonical_interface(
         source
     ), document._parser.canonical_interface(target)
-    originals = [
-        block
-        for block in interface_nodes(document)
-        if block.interface_name == source
-        or block.interface_name.startswith(source + ".")
-    ]
+    originals = interface_tree_nodes(document, source)
     if not originals:
         ensure_parent_interface(document, target)
         return
@@ -141,11 +141,7 @@ def merge_duplicate_interface(document, preferred):
     if preferred is None:
         return
     name = preferred.interface_name
-    duplicates = [
-        block
-        for block in interface_nodes(document)
-        if block.interface_name == name
-    ]
+    duplicates = named_interface_nodes(document, name)
     if len(duplicates) < 2:
         return
     seen, fragments = set(), []

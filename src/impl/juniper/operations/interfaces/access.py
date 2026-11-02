@@ -1,6 +1,7 @@
 """Juniper Junos 接口树只读访问。"""
 
 from impl.common.domain.interface import interface_parent
+from impl.common.support.interface_lookup import interface_lookup
 
 from ...document import JuniperNode, JunosDocument
 from ...syntax.ast import top_block
@@ -21,6 +22,9 @@ def interface_nodes(document: JunosDocument) -> list[JuniperNode]:
 
     非块、注释和 inactive 接口不会进入分析。
     """
+    indexed = interface_lookup(document)
+    if indexed is not None:
+        return indexed.all_nodes()
     block = interfaces_block(document)
     if not block or not block.is_block:
         return []
@@ -125,6 +129,10 @@ def find_interface_node(
     unit 名会先归一到父接口，因为 Junos unit 位于父节点内部。
     """
     canonical = document._parser.canonical_interface(interface_parent(name))
+    indexed = interface_lookup(document)
+    if indexed is not None:
+        nodes = indexed.matching(canonical)
+        return nodes[0] if nodes else None
     return next(
         (
             node
@@ -133,3 +141,18 @@ def find_interface_node(
         ),
         None,
     )
+
+
+def named_interface_nodes(document, name):
+    """Return duplicate parent definitions without scanning unrelated interfaces.
+
+    Name normalization remains the caller's responsibility, matching merge logic.
+    """
+    indexed = interface_lookup(document)
+    if indexed is not None:
+        return indexed.matching(name)
+    return [
+        node
+        for node in interface_nodes(document)
+        if interface_name(document, node) == name
+    ]

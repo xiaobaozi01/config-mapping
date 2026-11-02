@@ -7,7 +7,7 @@ rollback boundaries or until the next explicit tree_changed notification.
 from collections import Counter
 from contextlib import contextmanager
 from operator import index as integer_index
-from weakref import ref
+from weakref import WeakSet, ref
 
 _MISSING = object()
 
@@ -200,10 +200,19 @@ class TreeTracker:
         self.detached = set()
         self.write_error = None
         self.dirty = set()
+        self.listeners = WeakSet()
         self.adopt(root)
         self.dirty.update(self.edges)
         self.repair()
         self.clear()
+
+    def notify(self, kind, node=None, name=None, change=None):
+        """Notify weak metadata observers without retaining edit history.
+
+        Observers only queue invalidations; they never query the half-written AST.
+        """
+        for listener in tuple(self.listeners):
+            listener.changed(self, kind, node, name, change)
 
     def adopt(self, root):
         """Index only previously unseen subtrees.
@@ -311,6 +320,8 @@ class TreeTracker:
         self.epoch += 1
         if name == "parent":
             self.dirty.add(node)
+        if self.listeners:
+            self.notify("field", node, name)
 
     def _change_edges(self, node, old, new):
         """Apply the edge delta between old and new child ranges.
@@ -335,6 +346,8 @@ class TreeTracker:
             self.check_write()
             self._change_edges(node, old, new)
             self.epoch += 1
+            if self.listeners:
+                self.notify("splice", node, "children", (index, old, new))
         self.journal.append(("splice", children, index, old, new))
 
     def replace_root(self, root, *, restoring=False):
@@ -350,6 +363,7 @@ class TreeTracker:
         self.root = root
         self.dirty.add(root)
         self.epoch += 1
+        self.notify("root")
 
     def repair(self):
         """Validate changed incoming edges and reconnect affected nodes.
@@ -459,6 +473,7 @@ class TreeTracker:
         self.detached.clear()
         self.epoch += 1
         self.sync_index = len(self.journal)
+        self.notify("root")
 
     def clear(self):
         # Remove only disconnected components affected by this batch. Keeping

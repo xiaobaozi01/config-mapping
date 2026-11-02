@@ -12,6 +12,7 @@ from impl.common.domain.interface import (
 )
 from impl.common.support.errors import require_invariant
 from impl.common.support.interface_cache import copy_interface_specs
+from impl.common.support.interface_lookup import interface_lookup
 
 from ...document import CiscoDocument
 from .access import interface_nodes, resolve_interface
@@ -112,6 +113,9 @@ def logical_names_under(document: CiscoDocument, parent: str) -> list[str]:
     父口排在前面，其余名称保持稳定排序。
     """
     parent = document._parser.canonical_interface(parent)
+    indexed = interface_lookup(document)
+    if indexed is not None:
+        return indexed.logical_names(parent)
     return sorted(
         {
             spec.name

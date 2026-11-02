@@ -8,8 +8,8 @@ from ...syntax.ast import JuniperNode
 from .access import (
     find_interface_node,
     interface_name,
-    interface_nodes,
     interfaces_block,
+    named_interface_nodes,
 )
 
 
@@ -96,11 +96,7 @@ def merge_duplicate_interface(document, preferred: JuniperNode) -> None:
     保留双方不同配置，并停用首选节点之外的副本。
     """
     name = interface_name(document, preferred)
-    duplicates = [
-        node
-        for node in interface_nodes(document)
-        if interface_name(document, node) == name
-    ]
+    duplicates = named_interface_nodes(document, name)
     if len(duplicates) < 2:
         return
     require_invariant(

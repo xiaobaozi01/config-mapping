@@ -10,6 +10,7 @@ from impl.common.domain.interface import (
     interface_unit,
 )
 from impl.common.support.interface_cache import copy_interface_specs
+from impl.common.support.interface_lookup import interface_lookup
 
 from ...document import JunosDocument
 from .access import (
@@ -102,6 +103,9 @@ def logical_names_under(document: JunosDocument, parent: str) -> list[str]:
     有 unit 时只返回 unit，无 unit 时返回父口。
     """
     parent = document._parser.canonical_interface(parent)
+    indexed = interface_lookup(document)
+    if indexed is not None:
+        return indexed.logical_names(parent)
     return sorted(
         {
             spec.name

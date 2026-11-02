@@ -88,6 +88,7 @@ class AstDocument:
         父节点关系和派生缓存不得继续引用原文档。
         """
         cloned = copy(self)
+        cloned.__dict__.pop("_interface_lookup", None)
         cloned._tracker = TreeTracker(self.root.clone())
         cloned._edit_scope = None
         cloned._parser = deepcopy(self._parser)
