@@ -1,0 +1,16 @@
+{"fixture": "cross_vendor", "budget_bytes": 0, "median_seconds": 0.04859583405777812, "estimated_cache_peak": 0, "result_sha256": "e1989bdfaad4242e666ef4eee491486dd7e4993774d0a71a9bb2968ee0221c5d"}
+{"fixture": "cross_vendor", "budget_bytes": 2147483648, "median_seconds": 0.04915637522935867, "estimated_cache_peak": 13224, "result_sha256": "e1989bdfaad4242e666ef4eee491486dd7e4993774d0a71a9bb2968ee0221c5d"}
+{"fixture": "huawei_peer", "budget_bytes": 0, "median_seconds": 0.04553887480869889, "estimated_cache_peak": 0, "result_sha256": "2e9ec8c9a50b139751b4b97b47dfd0e0b4f42511896bf60b03442e8ccf1fe9dd"}
+{"fixture": "huawei_peer", "budget_bytes": 2147483648, "median_seconds": 0.04273804184049368, "estimated_cache_peak": 10896, "result_sha256": "2e9ec8c9a50b139751b4b97b47dfd0e0b4f42511896bf60b03442e8ccf1fe9dd"}
+{"fixture": "iosxr_bundle", "budget_bytes": 0, "median_seconds": 0.05189795792102814, "estimated_cache_peak": 0, "result_sha256": "b4d6cad83bb4df642fbf67332e925e328cd414a3753d82c97656aca243960f96"}
+{"fixture": "iosxr_bundle", "budget_bytes": 2147483648, "median_seconds": 0.09520579176023602, "estimated_cache_peak": 24344, "result_sha256": "b4d6cad83bb4df642fbf67332e925e328cd414a3753d82c97656aca243960f96"}
+{"fixture": "iosxr_duplicate_vlan", "budget_bytes": 0, "median_seconds": 0.05970041686668992, "estimated_cache_peak": 0, "result_sha256": "4d5f14f06cad946f820e5a2e723378476fbe163a8061428df99a642b332303cb"}
+{"fixture": "iosxr_duplicate_vlan", "budget_bytes": 2147483648, "median_seconds": 0.06803266610950232, "estimated_cache_peak": 39214, "result_sha256": "4d5f14f06cad946f820e5a2e723378476fbe163a8061428df99a642b332303cb"}
+{"fixture": "iosxr_mlag", "budget_bytes": 0, "median_seconds": 0.03758420795202255, "estimated_cache_peak": 0, "result_sha256": "9544b35758ff6732bef784785f865676a1c8ae1ef43c3ab0d32dd794cc4a19e2"}
+{"fixture": "iosxr_mlag", "budget_bytes": 2147483648, "median_seconds": 0.03905233321711421, "estimated_cache_peak": 23128, "result_sha256": "9544b35758ff6732bef784785f865676a1c8ae1ef43c3ab0d32dd794cc4a19e2"}
+{"fixture": "junos_bundle", "budget_bytes": 0, "median_seconds": 0.045006582979112864, "estimated_cache_peak": 0, "result_sha256": "122972e0c88130cfdd112127dbf64120d16766a6900797400db5fc5887778188"}
+{"fixture": "junos_bundle", "budget_bytes": 2147483648, "median_seconds": 0.048098166938871145, "estimated_cache_peak": 24832, "result_sha256": "122972e0c88130cfdd112127dbf64120d16766a6900797400db5fc5887778188"}
+{"fixture": "junos_mlag", "budget_bytes": 0, "median_seconds": 0.06779375020414591, "estimated_cache_peak": 0, "result_sha256": "6678a76d07f426172b9c79caaac0ea9515a87b0fb3dc9fd526720b9ed038cc8e"}
+{"fixture": "junos_mlag", "budget_bytes": 2147483648, "median_seconds": 0.06426762510091066, "estimated_cache_peak": 15748, "result_sha256": "6678a76d07f426172b9c79caaac0ea9515a87b0fb3dc9fd526720b9ed038cc8e"}
+{"fixture": "junos_unresolved", "budget_bytes": 0, "median_seconds": 0.03126216679811478, "estimated_cache_peak": 0, "result_sha256": "32845bed06986c323939e25645d72cc91068f6225341cbd36268b2bd4d24669d"}
+{"fixture": "junos_unresolved", "budget_bytes": 2147483648, "median_seconds": 0.031664082780480385, "estimated_cache_peak": 0, "result_sha256": "32845bed06986c323939e25645d72cc91068f6225341cbd36268b2bd4d24669d"}

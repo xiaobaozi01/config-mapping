@@ -87,7 +87,7 @@ Unix 使用 Python 的 [resource API](https://docs.python.org/3/library/resource
 
 这些缓存共享额外约 2 GiB 的任务预算，记录命中率、估算占用和实际进程峰值，结束及异常退出均释放。已经达到目标则停止新增改造；没有收益的缓存不保留。
 
-当前没有优化后的真实项目数据，因此尚未触发第二阶段，也不能宣布真实任务已达到 10 分钟。
+第二轮结束时没有优化后的真实项目数据。随后用户授权第三轮先使用合成数据和仓库样例实现前两项，现已完成增量接口索引及预算 LRU；引用／路径索引继续等待新版热点证据。实现、实测和额外开销见 [第三轮性能报告](third-round/README.md)，真实任务是否达到 10 分钟仍待公司环境验证。
 
 ## 本轮验证记录
 
@@ -97,4 +97,4 @@ Unix 使用 Python 的 [resource API](https://docs.python.org/3/library/resource
 - src 格式、ruff、两段式 docstring、方法长度检查通过；新增脚本和专项测试另经 ruff 检查。
 - 覆盖输入失败、业务失败、阶段异常、输出异常、中断、性能文件写入失败、旧性能文件处理、符号链接、任务隔离、旧／新解释器 profiler 检测及 Unix／Windows 内存后端。
 - 公开的小规模 `iosxr_bundle`、`junos_bundle` 样例均完成一次预热和三次正常转换，本机中位数约 43.2 ms／44.2 ms。该结果只验证复测链路正常，不代表真实项目达到 10 分钟。
-- 独立 cProfile 样例中 `profiler_enabled=true`，脚本没有将其计为达标；没有真实公司数据的优化后测量，第二阶段尚未触发。
+- 独立 cProfile 样例中 `profiler_enabled=true`，脚本没有将其计为达标；以上是第二轮结束时的验证记录，第三轮结果另见后续报告。

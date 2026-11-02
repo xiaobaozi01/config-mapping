@@ -1,0 +1,8 @@
+{"fixture": "cross_vendor", "budget_bytes": null, "median_seconds": 0.044077124912291765, "estimated_cache_peak": 0, "result_sha256": "e1989bdfaad4242e666ef4eee491486dd7e4993774d0a71a9bb2968ee0221c5d"}
+{"fixture": "huawei_peer", "budget_bytes": null, "median_seconds": 0.045566709246486425, "estimated_cache_peak": 0, "result_sha256": "2e9ec8c9a50b139751b4b97b47dfd0e0b4f42511896bf60b03442e8ccf1fe9dd"}
+{"fixture": "iosxr_bundle", "budget_bytes": null, "median_seconds": 0.0457610422745347, "estimated_cache_peak": 0, "result_sha256": "b4d6cad83bb4df642fbf67332e925e328cd414a3753d82c97656aca243960f96"}
+{"fixture": "iosxr_duplicate_vlan", "budget_bytes": null, "median_seconds": 0.04351991694420576, "estimated_cache_peak": 0, "result_sha256": "4d5f14f06cad946f820e5a2e723378476fbe163a8061428df99a642b332303cb"}
+{"fixture": "iosxr_mlag", "budget_bytes": null, "median_seconds": 0.032481458969414234, "estimated_cache_peak": 0, "result_sha256": "9544b35758ff6732bef784785f865676a1c8ae1ef43c3ab0d32dd794cc4a19e2"}
+{"fixture": "junos_bundle", "budget_bytes": null, "median_seconds": 0.049796124920248985, "estimated_cache_peak": 0, "result_sha256": "122972e0c88130cfdd112127dbf64120d16766a6900797400db5fc5887778188"}
+{"fixture": "junos_mlag", "budget_bytes": null, "median_seconds": 0.03462087456136942, "estimated_cache_peak": 0, "result_sha256": "6678a76d07f426172b9c79caaac0ea9515a87b0fb3dc9fd526720b9ed038cc8e"}
+{"fixture": "junos_unresolved", "budget_bytes": null, "median_seconds": 0.030715208034962416, "estimated_cache_peak": 0, "result_sha256": "32845bed06986c323939e25645d72cc91068f6225341cbd36268b2bd4d24669d"}

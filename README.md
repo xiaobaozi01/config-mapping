@@ -84,6 +84,8 @@ if context.has_errors:
 
 `convert()` 会另外生成只含聚合指标的 `performance.json`，覆盖输入准备、各转换阶段与完整输出耗时，并标明进程生命周期内存高水位。公司内正常计时和独立 profile 的运行方式见 [第二轮性能复测说明](docs/performance/second-round.md)。
 
+第三轮已加入增量接口索引、语义规则候选预编译和任务内 LRU。`convert(..., cache_budget_bytes=2 * 1024**3)` 默认允许新增缓存共享约 2 GiB 的估算预算，按需分配；设为 `0` 可关闭这些输入缓存作对照，静态规则预编译仍生效。任务完成、失败或中断后释放缓存，`performance.json` 的 `cache` 字段只保留命中、逐出、估算峰值等聚合指标。这不是进程总内存上限，缓存也不保证每种输入都更快；实测和限制见 [第三轮性能报告](docs/performance/third-round/README.md)。
+
 原始采集文本的输入整理规则分别位于两家厂商镜像目录的 `input_normalization.yaml`。每条规则的 `match` 都是逐行正则列表；单项匹配一行，多项匹配连续多行。`region` 只能是 `leading` 或 `trailing`，匹配后的动作固定为删除。规则 `id` 可只写局部名称，加载时自动补上 `cisco.` 或 `juniper.` 前缀；已带本厂商前缀的 ID 原样使用。规则只从文件两端向内删除完整匹配的行序列；正文中的匹配内容原样保留，清理后只剩空白也直接返回。Juniper 默认规则识别 `show configuration` 回显、`Last commit`、常见尾部提示符、采集分隔符和三行 `{ / master / }` 尾块；Cisco 规则文件默认留空，待确认具体采集格式后添加。输入整理命中情况写入 `report.json` 的 `input-normalization` 事件，不记录被删除的原文。
 
 每个镜像 Profile 的 `simulation_adaptation.mode` 支持 `off`、`compatible` 和 `stable`。默认 `stable` 仅保证已映射数据口启用，并将配置中已经存在且低于安全下限的 BFD interval/multiplier 调高；不会自动开启 BFD，也不会修改 OSPF、IS-IS 或 BGP 的业务定时器。全部修改写入 `report.json` 的 `simulation-adaptation` 事件。仅支持 `simulation_adaptation` 节点。

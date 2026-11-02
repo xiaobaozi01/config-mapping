@@ -62,9 +62,10 @@ def prepare(args, case, vendor):
         def run():
             total = sum(int(resolver.resolve(ctx).matched) for ctx in contexts)
             if case == "semantic_hot":
-                total += sum(
-                    int(resolver.resolve(ctx).matched) for ctx in contexts
-                )
+                for _ in range(args.hot_passes - 1):
+                    total += sum(
+                        int(resolver.resolve(ctx).matched) for ctx in contexts
+                    )
             return total
 
         return None, run
@@ -110,6 +111,21 @@ def prepare(args, case, vendor):
                 )
                 editor.apply()
                 total += find(document, name(index)) is not None
+            elif case == "churn":
+                container = (
+                    document.root if cisco else document.root.children[0]
+                )
+                editor = document.edit()
+                cloned = editor.clone(node, container, "benchmark clone")
+                changed = name(index + args.interfaces)
+                cloned.header = f"interface {changed}" if cisco else changed
+                editor.apply()
+                total += find(document, changed) is cloned
+                editor = document.edit()
+                editor.delete(cloned, "benchmark delete")
+                editor.apply()
+                total += find(document, name(index)) is node
+
         return total
 
     return document, run
@@ -138,9 +154,14 @@ def sample(args, case, vendor, mode):
                     "interface_nodes",
                     "_resolve_uncached",
                     "match_rule",
+                    "match_prepared",
                     "tokenize",
                 }:
                     calls[name] = calls.get(name, 0) + stats[1]
+        cleanup = time.perf_counter()
+        if cache is not None:
+            cache.close()
+        elapsed += time.perf_counter() - cleanup
         metrics = cache.snapshot() if cache is not None else {}
     return elapsed, peak, digest, total, calls, metrics
 
@@ -152,12 +173,13 @@ def main():
     parser.add_argument("--edits", type=int, default=100)
     parser.add_argument("--statements", type=int, default=18000)
     parser.add_argument("--repeat", type=int, default=3)
+    parser.add_argument("--hot-passes", type=int, default=2)
     parser.add_argument("--cache-budget-mib", type=int, default=2048)
     parser.add_argument(
         "--cases",
         nargs="+",
-        default=["lookup", "mixed", "semantic_cold", "semantic_hot"],
-        choices=["lookup", "mixed", "semantic_cold", "semantic_hot"],
+        default=["lookup", "mixed", "churn", "semantic_cold", "semantic_hot"],
+        choices=["lookup", "mixed", "churn", "semantic_cold", "semantic_hot"],
     )
     args = parser.parse_args()
     if (
@@ -167,6 +189,7 @@ def main():
             args.edits,
             args.statements,
             args.repeat,
+            args.hot_passes,
         )
         < 1
         or args.cache_budget_mib < 0
@@ -194,6 +217,7 @@ def main():
                         queries=args.queries,
                         edits=args.edits,
                         statements=args.statements,
+                        hot_passes=args.hot_passes,
                         budget_mib=args.cache_budget_mib,
                         median_seconds=statistics.median(r[0] for r in times),
                         peak_mib=memory[1] / 2**20,
