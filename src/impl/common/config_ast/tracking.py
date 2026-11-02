@@ -165,7 +165,7 @@ def tracker_for(node):
 
     Weak references allow retained nodes to outlive their document without keeping its analysis caches alive.
     """
-    weak = vars(node).get("_tracking")
+    weak = getattr(node, "_tracking", None)
     tracker = weak() if weak is not None else None
     return tracker if tracker is not None and node in tracker.edges else None
 
@@ -175,7 +175,7 @@ def cache_token(root):
 
     Untracked roots receive a fresh token so detached mutable trees cannot reuse stale analysis results.
     """
-    tracker = root._tracker()
+    tracker = tracker_for(root)
     return (root, tracker.epoch) if tracker is not None else object()
 
 
