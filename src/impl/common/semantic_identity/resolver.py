@@ -5,7 +5,21 @@ from __future__ import annotations
 from collections.abc import Iterable
 from typing import TypeVar
 
-from .matcher import expand_identity, match_rule, normalize, rule_specificity
+from ..support.optimization_cache import (
+    LOCAL_CACHE_BUDGET,
+    BudgetCache,
+    current_cache,
+    memoized,
+)
+from .matcher import (
+    compile_path,
+    expand_identity,
+    match_prepared,
+    normalize,
+    rule_specificity,
+    safe_statement_prefix,
+    tokenize,
+)
 from .models import MergeKind, SemanticDecision, SemanticRule, StatementContext
 
 _T = TypeVar("_T")
@@ -44,25 +58,92 @@ class SemanticResolver:
     收敛成一个 ``SemanticDecision``。
     """
 
-    def __init__(self, rules: tuple[SemanticRule, ...]):
+    def __init__(
+        self,
+        rules: tuple[SemanticRule, ...],
+        *,
+        cache_budget_bytes=LOCAL_CACHE_BUDGET,
+    ):
         """创建持有编译后规则的解析器实例。
 
         规则在构造前已由 ``load_rule_pack`` 校验，这里只保存引用；保持构造无副作用
         可让解析器安全地被模块级 ``lru_cache`` 复用。
         """
         self._rules = rules
-        self._cache: dict[StatementContext, SemanticDecision] = {}
+        self._cache = BudgetCache(cache_budget_bytes)
+        self._cache_key = object()
+        self._compiled = {rule: compile_path(rule.path) for rule in rules}
+        self._compile_candidates()
 
     def resolve(self, context: StatementContext) -> SemanticDecision:
         """返回语句的语义决策，并复用同一解析器中的命中结果。
 
-        以不可变上下文为缓存键可避免重复规则匹配，同时限制缓存规模以支持长时间运行。
+        任务内使用共享预算 LRU，独立实例使用局部预算；容量不足只逐出冷条目。
         """
-        if context not in self._cache:
-            if len(self._cache) >= 16_384:
-                self._cache.clear()
-            self._cache[context] = self._resolve_uncached(context)
-        return self._cache[context]
+        return memoized(
+            "semantic",
+            (self._cache_key, context),
+            lambda: self._resolve_uncached(context),
+            local=self._cache,
+        )
+
+    def _compile_candidates(self):
+        """Build bounded static buckets in the original rule order.
+
+        Rule identity is unique per compiled resolver; task results cannot cross
+        rule-pack instances even when IDs or text happen to be equal.
+        """
+        literals, fallback = {}, {}
+        for index, rule in enumerate(self._rules):
+            prefix = safe_statement_prefix(rule, self._compiled[rule])
+            if prefix is None:
+                fallback.setdefault(rule.node_kind, []).append((index, rule))
+            else:
+                literals.setdefault((rule.node_kind, prefix), []).append(
+                    (index, rule)
+                )
+        self._fallback = {
+            kind: tuple(rule for _, rule in rows)
+            for kind, rows in fallback.items()
+        }
+        self._buckets = {
+            key: tuple(
+                rule for _, rule in sorted([*rows, *fallback.get(key[0], ())])
+            )
+            for key, rows in literals.items()
+        }
+
+    def _tokens(self, value):
+        """Reuse immutable token tuples within the task or standalone instance.
+
+        This cache never stores nodes and shares the same byte budget as decisions.
+        """
+        return memoized(
+            "tokens", value, lambda: tokenize(value), local=self._cache
+        )
+
+    def _matches(self, context):
+        """Prepare input once and fully match all safely selected candidates.
+
+        Literal prefiltering does not shortcut ambiguity detection or capture rules.
+        """
+        statement = self._tokens(context.statement)
+        path = tuple(self._tokens(component) for component in context.path)
+        prefix = statement[0] if statement else ""
+        candidates = self._buckets.get(
+            (context.node_kind, prefix),
+            self._fallback.get(context.node_kind, ()),
+        )
+        cache = current_cache() or self._cache
+        cache.note("semantic", "candidates", len(candidates))
+        matches = []
+        for rule in candidates:
+            captures = match_prepared(
+                rule, statement, path, self._compiled[rule]
+            )
+            if captures is not None:
+                matches.append((rule_specificity(rule), rule, captures))
+        return matches
 
     def _resolve_uncached(self, context: StatementContext) -> SemanticDecision:
         """把一条语句解析成 ``SemanticDecision``。
@@ -72,17 +153,7 @@ class SemanticResolver:
         回退为以原文为 identity 的 opaque 决策。
         """
         normalized = normalize(context.statement)
-        matches: list[
-            tuple[
-                tuple[int, int, int, int, int],
-                SemanticRule,
-                dict[str, tuple[str, ...]],
-            ]
-        ] = []
-        for rule in self._rules:
-            captures = match_rule(rule, context)
-            if captures is not None:
-                matches.append((rule_specificity(rule), rule, captures))
+        matches = self._matches(context)
         if not matches:
             return SemanticDecision(
                 identity=("exact", normalized),

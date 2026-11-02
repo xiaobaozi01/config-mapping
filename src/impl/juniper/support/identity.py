@@ -12,6 +12,7 @@ from impl.common.semantic_identity import (
 )
 from impl.common.semantic_identity.matcher import normalize
 from impl.common.support.config_paths import config_path
+from impl.common.support.optimization_cache import memoized
 
 
 @lru_cache(maxsize=1)
@@ -22,11 +23,12 @@ def _resolver() -> SemanticResolver:
     """
     directory = config_path("rules", "juniper", "vmx")
     return SemanticResolver(
-        load_rule_pack(directory, vendor="juniper_junos", image="vmx")
+        load_rule_pack(directory, vendor="juniper_junos", image="vmx"),
+        cache_budget_bytes=0,
     )
 
 
-def _strip_annotations(statement: str) -> str:
+def _strip_annotations_uncached(statement: str) -> str:
     """去掉不改变配置槽位的 Junos 节点标记。
 
     inactive、protect 和 replace 描述编辑状态而非身份，忽略它们才能正确比较同一槽位。
@@ -39,6 +41,18 @@ def _strip_annotations(statement: str) -> str:
                 break
         else:
             return result
+
+
+def _strip_annotations(statement: str) -> str:
+    """Cache input-derived normalization only inside an active task.
+
+    The shared compiled resolver does not retain standalone caller input strings.
+    """
+    return memoized(
+        "normalize.junos",
+        statement,
+        lambda: _strip_annotations_uncached(statement),
+    )
 
 
 def resolve_junos_identity(

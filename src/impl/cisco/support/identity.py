@@ -12,17 +12,19 @@ from impl.common.semantic_identity import (
 )
 from impl.common.semantic_identity.matcher import normalize
 from impl.common.support.config_paths import config_path
+from impl.common.support.optimization_cache import memoized
 
 
 @lru_cache(maxsize=1)
 def _resolver() -> SemanticResolver:
     """构建并缓存 XRv9000 语义 identity 解析器。
 
-    规则包只依赖镜像静态文件，单例缓存可复用已校验规则和解析缓存。
+    规则包只依赖镜像静态文件，单例复用已校验规则和候选桶；输入结果只保留在任务作用域中。
     """
     directory = config_path("rules", "cisco", "xrv9000")
     return SemanticResolver(
-        load_rule_pack(directory, vendor="cisco_iosxr", image="xrv9000")
+        load_rule_pack(directory, vendor="cisco_iosxr", image="xrv9000"),
+        cache_budget_bytes=0,
     )
 
 
@@ -36,7 +38,9 @@ def resolve_cisco_identity(
 
     已知 ``no`` 命令优先按对应正向命令识别，使正反配置在继承覆盖时落到同一槽位。
     """
-    normalized = normalize(statement)
+    normalized = memoized(
+        "normalize.cisco", statement, lambda: normalize(statement)
+    )
     positive = (
         normalized.removeprefix("no ")
         if normalized.startswith("no ")

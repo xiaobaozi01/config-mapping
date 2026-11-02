@@ -223,3 +223,84 @@ def rule_specificity(rule: SemanticRule) -> tuple[int, int, int, int, int]:
     )
     concrete_path = sum(component != "**" for component in rule.path)
     return path_literals, concrete_path, statement_literals, typed, -rest
+
+
+def compile_path(pattern: tuple[str, ...]):
+    """Tokenize a static rule path once, retaining wildcard boundaries.
+
+    None denotes ** while empty tuples remain literal empty path components.
+    """
+    return tuple(
+        None if component == "**" else tokenize(component)
+        for component in pattern
+    )
+
+
+def _prepared_path(pattern, actual, pattern_index, actual_index, captures):
+    """Match prepared path components with the original backtracking order.
+
+    Capture dictionaries remain local to each branch and each candidate rule.
+    """
+    if pattern_index == len(pattern):
+        return captures if actual_index == len(actual) else None
+    component = pattern[pattern_index]
+    if component is None:
+        for next_index in range(actual_index, len(actual) + 1):
+            matched = _prepared_path(
+                pattern, actual, pattern_index + 1, next_index, dict(captures)
+            )
+            if matched is not None:
+                return matched
+        return None
+    if actual_index >= len(actual):
+        return None
+    matched = match_tokens(component, actual[actual_index], captures)
+    if matched is None:
+        return None
+    return _prepared_path(
+        pattern, actual, pattern_index + 1, actual_index + 1, matched
+    )
+
+
+def match_prepared(rule, statement, path, compiled_path):
+    """Match pretokenized input without changing capture or priority semantics.
+
+    Candidate selection handles node kind; complete path and statement matching
+    still run for every candidate, including broad capture-first templates.
+    """
+    captures = _prepared_path(compiled_path, path, 0, 0, {})
+    return (
+        None
+        if captures is None
+        else match_tokens(rule.statement, statement, captures)
+    )
+
+
+def safe_statement_prefix(rule, path):
+    """Return a safe literal prefilter or None for an always-considered rule.
+
+    Invalid path captures remain in the fallback bucket to preserve errors that
+    the legacy path-first matcher would raise before examining the statement.
+    """
+    if not rule.statement or _CAPTURE_RE.match(rule.statement[0]):
+        return None
+    supported = {
+        None,
+        "word",
+        "uint",
+        "ip",
+        "ip-address",
+        "prefix",
+        "ip-prefix",
+    }
+    for component in path:
+        for index, token in enumerate(component or ()):
+            capture = _CAPTURE_RE.match(token)
+            if capture is None:
+                continue
+            constraint = capture.group("constraint")
+            if constraint not in supported and "|" not in constraint:
+                return None
+            if capture.group("rest") and index != len(component) - 1:
+                return None
+    return rule.statement[0].lower()
