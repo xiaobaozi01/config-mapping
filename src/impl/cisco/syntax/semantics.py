@@ -96,7 +96,10 @@ _HAS_DIGIT = re.compile(r"\d")
 
 
 def interface_reference_candidates(text: str) -> frozenset[str]:
-    """Extract normalized candidates independently of the current name set."""
+    """Extract canonical lowercase interface candidates from text.
+
+    Definition and description statements are excluded before token matching; results depend only on the immutable text.
+    """
     if _REFERENCE_DEFINITION.match(text) or not _HAS_DIGIT.search(text):
         return frozenset()
     return frozenset(

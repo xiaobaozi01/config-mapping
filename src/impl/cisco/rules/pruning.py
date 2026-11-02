@@ -23,17 +23,29 @@ from ..syntax.semantics import (
 from .support import CiscoRuleVisitor, CiscoVisitorRule, document_scope
 
 # 整个接口 token 一次规范化，避免 Gi/BE 缩写和主口/子口前缀误匹配。
+_DESCRIPTIVE = re.compile(r"^(?:description|remark)\b", re.I)
 _ADDRESS = re.compile(r"^(?:ipv4|ipv6)\s+address\s+(\S+)", re.I)
 
 
 class InterfaceReferenceMatcher:
-    """Snapshot a name index once; share only text extraction with the document."""
+    """Match extracted interface candidates against a name snapshot.
+
+    The index is built once per analysis context while the document shares bounded text extraction across contexts.
+    """
 
     def __init__(self, names, extract=interface_reference_candidates):
+        """Create the lowercase name index for this analysis context.
+
+        The extraction function may be document-cached, but the selected names remain local to this matcher.
+        """
         self.index = {name.lower(): name for name in names}
         self.extract = extract
 
     def __call__(self, text):
+        """Return matching names in an independent set.
+
+        Only immutable text candidates are cached so callers can mutate results and change name sets safely.
+        """
         return {
             self.index[name]
             for name in self.extract(text)
@@ -42,14 +54,20 @@ class InterfaceReferenceMatcher:
 
 
 def reference_matcher(document, names):
-    """Build a context-local matcher using a bounded document text cache."""
+    """Create a name matcher using the document text cache.
+
+    The context owns its index and the document owns only bounded header-derived candidates.
+    """
     return InterfaceReferenceMatcher(
         names, document._parser.interface_references
     )
 
 
 def interface_references(text: str, names: set[str]) -> set[str]:
-    """Compatibility entry point returning an independent matching-name set."""
+    """Preserve the text-and-name-set matching entry point.
+
+    Legacy callers receive independent results; repeated internal scans use a context matcher to avoid rebuilding the index.
+    """
     return InterfaceReferenceMatcher(names)(text)
 
 
@@ -689,29 +707,35 @@ class _CiscoPruner:
         return False
 
     def clean(self, nodes: list[CiscoNode], path: tuple[str, ...] = ()) -> None:
-        """递归删除或保留指向已裁剪接口的活动依赖。
+        """按源码顺序删除或保留指向已裁剪接口的活动依赖。
 
-        已知绑定自动删除，未知引用保留并记录 warning；递归依赖当前节点是否已被整节点
-        处理，避免删除后的子树继续产生重复诊断。
+        显式栈复用祖先路径，仅命中引用时构造完整路径；删除整节点后跳过其后代，
+        避免产生重复审计与诊断。
         """
         matcher = reference_matcher(self.document, self.removed)
-        self._clean(nodes, path, matcher)
-
-    def _clean(self, nodes, path, matcher):
-        for node in nodes:
-            if not node.active or node.is_formatting:
+        ancestors = list(path)
+        stack = [iter(nodes)]
+        while stack:
+            node = next(stack[-1], None)
+            if node is None:
+                stack.pop()
+                if stack:
+                    ancestors.pop()
                 continue
-            current = (*path, node.header)
-            if re.match(r"^(?:description|remark)\b", node.header, re.I):
+            if (
+                not node.active
+                or node.is_formatting
+                or _DESCRIPTIVE.match(node.header)
+            ):
                 continue
             references = matcher(node.header)
             if references and self._handle_removed_reference(
-                node,
-                current,
-                references,
+                node, (*ancestors, node.header), references
             ):
                 continue
-            self._clean(node.nodes, current, matcher)
+            if node.children:
+                ancestors.append(node.header)
+                stack.append(iter(node.children))
 
     def prune_monitor_sessions(self):
         """删除目的接口已消失的镜像会话。
