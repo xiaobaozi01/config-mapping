@@ -336,3 +336,58 @@ def test_failed_direct_container_writes_leave_ownership_unchanged(document):
         assert document._tracker.edges == set(
             document.root.walk(include_self=True, include_formatting=True)
         )
+
+
+def test_warm_queries_have_no_signature_or_rebinding_calls(document):
+    import cProfile
+    import pstats
+
+    query = document.interfaces.analysis.interface_specs
+    expected = query()
+    profile = cProfile.Profile()
+    assert profile.runcall(query) == expected
+    for (_, _, name), stats in pstats.Stats(profile).stats.items():
+        if name in {
+            "tree_signature",
+            "_tree_signature",
+            "bind_parents",
+            "clone",
+        }:
+            assert stats[1] == 0
+
+
+def test_header_validation_only_binds_detached_fragments(document):
+    from impl.common.config_ast import bind_parents
+
+    def bind_fragment(root):
+        assert root is not document.root
+        assert len(root.children) == 1
+        return bind_parents(root)
+
+    node = document.root.nodes[0]
+    header = "hostname new"
+    if isinstance(document, JunosDocument):
+        node, header = node.nodes[0], "host-name new"
+    with patch(
+        "impl.common.config_ast.bind_parents", side_effect=bind_fragment
+    ):
+        editor = document.edit()
+        editor.replace_header(node, header, "rename")
+        editor.apply()
+    assert document.hostname() == "new"
+
+
+def test_untracked_protocol_nodes_never_reuse_stale_analysis():
+    from impl.common.support.interface_cache import InterfaceAnalysisCache
+
+    class PlainNode:
+        __slots__ = ("header",)
+
+        def __init__(self):
+            self.header = "old"
+
+    root = PlainNode()
+    cache = InterfaceAnalysisCache()
+    assert cache.read(root, "header", lambda: root.header, str) == "old"
+    root.header = "new"
+    assert cache.read(root, "header", lambda: root.header, str) == "new"

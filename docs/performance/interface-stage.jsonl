@@ -1,0 +1,1 @@
+{"vendor": "cisco", "case": "references", "nodes": 22998, "rules": 20, "edits": 100, "median_seconds": 0.0008959169499576092, "peak_mib": 0.0076313018798828125, "calls": {"canonical_cisco_interface": 10}, "output_sha256": "a092102864f6f5ba8d10fba69deb70aa8bd3105c195b7ea35df8c56fd05e387f", "result_count": 2000}

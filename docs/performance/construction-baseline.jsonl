@@ -1,0 +1,2 @@
+{"vendor": "cisco", "requested_nodes": 23000, "constructor_median_seconds": 0.10307800024747849, "retained_mib": 11.004061698913574, "peak_mib": 14.174927711486816}
+{"vendor": "juniper", "requested_nodes": 23000, "constructor_median_seconds": 0.205636584199965, "retained_mib": 11.371817588806152, "peak_mib": 14.599102973937988}

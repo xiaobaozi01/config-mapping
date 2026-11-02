@@ -1,0 +1,2 @@
+{"vendor": "cisco", "case": "rollback", "nodes": 22998, "rules": 20, "edits": 100, "median_seconds": 2.5433251252397895, "peak_mib": 44.620201110839844, "calls": {"clone": 20}, "output_sha256": "a092102864f6f5ba8d10fba69deb70aa8bd3105c195b7ea35df8c56fd05e387f", "result_count": 0}
+{"vendor": "juniper", "case": "rollback", "nodes": 22999, "rules": 20, "edits": 100, "median_seconds": 3.0428173332475126, "peak_mib": 44.30953025817871, "calls": {"clone": 20}, "output_sha256": "e51c583f5474b74dd5408e8de7d800dbbfe8fbcd3d004d176c5ae684839d7230", "result_count": 0}

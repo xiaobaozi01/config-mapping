@@ -66,7 +66,7 @@ def prepare(vendor, nodes, rules, edits, case):  # noqa: C901 - scenario matrix
 
     match = (
         pruning.reference_matcher(document, names)
-        if hasattr(pruning, "reference_matcher")
+        if cisco and hasattr(pruning, "reference_matcher")
         else lambda text: pruning.interface_references(text, names)
     )
 
@@ -152,8 +152,37 @@ def run(vendor, args, case):
     )
 
 
+def construction(vendor, args):
+    """Measure retained ownership overhead separately from edit-time peaks."""
+    times = []
+    for _ in range(args.repeat + 1):
+        gc.collect()
+        start = time.perf_counter()
+        document, execute = prepare(
+            vendor, args.nodes, args.rules, args.edits, "readonly"
+        )
+        times.append(time.perf_counter() - start)
+        del document, execute
+    gc.collect()
+    tracemalloc.start()
+    document, execute = prepare(
+        vendor, args.nodes, args.rules, args.edits, "readonly"
+    )
+    retained, peak = tracemalloc.get_traced_memory()
+    tracemalloc.stop()
+    del document, execute
+    return dict(
+        vendor=vendor,
+        requested_nodes=args.nodes,
+        constructor_median_seconds=statistics.median(times[1:]),
+        retained_mib=retained / 2**20,
+        peak_mib=peak / 2**20,
+    )
+
+
 def main():
     parser = argparse.ArgumentParser(description=__doc__)
+    parser.add_argument("--construction", action="store_true")
     parser.add_argument("--nodes", type=int, default=23000)
     parser.add_argument("--rules", type=int, default=20)
     parser.add_argument("--edits", type=int, default=100)
@@ -161,6 +190,14 @@ def main():
     parser.add_argument(
         "--cases",
         nargs="+",
+        choices=[
+            "readonly",
+            "noop",
+            "sparse",
+            "bulk",
+            "rollback",
+            "references",
+        ],
         default=[
             "readonly",
             "noop",
@@ -174,6 +211,9 @@ def main():
     if min(args.nodes, args.rules, args.edits, args.repeat) < 1:
         parser.error("sizes and repeat must be positive")
     for vendor in ("cisco", "juniper"):
+        if args.construction:
+            print(json.dumps(construction(vendor, args)), flush=True)
+            continue
         for case in args.cases:
             if vendor == "juniper" and case == "references":
                 continue
