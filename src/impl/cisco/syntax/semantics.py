@@ -96,9 +96,9 @@ _HAS_DIGIT = re.compile(r"\d")
 
 
 def interface_reference_candidates(text: str) -> frozenset[str]:
-    """Extract canonical lowercase interface candidates from text.
+    """从文本中提取规范的接口候选名并统一为小写。
 
-    Definition and description statements are excluded before token matching; results depend only on the immutable text.
+    分词匹配前先排除定义类和描述类语句，结果只取决于不可变文本，因此可以安全缓存。
     """
     if _REFERENCE_DEFINITION.match(text) or not _HAS_DIGIT.search(text):
         return frozenset()

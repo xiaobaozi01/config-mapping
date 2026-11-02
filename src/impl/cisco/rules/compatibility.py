@@ -41,8 +41,8 @@ _HARDWARE = re.compile(
 _ADDRESSING = re.compile(
     r"^(?:ipv[46]\s+(?:address|unnumbered|enable)\b|vrf\b)", re.IGNORECASE
 )
-# This list suppresses noise for familiar command families; it is not an
-# allowlist certifying all their options on every XRv9000 image.
+# 该列表只用于压掉熟悉命令族的噪声，并不构成一份允许清单，
+# 也不代表其全部选项在每台 XRv9000 镜像上都受支持。
 _FAMILIAR = re.compile(
     r"^(?:no\s+)?(?:description|shutdown|mtu|bandwidth|ipv4|ipv6|vrf|arp|"
     r"proxy-arp|local-proxy-arp|mac-address|encapsulation|rewrite|l2transport|"

@@ -144,9 +144,9 @@ def find_interface_node(
 
 
 def named_interface_nodes(document, name):
-    """Return duplicate parent definitions without scanning unrelated interfaces.
+    """返回重复的父接口定义，且不扫描无关接口。
 
-    Name normalization remains the caller's responsibility, matching merge logic.
+    名称规范化仍由调用方负责，与合并逻辑保持一致，避免两处各自规范化导致结果不一致。
     """
     indexed = interface_lookup(document)
     if indexed is not None:

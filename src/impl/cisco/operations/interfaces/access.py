@@ -51,9 +51,9 @@ def find_interface_node(document: CiscoDocument, name: str) -> CiscoNode | None:
 
 
 def interface_tree_nodes(document, name):
-    """Select a canonical interface and its dotted descendants in source order.
+    """按源码顺序选取规范接口及其点号子接口。
 
-    The fallback retains exact prefix semantics even for nested dotted names.
+    回退路径保留精确前缀语义，即使接口名本身嵌套了多级点号也能正确匹配。
     """
     indexed = interface_lookup(document)
     if indexed is not None:
@@ -67,9 +67,9 @@ def interface_tree_nodes(document, name):
 
 
 def named_interface_nodes(document, name):
-    """Return all active definitions of a canonical interface name.
+    """返回某个规范接口名的全部活动定义。
 
-    Duplicate merging must not collapse these nodes into one dictionary value.
+    重复定义合并不能把这些节点压成一个字典值，否则会丢失各自的源码位置和原始语句。
     """
     indexed = interface_lookup(document)
     if indexed is not None:

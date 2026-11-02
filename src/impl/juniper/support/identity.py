@@ -44,9 +44,9 @@ def _strip_annotations_uncached(statement: str) -> str:
 
 
 def _strip_annotations(statement: str) -> str:
-    """Cache input-derived normalization only inside an active task.
+    """只在活动任务内缓存由输入派生的规范化结果。
 
-    The shared compiled resolver does not retain standalone caller input strings.
+    共享的已编译解析器不保留调用方传入的独立语句字符串，避免跨任务留存输入。
     """
     return memoized(
         "normalize.junos",

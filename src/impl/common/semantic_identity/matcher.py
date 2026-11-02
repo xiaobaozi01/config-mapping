@@ -226,9 +226,9 @@ def rule_specificity(rule: SemanticRule) -> tuple[int, int, int, int, int]:
 
 
 def compile_path(pattern: tuple[str, ...]):
-    """Tokenize a static rule path once, retaining wildcard boundaries.
+    """一次性把静态规则路径分词，同时保留通配符边界。
 
-    None denotes ** while empty tuples remain literal empty path components.
+    用 None 表示 **，空元组仍然表示字面上的空路径层级，两者不能混为一谈。
     """
     return tuple(
         None if component == "**" else tokenize(component)
@@ -237,9 +237,9 @@ def compile_path(pattern: tuple[str, ...]):
 
 
 def _prepared_path(pattern, actual, pattern_index, actual_index, captures):
-    """Match prepared path components with the original backtracking order.
+    """按原有回溯顺序匹配已预处理的路径分量。
 
-    Capture dictionaries remain local to each branch and each candidate rule.
+    捕获字典在每条分支和每条候选规则之间相互独立，避免一次匹配污染另一次的结果。
     """
     if pattern_index == len(pattern):
         return captures if actual_index == len(actual) else None
@@ -263,10 +263,9 @@ def _prepared_path(pattern, actual, pattern_index, actual_index, captures):
 
 
 def match_prepared(rule, statement, path, compiled_path):
-    """Match pretokenized input without changing capture or priority semantics.
+    """匹配已分词的输入，且不改变捕获和优先级语义。
 
-    Candidate selection handles node kind; complete path and statement matching
-    still run for every candidate, including broad capture-first templates.
+    候选筛选只按节点类型收窄范围；完整路径和语句匹配仍对每个候选执行，包括以捕获开头的宽泛模板。
     """
     captures = _prepared_path(compiled_path, path, 0, 0, {})
     return (
@@ -277,10 +276,9 @@ def match_prepared(rule, statement, path, compiled_path):
 
 
 def safe_statement_prefix(rule, path):
-    """Return a safe literal prefilter or None for an always-considered rule.
+    """返回安全的字面量预筛值，无法预筛的规则返回 None。
 
-    Invalid path captures remain in the fallback bucket to preserve errors that
-    the legacy path-first matcher would raise before examining the statement.
+    路径捕获非法的规则留在回退桶，以保留旧版路径优先匹配器在检查语句之前抛出的错误顺序。
     """
     if not rule.statement or _CAPTURE_RE.match(rule.statement[0]):
         return None

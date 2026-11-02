@@ -14,18 +14,18 @@ class AstDocument:
 
     @property
     def root(self):
-        """Return the root currently owned by the mutation tracker.
+        """返回修改追踪器当前持有的根节点。
 
-        Keeping the root in the tracker makes root swaps participate in nested transaction rollback.
+        把根节点存放在追踪器中，使根替换也能参与嵌套事务回滚，与普通字段编辑共用同一份日志。
         """
         tracker = vars(self).get("_tracker")
         return tracker.root if tracker is not None else self._root
 
     @root.setter
     def root(self, root):
-        """Install the initial root or journal a replacement.
+        """首次挂载根节点，或记录一次根替换。
 
-        Initial installation builds ownership once; later replacements advance the same document mutation sequence.
+        首次挂载只建立一次所有权索引；后续替换沿用同一个文档修改序号，因此外部缓存的失效判断依旧成立。
         """
         tracker = vars(self).get("_tracker")
         if tracker is None:
@@ -35,9 +35,9 @@ class AstDocument:
 
     @property
     def mutation_epoch(self):
-        """Expose the immediate AST mutation sequence.
+        """暴露 AST 的即时修改序号。
 
-        Unlike the published revision, this changes during open batches so callback checks and warm caches see direct writes.
+        与对外发布的修订号不同，该序号在批次尚未提交时就会前进，使回调校验和热缓存能立即发现直接写入。
         """
         return self._tracker.epoch
 

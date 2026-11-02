@@ -1,7 +1,6 @@
-"""Task-scoped, byte-budgeted LRU storage for optional optimization data.
+"""面向可选优化数据的任务级、按字节计预算的 LRU 存储。
 
-Only conservative estimates are charged here; the existing AST and process RSS
-remain separate metrics. No cache key or input value is exported in statistics.
+这里只对保守估算值计费，既有 AST 和进程 RSS 仍属彼此独立的指标；统计信息既不导出缓存键，也不导出任何输入值。
 """
 
 import sys
@@ -17,10 +16,9 @@ _CURRENT = ContextVar("conversion_optimization_cache", default=None)
 
 
 def estimate_size(*values):
-    """Estimate immutable cache payloads once when inserting an entry.
+    """在插入条目时，对不可变缓存载荷估算一次体积。
 
-    AST nodes are never recursively traversed; interface indexes provide their
-    own metadata-only estimates instead of charging the existing tree twice.
+    永不递归遍历 AST 节点；接口索引自行提供只计元数据的估算，避免把既有树重复计费。
     """
     seen, pending, total = set(), list(values), 128
     while pending:
@@ -42,24 +40,23 @@ def estimate_size(*values):
 
 
 def current_cache():
-    """Return the optional active conversion cache.
+    """返回当前可选的转换缓存。
 
-    ContextVar isolation also restores the enclosing cache after nested calls.
+    ContextVar 的隔离性还能在嵌套调用结束后自动恢复外层缓存。
     """
     return _CURRENT.get()
 
 
 class BudgetCache:
-    """Share a bounded LRU across independent optimization namespaces.
+    """在彼此独立的优化命名空间之间共享一份有界 LRU。
 
-    Entry callbacks are weak methods so a task never retains a Document merely
-    to invalidate an evicted interface index.
+    条目回调使用弱方法，使任务不会仅仅为了失效一个已被逐出的接口索引而继续保活文档。
     """
 
     def __init__(self, budget_bytes):
-        """Create an empty pool without reserving the advertised capacity.
+        """创建一个空池，但不预留所宣称的容量。
 
-        Zero disables caching; invalid budgets fail before conversion work starts.
+        预算为零即关闭缓存；非法预算在转换工作开始之前就报错。
         """
         if isinstance(budget_bytes, bool) or not isinstance(budget_bytes, int):
             raise TypeError("cache_budget_bytes must be an integer")
@@ -72,17 +69,17 @@ class BudgetCache:
         self.closed = False
 
     def note(self, namespace, event, count=1):
-        """Increment an aggregate counter without storing the request key.
+        """累加聚合计数，同时不保存请求键。
 
-        Namespaces are fixed code labels, not device or configuration identifiers.
+        命名空间是固定的代码标签，不是设备或配置标识。
         """
         counters = self.stats.setdefault(namespace, {})
         counters[event] = counters.get(event, 0) + count
 
     def get(self, key, namespace):
-        """Retrieve and promote an entry in constant expected time.
+        """以常数期望时间取出条目并提升其近期程度。
 
-        Misses use an explicit sentinel so empty and negative results are cacheable.
+        未命中改用显式哨兵表示，使空结果和假值结果同样可以被缓存。
         """
         entry = self.entries.get(key)
         if entry is None:
@@ -93,17 +90,17 @@ class BudgetCache:
         return entry[0]
 
     def peek(self, key):
-        """Inspect a live index during invalidation without changing LRU order.
+        """在失效期间查看仍在索引中的条目，且不改变 LRU 顺序。
 
-        Mutation notifications must not masquerade as query hits or trigger builds.
+        修改通知不得冒充查询命中，也不得触发重建。
         """
         entry = self.entries.get(key)
         return entry[0] if entry is not None else CACHE_MISS
 
     def put(self, key, value, size, namespace, callback=None):
-        """Admit a new value after evicting only the necessary cold entries.
+        """只逐出必要的冷条目，然后接纳新值。
 
-        Oversized values and closed or disabled pools fall back to uncached work.
+        超大值以及已关闭或已禁用的池都退化为不做缓存。
         """
         self.discard(key, "replacements")
         charge = max(0, size) + 128
@@ -119,10 +116,9 @@ class BudgetCache:
         return True
 
     def resize(self, key, size):
-        """Update the incremental charge of an existing mutable index.
+        """更新现有可变索引的增量计费。
 
-        Growth can evict this index too; a caller's current result stays valid
-        while its next lookup transparently rebuilds or uses the scan fallback.
+        体积增长也可能把该索引自身逐出；调用方当前持有的结果仍然有效，下一次查询会透明地重建或走扫描回退。
         """
         entry = self.entries.get(key)
         if entry is None:
@@ -136,9 +132,9 @@ class BudgetCache:
         self.peak = max(self.peak, self.bytes)
 
     def discard(self, key, reason="invalidations"):
-        """Release one value and notify its optional weak owner.
+        """释放一个值，并通知其可选的弱引用持有者。
 
-        Removing entries before callbacks makes recursive invalidation harmless.
+        先摘除条目再执行回调，使递归失效不会造成死循环。
         """
         entry = self.entries.pop(key, None)
         if entry is None:
@@ -151,9 +147,9 @@ class BudgetCache:
             method()
 
     def close(self):
-        """Release all payloads after success, exception or cancellation.
+        """无论成功、异常还是取消，都在结束时释放全部载荷。
 
-        Aggregate counters survive for the final performance report only.
+        聚合计数只为最终的性能报告保留。
         """
         if not self.closed:
             self.closed = True
@@ -172,9 +168,9 @@ class BudgetCache:
                     method()
 
     def snapshot(self):
-        """Copy budget and counters without exposing cached inputs.
+        """复制预算与计数，但不暴露被缓存的输入。
 
-        Estimated peak is bounded by the pool limit and is not a process RSS cap.
+        估算峰值受池上限约束，它并不等于进程 RSS 的上限。
         """
         return {
             "budget_bytes": self.budget,
@@ -190,9 +186,9 @@ class BudgetCache:
 
 @contextmanager
 def optimization_scope(cache_budget_bytes=DEFAULT_CACHE_BUDGET):
-    """Own one pool for a conversion and restore the previous task on exit.
+    """为一次转换持有一个池，并在退出时恢复上一个任务的状态。
 
-    No parallel execution is introduced; finally cleanup includes BaseException.
+    这里不引入并行执行；finally 中的清理同样覆盖 BaseException。
     """
     cache = BudgetCache(cache_budget_bytes)
     token = _CURRENT.set(cache)
@@ -204,9 +200,9 @@ def optimization_scope(cache_budget_bytes=DEFAULT_CACHE_BUDGET):
 
 
 def memoized(namespace, key, collect, *, local=None, charge=None):
-    """Compute a pure immutable result with the active or instance-local pool.
+    """用活动池或实例局部池计算纯不可变结果。
 
-    Failed computations are never inserted and mutable AST objects are excluded.
+    计算失败的结果永不写入，可变 AST 对象也被排除在缓存之外。
     """
     cache = current_cache() or local
     if cache is None or cache.closed or not cache.budget:

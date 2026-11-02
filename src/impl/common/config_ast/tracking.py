@@ -1,7 +1,6 @@
-"""Incremental AST ownership, mutation epochs and reversible edit journals.
+"""AST 的增量所有权索引、修改序号与可逆编辑日志。
 
-Nodes keep weak references to this object. Journals are retained only for active
-rollback boundaries or until the next explicit tree_changed notification.
+节点以弱引用指回本对象；日志只在存在活动回滚边界时保留，或保留到下一次显式的 tree_changed 通知为止。
 """
 
 from collections import Counter
@@ -13,25 +12,25 @@ _MISSING = object()
 
 
 class TrackedChildren(list):
-    """Intercept ordinary child-list mutations.
+    """拦截对子节点列表的常规改动。
 
-    List reads retain their usual behavior; writes describe reversible splices before exposing the new contents.
+    列表读取保持原有行为；写入在暴露新内容之前，先记录成可逆的区间替换。
     """
 
     __slots__ = ("_owner",)
 
     def __init__(self, owner, values=()):
-        """Bind a child sequence to its owning node.
+        """把子节点序列绑定到其所属节点。
 
-        A weak owner reference avoids adding another ownership cycle to the AST.
+        持有者使用弱引用，避免在 AST 上再增加一条所有权环。
         """
         super().__init__(values)
         self._owner = ref(owner)
 
     def _splice(self, start, stop, values):
-        """Replace one contiguous range and record its inverse.
+        """替换一个连续区间，并记录其逆操作。
 
-        Materializing incoming values first supports generators and self-extension without partially publishing a mutation.
+        先把待写入的值物化，既支持生成器，也支持向自身扩展，同时避免把未完成的改动部分暴露出去。
         """
         values = list(values)
         old = self[start:stop]
@@ -44,9 +43,9 @@ class TrackedChildren(list):
         list.__setitem__(self, slice(start, stop), values)
 
     def __setitem__(self, key, value):
-        """Apply item, slice or extended-slice assignment.
+        """处理单元素、切片和扩展切片三种赋值。
 
-        Index validation precedes journal updates so failed list operations leave tree state unchanged.
+        索引校验先于日志更新，因此失败的列表操作不会留下任何树状态改动。
         """
         if isinstance(key, slice):
             start, stop, step = key.indices(len(self))
@@ -65,9 +64,9 @@ class TrackedChildren(list):
             self._splice(index, index + 1, [value])
 
     def __delitem__(self, key):
-        """Remove an item or slice through a reversible splice.
+        """通过可逆的区间替换删除单个元素或切片。
 
-        Extended slices are rebuilt locally to preserve Python list ordering and index semantics.
+        扩展切片先在局部重建，以保留 Python 列表原有的顺序和索引语义。
         """
         if isinstance(key, slice):
             rebuilt = list(self)
@@ -82,23 +81,23 @@ class TrackedChildren(list):
             self._splice(index, index + 1, [])
 
     def append(self, value):
-        """Append one child.
+        """追加一个子节点。
 
-        The splice records only the inserted edge rather than copying the whole sibling sequence.
+        只记录新插入的这条边，不复制整段兄弟序列。
         """
         self._splice(len(self), len(self), [value])
 
     def extend(self, values):
-        """Append an iterable of children.
+        """追加一组子节点。
 
-        The iterable is materialized before updating ownership, including when the source is this list.
+        更新所有权之前先物化传入的可迭代对象，源就是本列表时同样成立。
         """
         self._splice(len(self), len(self), values)
 
     def insert(self, index, value):
-        """Insert a child using normal list index clamping.
+        """按列表常规的索引截断规则插入子节点。
 
-        The normalized insertion offset is stored in the undo journal.
+        规范化后的插入位置会写进撤销日志，回滚时据此还原。
         """
         index = integer_index(index)
         index = (
@@ -107,63 +106,63 @@ class TrackedChildren(list):
         self._splice(index, index, [value])
 
     def pop(self, index=-1):
-        """Remove and return the child at an index.
+        """删除并返回指定位置的子节点。
 
-        Reading first preserves the standard error behavior for empty lists and invalid indices.
+        先读取再删除，从而保留空列表和非法索引下标准的报错行为。
         """
         value = self[index]
         del self[index]
         return value
 
     def remove(self, value):
-        """Remove the first matching child.
+        """删除第一个匹配的子节点。
 
-        Lookup uses list semantics and the resulting removal participates in transaction rollback.
+        查找沿用列表语义，删除动作同样参与事务回滚。
         """
         del self[self.index(value)]
 
     def clear(self):
-        """Remove all children.
+        """删除全部子节点。
 
-        The removed range remains in the journal only as long as an active rollback boundary needs it.
+        被删除的区间只在活动回滚边界仍然需要时才留在日志中。
         """
         self._splice(0, len(self), [])
 
     def reverse(self):
-        """Reverse the child order.
+        """反转子节点顺序。
 
-        The replacement is tracked because source ordering is part of configuration semantics.
+        顺序属于配置语义的一部分，因此这里按整段替换记录，而不是原地交换。
         """
         self._splice(0, len(self), reversed(self))
 
     def sort(self, *, key=None, reverse=False):
-        """Sort children with the supplied key and direction.
+        """按给定的键函数和方向排序子节点。
 
-        Sorting a temporary list prevents a failing key function from partially changing the live tree.
+        先对临时列表排序，使键函数抛出异常时不会把活动树改成一半。
         """
         self._splice(0, len(self), sorted(self, key=key, reverse=reverse))
 
     def __iadd__(self, values):
-        """Extend this list in place.
+        """就地扩展本列表。
 
-        Returning the same container preserves aliases and supports augmented assignment to node.children.
+        返回同一个容器，既保留别名关系，也支持对 node.children 使用增量赋值。
         """
         self.extend(values)
         return self
 
     def __imul__(self, count):
-        """Repeat or empty this list in place.
+        """就地重复或清空本列表。
 
-        Ownership validation rejects repeated shared children at the transaction synchronization boundary.
+        重复出现的共享子节点会在事务同步边界被所有权校验拒绝。
         """
         self._splice(0, len(self), list(self) * count)
         return self
 
 
 def tracker_for(node):
-    """Resolve the live tracker for a node.
+    """解析节点当前关联的追踪器。
 
-    Weak references allow retained nodes to outlive their document without keeping its analysis caches alive.
+    弱引用使被保留的节点可以在文档销毁后继续存在，而不会连带保住文档的分析缓存。
     """
     weak = getattr(node, "_tracking", None)
     tracker = weak() if weak is not None else None
@@ -171,24 +170,24 @@ def tracker_for(node):
 
 
 def cache_token(root):
-    """Return the root identity and immediate mutation epoch.
+    """返回根节点身份和即时修改序号。
 
-    Untracked roots receive a fresh token so detached mutable trees cannot reuse stale analysis results.
+    未被追踪的根每次拿到一个新令牌，使游离的可变树不会复用陈旧的分析结果。
     """
     tracker = tracker_for(root)
     return (root, tracker.epoch) if tracker is not None else object()
 
 
 class TreeTracker:
-    """Maintain incremental ownership and reversible mutations.
+    """维护增量所有权索引和可逆修改。
 
-    The edge index belongs to one document; nodes reference it weakly and successful rules never need whole-tree snapshots.
+    边索引属于单个文档，节点以弱引用指回它；因此成功的规则不需要整树快照。
     """
 
     def __init__(self, root):
-        """Index and validate an installed configuration tree once.
+        """对已挂载的配置树做一次索引和校验。
 
-        Subsequent synchronization visits changed relationships instead of rebuilding this index for each rule.
+        后续同步只访问发生变化的关系，不必为每条规则重建整个索引。
         """
         self.root = root
         self.epoch = 0
@@ -207,25 +206,24 @@ class TreeTracker:
         self.clear()
 
     def notify(self, kind, node=None, name=None, change=None):
-        """Notify weak metadata observers without retaining edit history.
+        """通知弱引用的元数据观察者，同时不保留编辑历史。
 
-        Observers only queue invalidations; they never query the half-written AST.
+        观察者只负责排队失效，绝不会去查询写到一半的 AST。
         """
         for listener in tuple(self.listeners):
             listener.changed(self, kind, node, name, change)
 
     def adopt(self, root):
-        """Index only previously unseen subtrees.
+        """只索引此前未见过的子树。
 
-        Cross-document sharing is rejected before publication; incoming edges are tracked separately from visited nodes to detect cycles.
+        跨文档共享在发布前就被拒绝；入边与已访问节点分开记录，用来发现环。
         """
         self._adopt_many([root])
 
     def _adopt_many(self, roots):
-        """Validate incoming subtrees before publishing any ownership changes.
+        """在发布任何所有权变更之前，先校验待接入的子树。
 
-        A failed direct list write must leave the index unchanged even outside
-        an edit scope, including when a later child belongs to another document.
+        即使不在编辑作用域内，直接改列表失败时索引也必须保持不变；后续某个子节点属于其他文档时同样如此。
         """
         pending, prepared = list(roots), {}
         while pending:
@@ -245,10 +243,9 @@ class TreeTracker:
                 self._incoming(child, node, 1)
 
     def _incoming(self, child, parent, delta):
-        """Adjust one incoming edge using compact storage for a single parent.
+        """调整一条入边，单父情况下使用紧凑存储。
 
-        Multiple parents retain a count mapping until synchronization rejects
-        sharing or a later operation resolves a temporary move.
+        存在多个父节点时改用计数映射，直到同步阶段拒绝共享，或后续操作完成一次临时搬移。
         """
         link = self.parents.get(child)
         parents = (
@@ -270,9 +267,9 @@ class TreeTracker:
 
     @contextmanager
     def readonly(self, error, message):
-        """Temporarily reject live writes with a caller-selected exception.
+        """在指定阶段用调用方给定的异常临时拒绝实时写入。
 
-        Nested callback phases restore the previous restriction even when a callback raises.
+        回调抛出异常时，嵌套的各个阶段仍会恢复之前的限制状态。
         """
         previous = self.write_error
         self.write_error = (error, message)
@@ -282,18 +279,18 @@ class TreeTracker:
             self.write_error = previous
 
     def check_write(self):
-        """Enforce the active rule callback restriction.
+        """强制执行当前规则回调的写入限制。
 
-        Checking before publication prevents visitors and result mappers from committing through another Editor.
+        在发布之前检查，可以阻止 Visitor 和结果映射器通过另一个 Editor 提交改动。
         """
         if self.write_error is not None:
             error, message = self.write_error
             raise error(message)
 
     def belongs(self, node):
-        """Check whether indexed parent edges reach the current root.
+        """检查按父边索引能否走到当前根节点。
 
-        Walking ancestors avoids linear sibling searches and rejects detached, retired, cyclic and multiply owned nodes.
+        沿祖先链上溯既避免线性搜索兄弟节点，也能拒绝游离、已退役、成环和一子多父的节点。
         """
         seen = set()
         while node is not self.root:
@@ -309,9 +306,9 @@ class TreeTracker:
         return True
 
     def field(self, node, name, old, new):
-        """Record a field mutation before it becomes visible.
+        """在字段改动可见之前先记录下来。
 
-        Child-container replacement updates the edge index while scalar writes only advance the immediate epoch.
+        替换子节点容器要同步更新边索引，而标量写入只推进即时修改序号。
         """
         self.check_write()
         if name == "children":
@@ -324,9 +321,9 @@ class TreeTracker:
             self.notify("field", node, name)
 
     def _change_edges(self, node, old, new):
-        """Apply the edge delta between old and new child ranges.
+        """计算并应用新旧子节点区间之间的边差异。
 
-        Multiplicity counts retain detection of duplicate children while unchanged edges require no subtree traversal.
+        用重数计数保留重复子节点的检出能力，未变化的边则完全不需要遍历子树。
         """
         old_counts, new_counts = Counter(old), Counter(new)
         removed, added = old_counts - new_counts, new_counts - old_counts
@@ -337,9 +334,9 @@ class TreeTracker:
             self._incoming(child, node, count)
 
     def splice(self, node, children, index, old, new):
-        """Record the inverse of a child-container splice.
+        """记录子节点容器区间替换的逆操作。
 
-        A retired list alias remains reversible but does not contribute edges or invalidate the current configuration.
+        已退役的列表别名仍可逆，但不再贡献边，也不会让当前配置失效。
         """
         active = node.children is children
         if active:
@@ -351,9 +348,9 @@ class TreeTracker:
         self.journal.append(("splice", children, index, old, new))
 
     def replace_root(self, root, *, restoring=False):
-        """Install a root and journal its predecessor.
+        """挂载新根节点并记录其前任。
 
-        Rollback can bypass callback restrictions internally; recording that swap preserves enclosing transaction checkpoints.
+        回滚在内部可以绕过回调限制，把这次替换也记进日志才能保住外层事务的检查点。
         """
         if not restoring:
             self.check_write()
@@ -366,9 +363,9 @@ class TreeTracker:
         self.notify("root")
 
     def repair(self):
-        """Validate changed incoming edges and reconnect affected nodes.
+        """校验发生变化的入边，并重新连接受影响的节点。
 
-        Ancestor checks detect cycles while raw parent repair avoids recursively invoking the mutation hooks.
+        祖先检查用来发现环，而直接修复 parent 字段可避免递归触发修改钩子。
         """
         dirty, self.dirty = self.dirty, set()
         for node in dirty:
@@ -392,9 +389,9 @@ class TreeTracker:
                 self.epoch += 1
 
     def changed_since(self, index):
-        """Compare only values touched since a journal checkpoint.
+        """只比较日志检查点之后被触及的值。
 
-        Reversing local list splices for comparison recognizes batches whose mutations cancel out without hashing the whole tree.
+        对比时先在局部反向重放列表替换，这样不必对整个树做哈希，也能识别出改动相互抵消的批次。
         """
         fields, lists = {}, {}
         for kind, target, key, old, new in self.journal[index:]:
@@ -421,9 +418,9 @@ class TreeTracker:
         return False
 
     def synchronize(self):
-        """Repair pending edges and report a net configuration change.
+        """修复待处理的边，并报告是否存在净配置变化。
 
-        The synchronization cursor prevents nested scope exits from repeating work already published by an inner batch.
+        同步游标确保内层批次已发布的工作不会被外层作用域退出时重复执行。
         """
         self.repair()
         changed = self.changed_since(self.sync_index)
@@ -433,9 +430,9 @@ class TreeTracker:
         return changed
 
     def undo(self, index):
-        """Restore journaled values in reverse order.
+        """按相反顺序还原日志中记录的取值。
 
-        Ownership is rebuilt from the restored tree on this failure path; inverse root swaps keep outer records usable.
+        这条失败路径会依据还原后的树重建所有权；根节点替换同样被反向执行，使外层记录继续可用。
         """
         for kind, target, key, old, new in reversed(self.journal[index:]):
             if kind == "splice":
@@ -448,11 +445,9 @@ class TreeTracker:
         self.sync_index = min(self.sync_index, index)
 
     def restore_checkpoint(self, index):
-        """Undo a boundary and install an independently owned rollback clone.
+        """撤销到一个边界，并换上一棵独立所有权的回滚副本。
 
-        The clone builder already establishes unique children and correct parent
-        links. A single indexing pass avoids validating that fresh clone twice;
-        the journaled root swap keeps enclosing rollback records usable.
+        复制过程本身已保证子节点唯一、父链正确，因此只需一次索引就能接管，不必把新副本再校验两遍；根替换写入日志后，外层回滚记录仍然可用。
         """
         self.undo(index)
         original = self.root
@@ -476,11 +471,11 @@ class TreeTracker:
         self.notify("root")
 
     def clear(self):
-        # Remove only disconnected components affected by this batch. Keeping
-        # every retired subtree would turn the index into an unbounded cache.
-        """Release committed journal entries and disconnected index components.
+        # 只回收本批次影响到的、已断开连接的组件。保留所有退役
+        # 子树会把索引变成无界缓存。
+        """释放已提交的日志条目和断开连接的索引组件。
 
-        Only affected components are visited so repeated successful rules cannot accumulate retired trees or scan unchanged nodes.
+        只访问受影响的组件，使反复成功的规则无法累积退役树，也不会去扫描未变化的节点。
         """
         pending = [
             node

@@ -1,7 +1,6 @@
-"""Incremental interface metadata indexes, independent of edit journal retention.
+"""接口元数据的增量索引，不依赖编辑日志是否仍然保留。
 
-Document ownership is weak; budget eviction and task teardown release all indexed
-nodes. Ordinary payload edits do not rebuild a document's interface catalog.
+文档以弱引用持有；预算逐出和任务结束都会释放全部被索引的节点；普通载荷编辑不会重建整个接口目录。
 """
 
 from bisect import insort
@@ -17,15 +16,15 @@ from .optimization_cache import (
 
 
 class InterfaceState:
-    """Store names, order and logical membership for one interface container.
+    """保存单个接口容器的名称、顺序和逻辑归属关系。
 
-    Existing AST objects are referenced but never charged as newly allocated data.
+    这里只是引用既有 AST 对象，不把它们当作新分配的数据计费。
     """
 
     def __init__(self, document):
-        """Build one initial container snapshot using existing vendor semantics.
+        """按厂商既有的语义建立一份初始容器快照。
 
-        Junos selects only the first effective interfaces block, matching top_block.
+        Junos 只取第一个生效的 interfaces 块，与 top_block 的行为保持一致。
         """
         self.cisco = document.vendor == "cisco_iosxr"
         self.parser = document._parser
@@ -61,9 +60,9 @@ class InterfaceState:
             self.refresh(node)
 
     def describe(self, node):
-        """Read the active canonical name and logical interface names of one node.
+        """读取单个节点的活动规范名和逻辑接口名。
 
-        Scalar configuration beneath units is intentionally irrelevant to this view.
+        unit 之下的标量配置刻意不进入这份视图，否则单位级参数会污染接口目录。
         """
         parser = self.parser
         if self.cisco:
@@ -82,9 +81,9 @@ class InterfaceState:
         return name, units or (name,)
 
     def groups(self, entry):
-        """Enumerate lookup buckets without losing nested dotted-name behavior.
+        """枚举该条目所属的各个查找桶，同时不丢失嵌套点号名的既有行为。
 
-        Tree prefixes match the original exact-name or source-dot-prefix scans.
+        树前缀桶对应原实现的精确名匹配和源码点号前缀扫描。
         """
         name, _ = entry
         yield self.by_name, name
@@ -95,9 +94,9 @@ class InterfaceState:
 
     @staticmethod
     def charge(entry):
-        """Conservatively charge newly allocated names, buckets and references.
+        """对新分配的名称、桶和引用做保守计费。
 
-        This estimate is updated only for changed nodes, never by scanning on hits.
+        该估算只在节点变化时更新，命中查询永远不会触发扫描。
         """
         prefixes = 1 + entry[0].count(".")
         return (
@@ -108,9 +107,9 @@ class InterfaceState:
         )
 
     def refresh(self, node):
-        """Update only the buckets belonging to one changed interface.
+        """只更新属于某个已变化接口的那些桶。
 
-        Original source positions keep duplicate-name and first-match semantics.
+        原始源码位置保持不变，从而维持重复定义和首次匹配的语义。
         """
         before = self.entries.get(node)
         after = self.describe(node)
@@ -136,9 +135,9 @@ class InterfaceState:
         self.ordered = None
 
     def remove(self, node):
-        """Remove one detached candidate without renumbering unaffected positions.
+        """移除一个已脱离的候选节点，且不重排未受影响的位置。
 
-        Relative source order is unchanged by deletion, including duplicate buckets.
+        删除不会改变其余节点的相对源码顺序，重复定义所在的桶同样如此。
         """
         before = self.entries.pop(node, None)
         if before is not None:
@@ -154,9 +153,9 @@ class InterfaceState:
         self.ordered = None
 
     def append(self, node):
-        """Index a new tail candidate using a monotonically increasing position.
+        """用单调递增的位置为新的尾部候选建立索引。
 
-        A still-shared node falls back to the scan rather than losing multiplicity.
+        仍被共享的节点会触发异常，由上层回退到扫描路径，而不是悄悄丢掉重数信息。
         """
         if node in self.order:
             raise ValueError("Shared interface child")
@@ -166,25 +165,25 @@ class InterfaceState:
         self.refresh(node)
 
     def all_nodes(self):
-        """Return a caller-owned ordered list of current interface nodes.
+        """返回由调用方持有的、按序排列的当前接口节点列表。
 
-        Repeated reads reuse the ordered view until interface membership changes.
+        在接口成员发生变化之前，重复读取复用同一份有序视图。
         """
         if self.ordered is None:
             self.ordered = sorted(self.entries, key=self.order.__getitem__)
         return list(self.ordered)
 
     def matching(self, name, tree=False):
-        """Return independent exact-name or interface-tree results.
+        """返回按精确名或按接口树匹配的独立结果。
 
-        Duplicate definitions remain separate nodes in source order.
+        重复定义仍是彼此独立的节点，并保持源码顺序。
         """
         return list((self.by_tree if tree else self.by_name).get(name, ()))
 
     def logical_names(self, parent):
-        """Collect logical names only from the requested parent's entries.
+        """只从指定父接口的条目中收集逻辑名。
 
-        Sorting and deduplication retain the interface_specs-based query behavior.
+        排序和去重沿用原先基于 interface_specs 的查询行为。
         """
         names = {
             name
@@ -197,22 +196,22 @@ class InterfaceState:
 
 
 class InterfaceLookup:
-    """Observe mutations without retaining a document or depending on its journal.
+    """观察修改，但不持有文档，也不依赖其日志。
 
-    Dirty metadata survives nested commits; root replacement drops all old nodes.
+    待刷新的元数据可以跨嵌套提交存活；根节点被替换时丢弃全部旧节点。
     """
 
     def __init__(self, document):
-        """Attach a weak observer and a lazily allocated standalone cache.
+        """挂上弱引用观察者，并按需分配一份独立的局部缓存。
 
-        A weak document callback releases task-owned index payloads immediately.
+        文档销毁时的弱回调会立即释放由任务持有的索引载荷。
         """
         weak = ref(self)
 
         def released(_):
-            """Drop budget-owned data when the weak document owner dies.
+            """弱引用的文档所有者销毁时，丢弃由预算池持有的数据。
 
-            Capturing only a weak holder avoids a callback ownership cycle.
+            回调只捕获弱引用持有者，避免形成所有权环。
             """
             holder = weak()
             if holder is not None:
@@ -229,9 +228,9 @@ class InterfaceLookup:
         document._tracker.listeners.add(self)
 
     def reset(self):
-        """Forget queued nodes after eviction or a structural reset.
+        """在逐出或结构性重置之后，忘掉已排队的节点。
 
-        No AST references remain in this holder after task teardown.
+        任务结束后，这个持有者中不再残留任何 AST 引用。
         """
         self.dirty.clear()
         self.removed.clear()
@@ -241,18 +240,18 @@ class InterfaceLookup:
         self.budget_rejected = False
 
     def discard(self):
-        """Remove this index from its current pool when its document retires.
+        """文档退役时，把该索引从当前池中移除。
 
-        Budget callbacks are weak, so neither side retains the other owner.
+        预算回调是弱引用，因此双方都不会保活对方。
         """
         if self.pool is not None:
             self.pool.discard(self.key)
         self.reset()
 
     def changed(self, tracker, kind, node, name, change=None):
-        """Queue only catalog-relevant mutations before a write becomes visible.
+        """在写入可见之前，只排队与目录相关的改动。
 
-        Parent repair and ordinary payload edits do not invalidate all interfaces.
+        父链修复和普通载荷编辑都不会让整个接口目录失效。
         """
         if kind == "root":
             self.discard()
@@ -286,10 +285,9 @@ class InterfaceLookup:
             self.dirty.add(parent)
 
     def children_changed(self, state, kind, node, change):
-        """Coalesce removals and appends; rebuild only for genuine reordering.
+        """合并删除与追加；只有真正重排时才整体重建。
 
-        Large queues collapse to a single rebuild marker rather than retaining
-        unlimited mutation history outside the cache budget.
+        队列过大时收敛成一个重建标记，避免在缓存预算之外保留无限长度的修改历史。
         """
         if node is state.root or node is state.container:
             if not state.cisco and node is state.root:
@@ -319,9 +317,9 @@ class InterfaceLookup:
             self.dirty.add(node)
 
     def refresh(self, state, pool):
-        """Apply queued deltas without scanning unrelated interface definitions.
+        """应用队列中的增量，且不扫描无关的接口定义。
 
-        Notifications are consumed separately from rollback journal checkpoints.
+        通知的消费与回滚日志检查点彼此独立，两者不共享游标。
         """
         dirty, removed, added = self.dirty, self.removed, self.added
         self.dirty, self.removed, self.added = set(), set(), []
@@ -338,9 +336,9 @@ class InterfaceLookup:
         pool.resize(self.key, state.cost)
 
     def selected_pool(self):
-        """Choose the active task or a bounded document-local pool.
+        """选择活动任务池或文档局部的有界池。
 
-        Crossing task boundaries never reuses input-derived index payloads.
+        跨任务边界时绝不复用由输入派生的索引载荷。
         """
         pool = current_cache()
         if pool is None:
@@ -353,10 +351,9 @@ class InterfaceLookup:
         return pool
 
     def get(self):
-        """Build or incrementally refresh an optional current index.
+        """构建或增量刷新当前可选的索引。
 
-        Uncacheable or malformed views fall back to the original scan at its
-        original call boundary rather than changing error or result semantics.
+        无法缓存或视图异常时，在原先的调用边界回退到扫描路径，而不是改变报错或结果语义。
         """
         pool = self.selected_pool()
         if pool.closed or not pool.budget or self.rejected:
@@ -375,9 +372,9 @@ class InterfaceLookup:
             return None
 
     def build(self, pool):
-        """Build a container index and admit it only if the budget allows.
+        """构建容器索引，并且只在预算允许时才接纳它。
 
-        Rebuilding after real reordering is distinct from scalar bucket updates.
+        真正重排之后的整体重建，与标量改动引起的桶更新是两条不同的路径。
         """
         document = self.document()
         if document is None:
@@ -402,9 +399,9 @@ class InterfaceLookup:
 
 
 def interface_lookup(document):
-    """Return an optional indexed view while preserving a zero-budget scan path.
+    """返回可选的索引视图，同时保留预算为零时的扫描路径。
 
-    Holders are created lazily and removed from deep-copied document state.
+    持有者按需创建，并在文档深复制后从副本状态中剔除。
     """
     pool = current_cache()
     if pool is not None and (pool.closed or not pool.budget):

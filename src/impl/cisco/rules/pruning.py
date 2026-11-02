@@ -28,23 +28,23 @@ _ADDRESS = re.compile(r"^(?:ipv4|ipv6)\s+address\s+(\S+)", re.I)
 
 
 class InterfaceReferenceMatcher:
-    """Match extracted interface candidates against a name snapshot.
+    """用名称快照匹配从文本中提取的接口候选。
 
-    The index is built once per analysis context while the document shares bounded text extraction across contexts.
+    索引在每个分析上下文中只构建一次，而文档在多个上下文之间共享有界文本提取结果，避免重复扫描。
     """
 
     def __init__(self, names, extract=interface_reference_candidates):
-        """Create the lowercase name index for this analysis context.
+        """为当前分析上下文建立小写名称索引。
 
-        The extraction function may be document-cached, but the selected names remain local to this matcher.
+        提取函数可以按文档缓存，但被选中的名称集合仍只属于这个匹配器，不会跨上下文泄漏。
         """
         self.index = {name.lower(): name for name in names}
         self.extract = extract
 
     def __call__(self, text):
-        """Return matching names in an independent set.
+        """返回独立集合中的匹配名称。
 
-        Only immutable text candidates are cached so callers can mutate results and change name sets safely.
+        只有不可变文本候选进入缓存，调用方可以自由修改结果集合或替换名称集合而不影响缓存。
         """
         return {
             self.index[name]
@@ -54,9 +54,9 @@ class InterfaceReferenceMatcher:
 
 
 def reference_matcher(document, names):
-    """Create a name matcher using the document text cache.
+    """借助文档文本缓存创建名称匹配器。
 
-    The context owns its index and the document owns only bounded header-derived candidates.
+    索引归上下文所有，文档只持有由命令头派生的有界候选，避免匹配器把索引生命周期绑到文档上。
     """
     return InterfaceReferenceMatcher(
         names, document._parser.interface_references
@@ -64,9 +64,9 @@ def reference_matcher(document, names):
 
 
 def interface_references(text: str, names: set[str]) -> set[str]:
-    """Preserve the text-and-name-set matching entry point.
+    """保留按文本和名称集合匹配的旧入口。
 
-    Legacy callers receive independent results; repeated internal scans use a context matcher to avoid rebuilding the index.
+    旧调用方拿到的仍是独立结果；内部重复扫描改用上下文匹配器，避免反复重建索引。
     """
     return InterfaceReferenceMatcher(names)(text)
 

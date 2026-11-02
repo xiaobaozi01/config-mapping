@@ -90,10 +90,9 @@ class SemanticResolver:
 
     @staticmethod
     def _decision_charge(context, value):
-        """Charge fixed immutable types without reflection on every cache miss.
+        """对固定不可变类型计费，避免每次未命中都做反射检查。
 
-        Four bytes per character plus object allowances conservatively account
-        for Unicode strings and container references without inspecting the AST.
+        按每字符四字节加对象开销保守估算，既不遍历 AST 也能覆盖 Unicode 字符串和容器引用。
         """
         return (
             768
@@ -108,10 +107,9 @@ class SemanticResolver:
         )
 
     def _compile_candidates(self):
-        """Build bounded static buckets in the original rule order.
+        """按原始规则顺序构建有界的静态候选桶。
 
-        Rule identity is unique per compiled resolver; task results cannot cross
-        rule-pack instances even when IDs or text happen to be equal.
+        规则身份只在单个已编译解析器内唯一，即使编号或文本碰巧相同，任务结果也不会跨规则包实例复用。
         """
         literals, fallback = {}, {}
         for index, rule in enumerate(self._rules):
@@ -134,9 +132,9 @@ class SemanticResolver:
         }
 
     def _tokens(self, value):
-        """Reuse immutable token tuples within the task or standalone instance.
+        """在任务或独立实例内复用不可变的分词元组。
 
-        This cache never stores nodes and shares the same byte budget as decisions.
+        该缓存从不保存节点，并与语义决策共用同一份字节预算。
         """
         return memoized(
             "tokens",
@@ -149,9 +147,9 @@ class SemanticResolver:
         )
 
     def _matches(self, context):
-        """Prepare input once and fully match all safely selected candidates.
+        """只准备一次输入，再把所有安全筛出的候选完整匹配一遍。
 
-        Literal prefiltering does not shortcut ambiguity detection or capture rules.
+        字面量预筛不会跳过歧义检测，也不会绕过捕获约束。
         """
         statement = tokenize(context.statement)
         path = tuple(self._tokens(component) for component in context.path)

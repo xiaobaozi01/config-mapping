@@ -39,21 +39,21 @@ class ConfigNode:
     )
 
     def _tracker(self):
-        """Resolve the optional weak mutation tracker.
+        """解析可选的弱引用修改追踪器。
 
-        Detached parser nodes and clones remain independent until a document adopts them.
+        游离的解析节点和副本在被文档接管之前保持独立，因此这里允许返回空值。
         """
         return tracker_for(self)
 
     def __setattr__(self, name, value):
-        """Track configuration fields while preserving vendor descriptors.
+        """在保留厂商描述符的前提下追踪配置字段。
 
-        Juniper header normalization records its backing field once; child sequences are wrapped before installation.
+        Juniper 的 header 规范化只记录一次底层字段，子节点序列在安装前先包成受追踪的列表。
         """
         if name not in self._TRACKED_FIELDS:
             object.__setattr__(self, name, value)
             return
-        # Juniper's descriptor normalizes header and writes _header itself.
+        # Juniper 的描述符会自行规范化 header 并写入 _header。
         if name == "header" and isinstance(
             getattr(type(self), name, None), property
         ):
@@ -70,9 +70,9 @@ class ConfigNode:
         object.__setattr__(self, name, value)
 
     def __delattr__(self, name):
-        """Track deletion of editable configuration fields.
+        """追踪可编辑配置字段的删除。
 
-        Recording the old value allows rollback even when a callback removes a field instead of assigning one.
+        记录旧值，使回调删除字段而不是赋新值时同样可以回滚。
         """
         old = getattr(self, name)
         tracker = self._tracker()
@@ -186,9 +186,9 @@ class ConfigNode:
         """
 
         def shell(original, parent):
-            """Allocate one detached node without invoking mutation hooks.
+            """分配一个不触发修改钩子的游离节点。
 
-            The copy excludes ownership state and allocates an independent child container for nonrecursive subtree cloning.
+            副本排除所有权状态并分配独立的子节点容器，使子树复制不必递归调用构造器。
             """
             cloned = object.__new__(type(original))
             cloned.__dict__.update(

@@ -397,9 +397,9 @@ def _report_conversion_failure(context, output_dir, phase, exc):
 
 
 def _finish_conversion(context, output_dir, cache, failed):
-    """Release task caches before publishing the final aggregate metrics.
+    """发布最终聚合指标前先释放任务缓存。
 
-    The returned context retains counters only, never the released task payloads.
+    返回的上下文只保留计数，不保留已释放的任务数据，避免报告阶段继续引用输入派生对象。
     """
     cache.close()
     context.performance.cache = cache.snapshot()
