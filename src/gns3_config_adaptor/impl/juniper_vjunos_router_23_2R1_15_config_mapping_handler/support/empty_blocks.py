@@ -12,13 +12,11 @@ from ...common.rules.empty_blocks import (
 from ...common.rules.empty_blocks import (
     load_empty_block_policy as _load_empty_block_policy,
 )
-from ...common.support.config_paths import RuleYamlFile, rule_yaml_path
-
-_RULE_FILE = rule_yaml_path(
-    vendor_dir="juniper_junos",
-    image="vmx",
-    rule_file=RuleYamlFile.EMPTY_BLOCKS,
+from ...common.support.config_paths import (
+    default_target_image,
+    empty_blocks_path,
 )
+
 _ACTIONS = (
     EmptyBlockAction.OMIT,
     EmptyBlockAction.SEMICOLON,
@@ -32,7 +30,10 @@ def load_empty_block_policy(path: Path) -> EmptyBlockPolicy:
     厂商参数在此固定，调用方只需提供规则文件，避免每次调用重复声明镜像身份。
     """
     return _load_empty_block_policy(
-        path, vendor="juniper_junos", image="vmx", actions=_ACTIONS
+        path,
+        vendor="juniper_junos",
+        image=default_target_image("juniper_junos"),
+        actions=_ACTIONS,
     )
 
 
@@ -42,4 +43,4 @@ def vmx_empty_block_policy() -> EmptyBlockPolicy:
 
     策略文件随程序发布且不会在一次运行中变化，缓存可避免每台设备重复读取和校验。
     """
-    return load_empty_block_policy(_RULE_FILE)
+    return load_empty_block_policy(empty_blocks_path("juniper_junos"))

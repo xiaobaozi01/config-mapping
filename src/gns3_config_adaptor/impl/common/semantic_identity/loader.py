@@ -7,7 +7,6 @@ from pathlib import Path
 
 import yaml
 
-from ..support.config_paths import RuleYamlFile
 from .models import MergeKind, SemanticRule
 
 _CAPTURE_NAME_RE = re.compile(
@@ -112,7 +111,7 @@ def _load_manifest(
 
     清单显式限定目标镜像和文件列表，避免目录扫描引入无关规则并允许加载前完成目标匹配。
     """
-    manifest_path = directory / RuleYamlFile.MANIFEST.value
+    manifest_path = directory / "manifest.yaml"
     with manifest_path.open("r", encoding="utf-8") as handle:
         manifest = yaml.safe_load(handle) or {}
     if not isinstance(manifest, dict) or manifest.get("schema_version") != 1:

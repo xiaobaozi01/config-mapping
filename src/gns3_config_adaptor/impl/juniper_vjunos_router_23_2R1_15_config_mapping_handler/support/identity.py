@@ -11,7 +11,10 @@ from ...common.semantic_identity import (
     load_rule_pack,
 )
 from ...common.semantic_identity.matcher import normalize
-from ...common.support.config_paths import rule_pack_dir
+from ...common.support.config_paths import (
+    default_target_image,
+    identity_rules_path,
+)
 from ...common.support.optimization_cache import memoized
 
 
@@ -21,9 +24,13 @@ def _resolver() -> SemanticResolver:
 
     规则包和编译缓存创建成本较高且内容固定，单例缓存可避免每次语句解析重复加载。
     """
-    directory = rule_pack_dir(vendor_dir="juniper_junos", image="vmx")
+    directory = identity_rules_path("juniper_junos")
     return SemanticResolver(
-        load_rule_pack(directory, vendor="juniper_junos", image="vmx"),
+        load_rule_pack(
+            directory,
+            vendor="juniper_junos",
+            image=default_target_image("juniper_junos"),
+        ),
         cache_budget_bytes=0,
     )
 

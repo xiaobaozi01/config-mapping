@@ -12,6 +12,10 @@ from ..impl.common.domain.policies import (
     SimulationAdaptationPolicy,
     SimulationMode,
 )
+from ..impl.common.support.config_paths import (
+    default_target_image,
+    image_profiles_path,
+)
 from .factory import parse_document
 from .models import (
     MIN_PROFILE_INTERFACE_COUNT,
@@ -26,7 +30,7 @@ DEFAULT_INTERFACES = {
 }
 
 DEFAULT_IMAGES = {
-    vendor: vendor.target_image
+    vendor: default_target_image(vendor.value)
     for vendor in (Vendor.CISCO_IOSXR, Vendor.JUNIPER_JUNOS)
 }
 
@@ -159,7 +163,7 @@ def load_profiles(path: Path | None) -> dict[Vendor, ImageProfile]:
     """
     raw_profiles: dict[str, object] = {}
     if path:
-        with path.open("r", encoding="utf-8") as handle:
+        with image_profiles_path(path).open("r", encoding="utf-8") as handle:
             payload = yaml.safe_load(handle) or {}
         raw_profiles = payload.get("profiles", {})
 

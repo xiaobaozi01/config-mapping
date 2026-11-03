@@ -3,7 +3,9 @@
 from __future__ import annotations
 
 import unittest
+from unittest.mock import call, patch
 
+from gns3_config_adaptor.adaptation import cleaning_rules
 from gns3_config_adaptor.adaptation.cleaning_rules import (
     AuthenticationCleaningRule,
     CiscoBannerCleaningRule,
@@ -14,6 +16,9 @@ from gns3_config_adaptor.impl.cisco_iosxrv9k_7_11_1_config_mapping_handler.docum
     CiscoDocument,
 )
 from gns3_config_adaptor.impl.common.rules.cleaning import matches_cleaning_path
+from gns3_config_adaptor.impl.common.support.config_paths import (
+    cleaning_rules_path,
+)
 from gns3_config_adaptor.impl.juniper_vjunos_router_23_2R1_15_config_mapping_handler.document import (
     JunosDocument,
 )
@@ -82,20 +87,13 @@ class CleaningPathTest(unittest.TestCase):
 class CleaningRuleLoadingTest(unittest.TestCase):
 
     def test_default_rules_are_split_by_target_vendor(self):
-        (cisco_path, cisco_vendor), (juniper_path, juniper_vendor) = (
-            CleaningRulesHandler._RULE_SOURCES
-        )
-        self.assertEqual(cisco_vendor.value, "cisco_iosxr")
-        self.assertEqual(juniper_vendor.value, "juniper_junos")
+        with patch.object(
+            cleaning_rules, "cleaning_rules_path", wraps=cleaning_rules_path
+        ) as locate:
+            rules = CleaningRulesHandler._configured_rules()
         self.assertEqual(
-            cisco_path.parts[-4:],
-            ("rules", "cisco_iosxr", "xrv9000", "cleaning.yaml"),
+            locate.call_args_list, [call("cisco_iosxr"), call("juniper_junos")]
         )
-        self.assertEqual(
-            juniper_path.parts[-4:],
-            ("rules", "juniper_junos", "vmx", "cleaning.yaml"),
-        )
-        rules = CleaningRulesHandler._configured_rules()
         self.assertTrue(
             all(
                 rule.vendor == "cisco_iosxr"

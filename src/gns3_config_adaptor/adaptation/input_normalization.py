@@ -9,23 +9,14 @@ from pathlib import Path
 
 import yaml
 
-from ..impl.common.support.config_paths import RuleYamlFile, rule_yaml_path
+from ..impl.common.support.config_paths import (
+    input_normalization_path,
+    rule_prefix,
+)
 from .models import Vendor
 
-_RULE_PATHS = {
-    Vendor.CISCO_IOSXR: rule_yaml_path(
-        vendor_dir=Vendor.CISCO_IOSXR.value,
-        image=Vendor.CISCO_IOSXR.target_image,
-        rule_file=RuleYamlFile.INPUT_NORMALIZATION,
-    ),
-    Vendor.JUNIPER_JUNOS: rule_yaml_path(
-        vendor_dir=Vendor.JUNIPER_JUNOS.value,
-        image=Vendor.JUNIPER_JUNOS.target_image,
-        rule_file=RuleYamlFile.INPUT_NORMALIZATION,
-    ),
-}
 _VENDOR_PREFIX = {
-    vendor: vendor.rule_prefix
+    vendor: rule_prefix(vendor.value)
     for vendor in (Vendor.CISCO_IOSXR, Vendor.JUNIPER_JUNOS)
 }
 
@@ -88,7 +79,7 @@ def _load_rules(vendor: Vendor) -> tuple[InputRule, ...]:
 
     文件结构在解析配置前验证，避免无效规则等到文本处理时才发现并留下不一致状态。
     """
-    path = _RULE_PATHS[vendor]
+    path = input_normalization_path(vendor.value)
     raw = yaml.safe_load(path.read_text(encoding="utf-8"))
     if not isinstance(raw, dict) or set(raw) != {"version", "vendor", "rules"}:
         raise ValueError(f"输入整理规则 {path} 顶层字段无效")

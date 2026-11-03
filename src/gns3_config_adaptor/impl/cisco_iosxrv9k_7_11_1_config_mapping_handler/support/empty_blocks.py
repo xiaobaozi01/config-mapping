@@ -12,13 +12,11 @@ from ...common.rules.empty_blocks import (
 from ...common.rules.empty_blocks import (
     load_empty_block_policy as _load_empty_block_policy,
 )
-from ...common.support.config_paths import RuleYamlFile, rule_yaml_path
-
-_RULE_FILE = rule_yaml_path(
-    vendor_dir="cisco_iosxr",
-    image="xrv9000",
-    rule_file=RuleYamlFile.EMPTY_BLOCKS,
+from ...common.support.config_paths import (
+    default_target_image,
+    empty_blocks_path,
 )
+
 _ACTIONS = (EmptyBlockAction.OMIT, EmptyBlockAction.KEEP)
 
 
@@ -28,7 +26,10 @@ def load_empty_block_policy(path: Path) -> EmptyBlockPolicy:
     厂商入口固定目标和允许动作，使通用加载器无需了解 Cisco 镜像约束。
     """
     return _load_empty_block_policy(
-        path, vendor="cisco_iosxr", image="xrv9000", actions=_ACTIONS
+        path,
+        vendor="cisco_iosxr",
+        image=default_target_image("cisco_iosxr"),
+        actions=_ACTIONS,
     )
 
 
@@ -38,4 +39,4 @@ def xrv9000_empty_block_policy() -> EmptyBlockPolicy:
 
     规则文件在一次进程中不变，缓存可避免每次渲染 Cisco 文档都重新读取和校验 YAML。
     """
-    return load_empty_block_policy(_RULE_FILE)
+    return load_empty_block_policy(empty_blocks_path("cisco_iosxr"))

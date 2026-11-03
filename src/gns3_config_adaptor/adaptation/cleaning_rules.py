@@ -19,7 +19,7 @@ from ..impl.cisco_iosxrv9k_7_11_1_config_mapping_handler.document import (
 from ..impl.common.domain.contracts import VendorConfiguration
 from ..impl.common.domain.interface import interface_parent
 from ..impl.common.rules.cleaning import CleaningAction, CleaningOperation
-from ..impl.common.support.config_paths import RuleYamlFile, rule_yaml_path
+from ..impl.common.support.config_paths import cleaning_rules_path, rule_prefix
 from .models import (
     ConversionContext,
     DeviceContext,
@@ -306,28 +306,9 @@ class CleaningRulesHandler:
     来源保持唯一，每个执行点持有独立列表，也避免调用方改变生产清洗行为。
     """
 
-    # YAML 路径与期望厂商成对声明，用于加载时阻止规则放错镜像目录。
-    _RULE_SOURCES = (
-        (
-            rule_yaml_path(
-                vendor_dir=Vendor.CISCO_IOSXR.value,
-                image=Vendor.CISCO_IOSXR.target_image,
-                rule_file=RuleYamlFile.CLEANING,
-            ),
-            Vendor.CISCO_IOSXR,
-        ),
-        (
-            rule_yaml_path(
-                vendor_dir=Vendor.JUNIPER_JUNOS.value,
-                image=Vendor.JUNIPER_JUNOS.target_image,
-                rule_file=RuleYamlFile.CLEANING,
-            ),
-            Vendor.JUNIPER_JUNOS,
-        ),
-    )
     # YAML 使用厂商内局部 id，加载时统一生成稳定、全局唯一的报告 id。
     _VENDOR_PREFIX: ClassVar[dict[str, str]] = {
-        vendor.value: vendor.rule_prefix
+        vendor.value: rule_prefix(vendor.value)
         for vendor in (Vendor.CISCO_IOSXR, Vendor.JUNIPER_JUNOS)
     }
     # 声明式规则仅开放厂商文档已经实现且可统一审计的动作。
@@ -625,8 +606,9 @@ class CleaningRulesHandler:
         """
         rules: list[ConfiguredCleaningRule] = []
         seen: set[str] = set()
-        for source, vendor in cls._RULE_SOURCES:
+        for vendor in (Vendor.CISCO_IOSXR, Vendor.JUNIPER_JUNOS):
             expected_vendor = vendor.value
+            source = cleaning_rules_path(expected_vendor)
             with source.open("r", encoding="utf-8") as handle:
                 payload = yaml.safe_load(handle) or {}
             if not isinstance(payload, dict) or set(payload) != {"rules"}:

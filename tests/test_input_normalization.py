@@ -123,8 +123,10 @@ class InputNormalizationTest(unittest.TestCase):
                 "      - '^CAPTURE HEADER$'\n",
                 encoding="utf-8",
             )
-            with patch.dict(
-                input_normalization._RULE_PATHS, {Vendor.CISCO_IOSXR: path}
+            with patch.object(
+                input_normalization,
+                "input_normalization_path",
+                return_value=path,
             ):
                 result = normalize_input(
                     Vendor.CISCO_IOSXR,

@@ -590,13 +590,13 @@ class ProjectConfigLayoutTest(unittest.TestCase):
                 )
 
         from gns3_config_adaptor.impl.common.support.config_paths import (
-            rule_pack_dir,
+            identity_rules_path,
         )
 
         for vendor, image in locations:
             with self.subTest(vendor=vendor, helper=True):
                 self.assertEqual(
-                    rule_pack_dir(vendor_dir=vendor, image=image),
+                    identity_rules_path(vendor),
                     project_root / "config" / "rules" / vendor / image,
                 )
 
@@ -610,11 +610,13 @@ class ProjectConfigLayoutTest(unittest.TestCase):
             / "support"
             / "config_paths.py"
         )
+        identity_loader = owner.parents[1] / "semantic_identity" / "loader.py"
         fixed_rule_files = {
             "manifest.yaml",
             "cleaning.yaml",
             "input_normalization.yaml",
             "empty_blocks.yaml",
+            "image_profiles.yaml",
         }
         violations = []
 
@@ -627,10 +629,99 @@ class ProjectConfigLayoutTest(unittest.TestCase):
                     isinstance(node, ast.Constant)
                     and node.value in fixed_rule_files
                 ):
+                    if (
+                        source_path == identity_loader
+                        and node.value == "manifest.yaml"
+                    ):
+                        continue
                     violations.append(
                         f"{source_path}: 固定规则文件名 {node.value}"
                     )
 
+        self.assertEqual(violations, [])
+
+    def test_config_layout_and_default_sources_are_owned_by_config_paths(self):
+        source_root = Path(__file__).parents[1] / "src"
+        violations = []
+        forbidden_tables = {"_RULE_PATHS", "_RULE_SOURCES", "_RULE_FILE"}
+        for source_path in source_root.rglob("*.py"):
+            if source_path.name == "config_paths.py":
+                continue
+            tree = ast.parse(source_path.read_text(encoding="utf-8"))
+            for node in ast.walk(tree):
+                if isinstance(node, ast.Name) and node.id in forbidden_tables:
+                    violations.append(f"{source_path}: 独立路径表 {node.id}")
+                if (
+                    isinstance(node, ast.BinOp)
+                    and isinstance(node.op, ast.Div)
+                    and isinstance(node.right, ast.Constant)
+                    and node.right.value in {"config", "rules"}
+                ):
+                    violations.append(f"{source_path}: 配置目录拼接")
+                if isinstance(node, ast.Dict):
+                    pairs = zip(node.keys, node.values, strict=True)
+                    if any(
+                        isinstance(key, ast.Constant)
+                        and key.value in {"cisco_iosxr", "juniper_junos"}
+                        and isinstance(value, ast.Constant)
+                        and value.value in {"xrv9000", "vmx"}
+                        for key, value in pairs
+                    ):
+                        violations.append(f"{source_path}: 默认规则镜像对应表")
+        self.assertEqual(violations, [])
+
+    def test_config_paths_exposes_resource_accessors_and_rule_metadata(self):
+        from gns3_config_adaptor.impl.common import support
+        from gns3_config_adaptor.impl.common.support import config_paths
+
+        expected = {
+            "image_profiles_path",
+            "cleaning_rules_path",
+            "input_normalization_path",
+            "empty_blocks_path",
+            "identity_rules_path",
+            "default_target_image",
+            "rule_prefix",
+        }
+        tree = ast.parse(inspect.getsource(config_paths))
+        public_definitions = {
+            node.name
+            for node in tree.body
+            if isinstance(node, (ast.FunctionDef, ast.ClassDef))
+            and not node.name.startswith("_")
+        }
+        self.assertEqual(public_definitions, expected)
+        self.assertEqual(set(config_paths.__all__), expected)
+        for name in expected:
+            self.assertIs(getattr(support, name), getattr(config_paths, name))
+
+    def test_yaml_loaders_use_resource_accessors_and_rule_metadata(self):
+        source_root = Path(__file__).parents[1] / "src"
+        resource_accessors = {
+            "image_profiles_path",
+            "cleaning_rules_path",
+            "input_normalization_path",
+            "empty_blocks_path",
+            "identity_rules_path",
+            "default_target_image",
+            "rule_prefix",
+        }
+        violations = []
+        for source_path in source_root.rglob("*.py"):
+            if source_path.name in {"config_paths.py", "__init__.py"}:
+                continue
+            tree = ast.parse(source_path.read_text(encoding="utf-8"))
+            for node in ast.walk(tree):
+                if (
+                    isinstance(node, ast.ImportFrom)
+                    and node.module
+                    and node.module.endswith("config_paths")
+                ):
+                    for alias in node.names:
+                        if alias.name not in resource_accessors:
+                            violations.append(
+                                f"{source_path}: 非资源路径入口 {alias.name}"
+                            )
         self.assertEqual(violations, [])
 
 

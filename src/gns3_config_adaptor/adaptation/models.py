@@ -61,30 +61,6 @@ class Vendor(StrEnum):
             return cls.HUAWEI
         return cls.UNKNOWN
 
-    @property
-    def rule_prefix(self) -> str:
-        """返回规则标识和配置目录使用的厂商短名。
-
-        该领域值用于阶段输入或报告输出，保持统一定义可避免调用方各自解释相同状态。
-        """
-        if self is Vendor.CISCO_IOSXR:
-            return "cisco"
-        if self is Vendor.JUNIPER_JUNOS:
-            return "juniper"
-        raise ValueError(f"{self.value} 没有可用规则前缀")
-
-    @property
-    def target_image(self) -> str:
-        """返回厂商默认目标镜像名。
-
-        该领域值用于阶段输入或报告输出，保持统一定义可避免调用方各自解释相同状态。
-        """
-        if self is Vendor.CISCO_IOSXR:
-            return "xrv9000"
-        if self is Vendor.JUNIPER_JUNOS:
-            return "vmx"
-        raise ValueError(f"{self.value} 没有可用目标镜像")
-
 
 class MappingRole(StrEnum):
     """定义接口映射在拓扑中的业务角色。
