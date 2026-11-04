@@ -271,28 +271,31 @@ class CiscoVisitorRule(Generic[ContextT, OutcomeT]):
             result = None
             try:
                 with document._tracker.readonly(
-                    RuleContractError, "Outcome 工厂不能绕过 Editor 修改配置"
+                    RuleContractError, "分析阶段不能绕过 Editor 修改配置"
                 ):
                     result = self.outcome_factory()
-                if not isinstance(
-                    result,
-                    (InterfaceAdaptationOutcome, SimulationAdaptationOutcome),
-                ):
-                    raise RuleContractError("规则工厂必须返回受支持的 Outcome")
-                if document.mutation_epoch != original:
-                    raise RuleContractError("Outcome 工厂不能修改配置")
-                session = RuleSession(document, context, result, self.readonly)
-                with document._tracker.readonly(
-                    RuleContractError, "selector 不能绕过 Editor 修改配置"
-                ):
-                    roots = tuple(self.selector(document, context))
-                _validate_roots(roots, document.root)
-                session.assert_unchanged()
-                if roots:
-                    with document._tracker.readonly(
-                        RuleContractError, "规则绕过 Editor 修改了配置"
+                    if not isinstance(
+                        result,
+                        (
+                            InterfaceAdaptationOutcome,
+                            SimulationAdaptationOutcome,
+                        ),
                     ):
+                        raise RuleContractError(
+                            "规则工厂必须返回受支持的 Outcome"
+                        )
+                    if document.mutation_epoch != original:
+                        raise RuleContractError("Outcome 工厂不能修改配置")
+
+                    session = RuleSession(
+                        document, context, result, self.readonly
+                    )
+                    roots = tuple(self.selector(document, context))
+                    _validate_roots(roots, document.root)
+                    session.assert_unchanged()
+                    if roots:
                         visitor = self._visit(session, roots)
+                if roots:
                     self._finish(session, visitor)
                 if _has_errors(result):
                     if original != document.mutation_epoch:
