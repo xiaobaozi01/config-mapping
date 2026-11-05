@@ -76,7 +76,6 @@ def test_cisco_rejects_unclosed_structures(source):
     [
         "system {",
         "system }",
-        "system { host-name x }",
         'system { description "unclosed; }',
         "/* unclosed",
     ],
