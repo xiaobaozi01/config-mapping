@@ -21,7 +21,7 @@ def group_config(name: str) -> str:
 class JunosGroupExpansionTest(unittest.TestCase):
     """覆盖 Junos group 的静态展开、冲突与失败回滚。"""
 
-    def test_inactive_group_payload_is_not_inherited_but_local_inactive_is_kept(
+    def test_inactive_group_payload_is_not_inherited_and_local_inactive_is_omitted(
         self,
     ):
         document = JunosDocument(
@@ -49,7 +49,8 @@ class JunosGroupExpansionTest(unittest.TestCase):
 
         self.assertTrue(outcome.success)
         self.assertIn("description inherited-active;", rendered)
-        self.assertIn("inactive: description local-inactive;", rendered)
+        self.assertIn("inactive: description local-inactive;", document.source)
+        self.assertNotIn("inactive:", rendered)
         self.assertNotIn("mtu 1500;", rendered)
         self.assertNotIn("groups {", rendered)
 
@@ -346,7 +347,7 @@ class JunosGroupExpansionTest(unittest.TestCase):
     def test_junos_inactive_and_unused_group_exclusions_do_not_block_expansion(
         self,
     ):
-        """inactive 引用保留但不校验，未使用模板中的 except 不阻断展开。"""
+        """inactive 引用保留在树中但不校验和输出，未使用模板中的 except 不阻断展开。"""
         document = JunosDocument(
             group_config("junos_inactive_unused_exclusions.cfg")
         )
@@ -356,8 +357,9 @@ class JunosGroupExpansionTest(unittest.TestCase):
         self.assertFalse(outcome.warnings)
         self.assertIn("mtu 9000;", rendered)
         self.assertNotIn("MISSING-IN-UNUSED", rendered)
+        self.assertNotIn("MISSING-INACTIVE", rendered)
         self.assertIn(
-            "inactive: apply-groups-except MISSING-INACTIVE;", rendered
+            "inactive: apply-groups-except MISSING-INACTIVE;", document.source
         )
 
     def test_junos_apply_groups_except_does_not_create_dependency(self):
@@ -421,7 +423,7 @@ class JunosGroupExpansionTest(unittest.TestCase):
         )
         self.assertEqual(junos.render(), junos_source)
 
-    def test_junos_inactive_apply_groups_are_preserved_without_expansion(self):
+    def test_junos_inactive_apply_groups_are_omitted_without_expansion(self):
         document = JunosDocument(
             group_config("junos_inactive_apply_groups.cfg")
         )
@@ -432,11 +434,12 @@ class JunosGroupExpansionTest(unittest.TestCase):
         self.assertFalse(outcome.events)
         self.assertFalse(outcome.warnings)
         self.assertIn("groups {", rendered)
-        self.assertIn("inactive: apply-groups COMMON;", rendered)
-        self.assertIn("inactive: apply-groups MISSING;", rendered)
+        self.assertIn("inactive: apply-groups COMMON;", document.source)
+        self.assertNotIn("inactive:", rendered)
+        self.assertIn("inactive: apply-groups MISSING;", document.source)
         self.assertEqual(rendered.count("mtu 9000;"), 1)
 
-    def test_junos_inactive_group_definition_is_preserved_without_active_groups(
+    def test_junos_inactive_group_definition_is_omitted_without_active_groups(
         self,
     ):
         document = JunosDocument(
@@ -447,12 +450,13 @@ class JunosGroupExpansionTest(unittest.TestCase):
 
         self.assertTrue(outcome.success)
         self.assertFalse(outcome.warnings)
-        self.assertIn("groups {", rendered)
-        self.assertIn("inactive: DISABLED {", rendered)
-        self.assertIn("inactive: apply-groups DISABLED;", rendered)
+        self.assertIn("groups;", rendered)
+        self.assertIn("inactive: DISABLED {", document.source)
+        self.assertNotIn("inactive:", rendered)
+        self.assertIn("inactive: apply-groups DISABLED;", document.source)
         self.assertIn("host-name current;", rendered)
 
-    def test_junos_all_inactive_nodes_are_preserved_without_group_expansion(
+    def test_junos_all_inactive_nodes_are_omitted_without_group_expansion(
         self,
     ):
         document = JunosDocument(group_config("junos_all_inactive_nodes.cfg"))
@@ -460,10 +464,15 @@ class JunosGroupExpansionTest(unittest.TestCase):
         rendered = document.render()
 
         self.assertTrue(outcome.success)
-        self.assertIn("inactive: host-name old;", rendered)
-        self.assertIn("inactive: services {\n        ssh;\n    }", rendered)
-        self.assertIn("inactive: ge-0/0/0 {\n        unit 0;\n    }", rendered)
-        self.assertIn("inactive: mtu 1500;", rendered)
+        self.assertIn("inactive: host-name old;", document.source)
+        self.assertNotIn("inactive:", rendered)
+        self.assertIn(
+            "inactive: services {\n        ssh;\n    }", document.source
+        )
+        self.assertIn(
+            "inactive: ge-0/0/0 {\n        unit 0;\n    }", document.source
+        )
+        self.assertIn("inactive: mtu 1500;", document.source)
         self.assertIn("host-name current;", rendered)
         self.assertIn("mtu 9000;", rendered)
 
@@ -490,11 +499,12 @@ class JunosGroupExpansionTest(unittest.TestCase):
         self.assertTrue(outcome.success)
         self.assertEqual(outcome.events, ["已展开 Junos 配置组 ENABLED"])
         self.assertNotIn("inactive: DISABLED {", rendered)
-        self.assertIn("inactive: apply-groups DISABLED;", rendered)
+        self.assertIn("inactive: apply-groups DISABLED;", document.source)
+        self.assertNotIn("inactive:", rendered)
         self.assertIn("mtu 9000;", rendered)
         self.assertNotIn("description disabled-group;", rendered)
 
-    def test_junos_inactive_value_is_preserved_but_ignored_during_group_merge(
+    def test_junos_inactive_value_is_omitted_and_ignored_during_group_merge(
         self,
     ):
         document = JunosDocument(
@@ -504,7 +514,8 @@ class JunosGroupExpansionTest(unittest.TestCase):
         rendered = document.render()
 
         self.assertTrue(outcome.success)
-        self.assertIn("inactive: mtu 1500;", rendered)
+        self.assertIn("inactive: mtu 1500;", document.source)
+        self.assertNotIn("inactive:", rendered)
         self.assertIn("mtu 9000;", rendered)
         self.assertFalse(outcome.conflicts)
 

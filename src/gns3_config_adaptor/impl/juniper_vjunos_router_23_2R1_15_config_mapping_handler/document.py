@@ -183,7 +183,7 @@ class JunosDocument(AstDocument, VendorConfiguration):
     def render(self) -> str:
         """按目标部署镜像的空块策略序列化配置树。
 
-        部署输出不会修改 Document 当前持有的配置。
+        部署输出过滤 inactive 节点及其子树，不会修改 Document 当前持有的配置。
         """
         return self.writer.render(
             self.root, self._parser, vmx_empty_block_policy()

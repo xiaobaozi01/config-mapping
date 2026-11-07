@@ -99,9 +99,9 @@ class _PolicyWriter:
         叶子直接输出 header，块节点补齐缩进和大括号；原配置中的空层级和
         由叶子升级的空块默认输出为分号语句，YAML 可指定保留大括号或省略；
         新建的空容器不输出；omit 路径上的注释不单独使空块保留。
-        逻辑停用节点跳过。
+        已删除节点和带 inactive 前缀的节点连同完整子树跳过。
         """
-        if not node.active:
+        if not node.active or node.configured_inactive:
             return ""
         indent = "    " * depth
         if not node.is_block:
@@ -126,7 +126,7 @@ class _PolicyWriter:
     def _render_leaf(self, node: JuniperNode, indent: str) -> str:
         """渲染叶子节点及其行内注释。
 
-        protect 前缀在输出时移除，inactive 状态则继续保留以维持原节点是否生效。
+        protect 前缀在输出时移除，inactive 节点已由上层过滤。
         """
         header = self._parser.output_header(node.header)
         if header:

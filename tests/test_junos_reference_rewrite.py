@@ -79,7 +79,11 @@ class JunosReferenceRewriteTest(unittest.TestCase):
         output = context.devices["A"].document.render()
         self.assertIn("unnumbered-address ge-0/0/0.0;", output)
         self.assertIn("underlying-interface ge-0/0/0;", output)
-        self.assertIn("inactive: interface ge-0/0/1.100;", output)
+        self.assertIn(
+            "inactive: interface ge-0/0/1.100;",
+            context.devices["A"].document.source,
+        )
+        self.assertNotIn("inactive:", output)
         self.assertNotIn("ge-0/0/7", output)
         self.assertNotIn("ge-0/0/8", output)
 
@@ -119,7 +123,8 @@ class JunosReferenceRewriteTest(unittest.TestCase):
         self.assertNotIn("unnumbered-address ge-0/0/2.0;", first)
         output = document.render()
         self.assertIn("underlying-interface ge-0/0/1;", output)
-        self.assertIn("underlying-interface ge-0/0/1.0;", output)
+        self.assertIn("underlying-interface ge-0/0/1.0;", document.source)
+        self.assertNotIn("underlying-interface ge-0/0/1.0;", output)
         cos = next(
             node
             for node in document.root.nodes
@@ -138,8 +143,10 @@ class JunosReferenceRewriteTest(unittest.TestCase):
         output = document.render()
         self.assertIn("unnumbered-address ge-0/0/3.0;", output)
         self.assertIn("unnumbered-address ge-0/0/4.0;", output)
-        self.assertIn("underlying-interface ge-0/0/3.0;", output)
-        self.assertIn("underlying-interface ge-0/0/4.0;", output)
+        self.assertIn("underlying-interface ge-0/0/3.0;", document.source)
+        self.assertNotIn("underlying-interface ge-0/0/3.0;", output)
+        self.assertIn("underlying-interface ge-0/0/4.0;", document.source)
+        self.assertNotIn("underlying-interface ge-0/0/4.0;", output)
         self.assertEqual(output.count("description TARGET-ONE;"), 1)
 
     def test_deleted_interface_subtree_is_not_resurrected_by_references(self):

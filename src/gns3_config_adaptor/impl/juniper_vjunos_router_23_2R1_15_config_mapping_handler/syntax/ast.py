@@ -17,7 +17,7 @@ def base_header(header):
 class JuniperNode(ConfigNode):
     """表示 Junos 语句，并与分号等结构标点解耦。
 
-    状态前缀保留在命令头中，以便输出时继续保留 inactive 配置。
+    状态前缀保留在命令头中，供生效判断和部署输出过滤使用。
     """
 
     @property

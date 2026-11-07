@@ -204,8 +204,9 @@ class JunosInterfaceClassificationTest(unittest.TestCase):
         )
         rendered = document.render()
         self.assertIn("ge-0/0/1 {", rendered)
-        self.assertIn("inactive: unit 200 {", rendered)
-        self.assertIn("inactive: vlan-id 300;", rendered)
+        self.assertNotIn("unit 200", rendered)
+        self.assertNotIn("vlan-id 300;", rendered)
+        self.assertNotIn("ge-0/0/0", rendered)
         self.assertNotIn("protect:", rendered)
 
     def test_junos_member_business_requires_unit_or_family_payload(self):

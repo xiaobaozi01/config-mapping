@@ -385,7 +385,7 @@ class ConversionTest(unittest.TestCase):
                     )
                 )
 
-    def test_junos_inactive_children_follow_interface_migration_and_removal(
+    def test_junos_inactive_children_are_omitted_after_interface_migration(
         self,
     ):
         topology, source_config_dir = conversion_fixture("junos_bundle")
@@ -411,7 +411,8 @@ class ConversionTest(unittest.TestCase):
             converted = (output / "configs" / "J1.cfg").read_text(
                 encoding="utf-8"
             )
-            self.assertIn("inactive: description KEEP-WITH-NNI;", converted)
+            self.assertNotIn("KEEP-WITH-NNI", converted)
+            self.assertNotIn("inactive:", converted)
             self.assertNotIn("DROP-WITH-BARE", converted)
             self.assertIn("ae0", converted)
 

@@ -31,6 +31,21 @@ def delete(document, context):
 class JunosAstTest(unittest.TestCase):
     """覆盖行内块、注释、hostname 与括号边界。"""
 
+    def test_render_omits_inactive_subtrees_without_modifying_source(self):
+        document = JunosDocument(junos_config("inactive_output.cfg"))
+        source = document.source
+
+        rendered = document.render()
+
+        self.assertEqual(
+            rendered,
+            "# active comment\nsystem {\n    host-name lab;\n"
+            '    description "literal inactive: value";\n}\n',
+        )
+        self.assertEqual(document.source, source)
+        self.assertEqual(document.render(), rendered)
+        self.assertEqual(JunosDocument(rendered).render(), rendered)
+
     def test_junos_inline_blocks_are_parsed_and_expanded(self):
         source = junos_config("inline_blocks.cfg")
         document = JunosDocument(source)
@@ -215,11 +230,15 @@ class JunosAstTest(unittest.TestCase):
 
         self.assertNotIn("ge-1/0/", rendered)
         self.assertIn("    interface ge-0/0/1.0;\n", rendered)
-        self.assertIn("inactive: interface ge-0/0/1.0 {\n", rendered)
-        self.assertIn("inactive: interface ge-0/0/2.0;\n", rendered)
-        self.assertIn("inactive: interface ge-0/0/3.0;\n", rendered)
-        self.assertIn("inactive: area 1 {", rendered)
-        inactive_area = rendered.split("inactive: area 1 {", 1)[1]
+        self.assertNotIn("inactive:", rendered)
+        self.assertNotIn("passive", rendered)
+        self.assertNotIn("ge-0/0/2.0", rendered)
+        self.assertNotIn("ge-0/0/3.0", rendered)
+        source = document.source
+        self.assertIn("inactive: interface ge-0/0/1.0 {\n", source)
+        self.assertIn("inactive: interface ge-0/0/2.0;\n", source)
+        self.assertIn("inactive: interface ge-0/0/3.0;\n", source)
+        inactive_area = source.split("inactive: area 1 {", 1)[1]
         self.assertIn("interface ge-0/0/2.0;", inactive_area)
         self.assertIn("interface ge-0/0/3.0;", inactive_area)
 
