@@ -60,6 +60,69 @@ class JunosAstTest(unittest.TestCase):
 
         self.assertEqual(document.hostname(), "current-name")
 
+    def test_junos_selector_configuration_preserves_tree_on_reparse(self):
+        document = JunosDocument(junos_config("selectors_with_slashes.cfg"))
+        groups = document.root.nodes[1]
+        self.assertEqual(document.root.nodes[0].header, "version 21.2R3-S7.7")
+        self.assertEqual(
+            [node.header for node in groups.nodes],
+            ["re0", "re1", "Exclude_RED_Link", "arp-150k", "COS_Group_Untrust"],
+        )
+        interfaces = groups.nodes[3].nodes[0]
+        self.assertEqual(
+            [node.header for node in interfaces.nodes], ["<ae*>", "<*/*/*>"]
+        )
+        self.assertIn(
+            "arp police-150k",
+            [node.header for node in interfaces.nodes[1].walk()],
+        )
+        rendered = document.render()
+        reparsed = JunosDocument(rendered)
+        self.assertEqual(
+            [
+                (node.kind, node.header, node.path)
+                for node in document.root.walk()
+            ],
+            [
+                (node.kind, node.header, node.path)
+                for node in reparsed.root.walk()
+            ],
+        )
+        self.assertEqual(reparsed.render(), rendered)
+
+    def test_junos_selectors_keep_comments_quotes_and_optional_semicolons(self):
+        for selector in ("<*/*/*>", "<ae*>", "<*>", "<ge-[0-9]/*/*>"):
+            for ending in (";", ""):
+                with self.subTest(selector=selector, ending=ending):
+                    document = JunosDocument(
+                        f"interfaces {{\n{selector} /* selector note */\n{{\n"
+                        "unit <*> {\n"
+                        f'description "literal /* and */"{ending} # leaf }} ;\n'
+                        "}\n}\n} # tail\n"
+                    )
+                    interface = document.root.nodes[0].nodes[0]
+                    self.assertEqual(interface.header, selector)
+                    self.assertEqual(interface.comment, "/* selector note */")
+                    self.assertEqual(interface.nodes[0].header, "unit <*>")
+                    leaf = interface.nodes[0].nodes[0]
+                    self.assertEqual(
+                        leaf.header, 'description "literal /* and */"'
+                    )
+                    self.assertEqual(leaf.comment, "# leaf } ;")
+                    self.assertEqual(document.root.nodes[0].comment, "# tail")
+                    rendered = document.render()
+                    self.assertEqual(JunosDocument(rendered).render(), rendered)
+
+    def test_junos_selector_does_not_hide_unclosed_real_comment(self):
+        for comment in ("/* unclosed", "/* <*/*/*>"):
+            with self.subTest(comment=comment):
+                with self.assertRaisesRegex(
+                    ValueError, "unclosed quote or comment"
+                ):
+                    JunosDocument(
+                        f"interfaces {{ <*/*/*> {{ unit <*>; }} }} {comment}"
+                    )
+
     def test_junos_hostname_returns_none_without_system_block(self):
         """没有 system/host-name 时应返回 None，而不是报错。"""
         document = JunosDocument(junos_config("hostname_absent.cfg"))

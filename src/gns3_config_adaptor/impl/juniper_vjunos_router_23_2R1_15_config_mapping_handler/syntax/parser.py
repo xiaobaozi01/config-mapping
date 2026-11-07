@@ -14,7 +14,7 @@ class JunosConfigurationParseError(ValueError):
 
 
 _TOKEN = re.compile(
-    r"""(?P<space>\s+)|(?P<line>\#[^\r\n]*)|(?P<block>/\*[\s\S]*?\*/)|(?P<quote>"(?:\\[\s\S]|[^"\\])*"|'(?:\\[\s\S]|[^'\\])*')|(?P<delimiter>[{};])|(?P<bracket>[\[\]])|(?P<word>[^\s{};\[\]"'\#/]+|/(?!\*))"""
+    r"""(?P<space>\s+)|(?P<line>\#[^\r\n]*)|(?P<block>/\*[\s\S]*?\*/)|(?P<quote>"(?:\\[\s\S]|[^"\\])*"|'(?:\\[\s\S]|[^'\\])*')|(?P<selector><[^\s<>;{}"']+>)|(?P<delimiter>[{};])|(?P<bracket>[\[\]])|(?P<word>[^\s{};\[\]"'\#/]+|/(?!\*))"""
 )
 
 
