@@ -10,6 +10,7 @@ from ..impl.common.domain.interface import (
     InterfaceKind,
     interface_parent,
 )
+from .external_aggregation import canonical_interface, verified_external_mlag
 from .interfaces import _report
 from .models import (
     MIN_PROFILE_INTERFACE_COUNT,
@@ -304,6 +305,29 @@ def _resolve_nni_endpoint(
     )
 
 
+def _resolve_external_endpoints(context, links, resolved, bundles):
+    """把只读华为信息加入链路两端的聚合关系索引。
+
+    无配置时保持未知；配置存在但缺少拓扑端口时明确报错。纯外部链路保持原样。
+    """
+    for link in links:
+        if not any(name in context.devices for name, _ in link.endpoints()):
+            continue
+        for name, port in link.endpoints():
+            info = context.external_aggregations.get(name)
+            if info is None:
+                continue
+            canonical = canonical_interface(port)
+            if canonical not in info.members:
+                context.errors.append(
+                    f"链接表第 {link.row} 行：设备 {name} 外部对端配置中未找到物理端口 {port}，"
+                    "外部聚合归属无法核验"
+                )
+                continue
+            resolved[(link.row, name)] = canonical
+            bundles[(link.row, name)] = info.members[canonical]
+
+
 class NNIHandler:
     """识别并保留聚合 NNI，再分配目标镜像物理接口。
 
@@ -338,6 +362,9 @@ class NNIHandler:
         ):
             return
 
+        self._reject_cross_peer_bundles(context, links, analysis)
+        if context.has_errors:
+            return
         component_rows = self._plan_components(context, links, analysis)
         if context.has_errors:
             return
@@ -369,7 +396,7 @@ class NNIHandler:
         seen_sources: set[tuple[str, str]] = set()
         for link in links:
             for name, _ in link.endpoints():
-                if name not in context.devices:
+                if (link.row, name) not in analysis.resolved:
                     continue
                 key = (name, analysis.resolved[(link.row, name)])
                 if key in seen_sources:
@@ -413,12 +440,9 @@ class NNIHandler:
     ) -> bool:
         """校验聚合归属、成员可识别性和混合链路处理。
 
-        先排除跨对端聚合，再按链路检查成员业务和模式是否可识别；两端模式
+        跨对端聚合已在规划前核验；这里按链路检查成员业务和模式是否可识别。两端模式
         是否能够实际建立协商不由本转换器审计。
         """
-        self._reject_cross_peer_bundles(context, links, analysis)
-        if context.has_errors:
-            return False
         for link in links:
             self._validate_link_modes(context, link, analysis)
         return not context.has_errors
@@ -431,18 +455,33 @@ class NNIHandler:
     ) -> None:
         """标记同一聚合被多个对端共同引用的情况。
 
-        当前没有可验证的 MC-LAG 还原条件，伪造拆分或复制会破坏业务语义。
+        外部华为配置可核验 M-LAG 时保留每台对端一条链路，否则仍拒绝跨设备聚合。
         """
         peers_by_bundle: dict[tuple[str, str], set[str]] = defaultdict(set)
         for link in links:
             for name, _ in link.endpoints():
                 bundle = analysis.bundles.get((link.row, name))
-                if bundle:
+                if bundle and name in context.devices:
                     peers_by_bundle[(name, bundle)].update(
                         peer for peer, _ in link.endpoints() if peer != name
                     )
         for (name, bundle), peers in peers_by_bundle.items():
             if len(peers) > 1:
+                if verified_external_mlag(
+                    name,
+                    bundle,
+                    analysis.bundles,
+                    context.external_aggregations,
+                    links,
+                ):
+                    context.add_event(
+                        "external-mlag-verified",
+                        f"设备 {name} 聚合 {bundle} 已核验外部 M-LAG，每台对端保留一条链路",
+                        device=name,
+                        interface=bundle,
+                        peers=sorted(peers),
+                    )
+                    continue
                 message = (
                     f"设备 {name} 聚合 {bundle} 跨多个对端，缺少可验证的 "
                     "MC-LAG 还原条件，不能自动拆分或复制"
@@ -619,9 +658,10 @@ class NNIHandler:
         resolved: dict[tuple[int, str], str] = {}
         bundles: dict[tuple[int, str], str | None] = {}
         uncompressible_rows: set[int] = set()
+        _resolve_external_endpoints(context, links, resolved, bundles)
         for link in links:
             for device_name, raw_interface in link.endpoints():
-                # 华为等仅作为拓扑对端的设备不加载配置，只适配本端。
+                # 外部设备只读关系已加入索引，不参与配置迁移。
                 if device_name not in context.devices:
                     continue
                 device = context.devices[device_name]
@@ -677,7 +717,7 @@ class NNIHandler:
         context.errors.extend(plan.warnings)
         for rows in plan.component_rows.values():
             if len(rows) > 1 and any(
-                name not in context.devices
+                (row, name) not in analysis.bundles
                 for row in rows
                 for link in links
                 if link.row == row

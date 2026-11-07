@@ -136,7 +136,7 @@ FinalInterfaceValidationHandler
 
 NNI 中的聚合链路识别先由纯函数 `plan_nni_components()` 生成不可变分组计划，校验成功后再分配目标端口并修改拓扑和配置。非 NNI 清理在接口改名前计算完整保留闭包，避免源名与目标名重叠造成误删。
 
-`TopologyPreflightHandler` 在任何配置改写前验证链路端点，只跳过端点缺失或厂商无法识别/未登记的链路，并为本端生成 `action=skip` 的 NNI 映射。Huawei 设备在输入加载阶段登记到 `external_devices`，按仅适配对端处理，不会使链路失效。后续非 NNI 清理和 NNI 映射消费有效链路及明确保留的 NNI 身份，避免误删停用链路端点。
+`TopologyPreflightHandler` 在任何配置改写前验证链路端点，只跳过端点缺失或厂商无法识别/未登记的链路，并为本端生成 `action=skip` 的 NNI 映射。Huawei 设备在输入加载阶段登记到 `external_devices`，按仅适配对端处理，不会使链路失效；已有配置只读提取到 `external_aggregations`，供 NNI 核验聚合归属和 M-LAG 配对，不参与配置改写。已确认 M-LAG 按每台华为分别压缩，保留每台一条链路。后续非 NNI 清理和 NNI 映射消费有效链路及明确保留的 NNI 身份，避免误删停用链路端点。
 
 `GroupExpansionHandler` 统一展开并校验所有活动的 group 引用及其依赖。未被活动配置引用的模板不参与求值；成功展开后删除 group 定义和对应控制语句，任一活动引用无法安全解析时整体回滚。
 

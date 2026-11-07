@@ -16,6 +16,7 @@ from ..impl.common.support.optimization_cache import (
     DEFAULT_CACHE_BUDGET,
     optimization_scope,
 )
+from .external_aggregation import parse_huawei_aggregation
 from .factory import parse_document
 from .input_normalization import normalize_input
 from .models import (
@@ -264,8 +265,8 @@ def _collect_devices(
     for device in topology.devices:
         if device.vendor == Vendor.HUAWEI:
             warnings.append(
-                f"设备 {device.name} 为华为设备，不参与配置自适应（无需配置文件），"
-                "仅作为拓扑对端保留"
+                f"设备 {device.name} 为华为设备，不参与配置自适应，"
+                "仅作为拓扑对端保留；如有配置，只读提取聚合关系"
             )
             external_devices.add(device.name)
             continue
@@ -281,6 +282,45 @@ def _collect_devices(
         except (OSError, ValueError) as exc:
             errors.append(str(exc))
     return device_contexts, warnings, errors, input_events, external_devices
+
+
+def _load_external_aggregations(
+    context: ConversionContext, config_dir: Path
+) -> None:
+    """从已有目录可选加载华为聚合配置。
+
+    未提供文件时保留未知状态；已指定的文件或已读取的聚合信息无效时明确报错。
+    """
+    for device in context.topology.devices:
+        if device.name not in context.external_devices:
+            continue
+        try:
+            path = _safe_config_path(
+                config_dir, device.config_file, device.name
+            )
+            info = parse_huawei_aggregation(
+                path.read_text(encoding="utf-8-sig")
+            )
+        except FileNotFoundError as exc:
+            if device.config_file:
+                context.errors.append(str(exc))
+            continue
+        except (OSError, ValueError) as exc:
+            context.errors.append(
+                f"设备 {device.name} 只读聚合信息加载失败: {exc}"
+            )
+            continue
+        context.external_aggregations[device.name] = info
+        context.add_event(
+            "external-aggregation-read",
+            f"设备 {device.name} 已只读提取聚合关系",
+            device=device.name,
+            physical_interfaces=len(info.members),
+            aggregated_members=sum(
+                value is not None for value in info.members.values()
+            ),
+            mlag_interfaces=len(info.mlags),
+        )
 
 
 def prepare_context(
@@ -307,7 +347,7 @@ def prepare_context(
         external_devices,
     ) = _collect_devices(topology, config_dir, profiles)
 
-    return ConversionContext(
+    context = ConversionContext(
         topology=topology,
         devices=device_contexts,
         washing_policy=washing_policy,
@@ -317,6 +357,8 @@ def prepare_context(
         external_devices=external_devices,
         strict_input_validation=strict_input_validation,
     )
+    _load_external_aggregations(context, config_dir)
+    return context
 
 
 def _prepare_timed_context(

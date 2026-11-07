@@ -16,6 +16,7 @@ from .performance import ConversionPerformance
 
 if TYPE_CHECKING:
     from ..impl.common.domain.contracts import VendorConfiguration
+    from .external_aggregation import ExternalAggregation
 
 RESERVED_NNI_INTERFACE_COUNT = 3
 MIN_PROFILE_INTERFACE_COUNT = RESERVED_NNI_INTERFACE_COUNT + 1
@@ -308,13 +309,15 @@ class ConversionContext:
     warnings: list[str] = field(default_factory=list)
     errors: list[str] = field(default_factory=list)
     events: list[dict[str, Any]] = field(default_factory=list)
-    # 拓扑中存在、本次不加载配置但仍作为链路端点参与转换的设备。
-    # 例如华为设备：只适配链路对端，不读取、不生成自身配置。
+    # 不参与配置自适应的拓扑端点；可以只读提取配置中的聚合归属。
     external_devices: set[str] = field(default_factory=set)
     # 保留的业务校验策略；不会启用已移除的源配置语义审计。
     strict_input_validation: bool = False
     performance: ConversionPerformance = field(
         default_factory=ConversionPerformance, repr=False, compare=False
+    )
+    external_aggregations: dict[str, ExternalAggregation] = field(
+        default_factory=dict
     )
 
     def add_event(

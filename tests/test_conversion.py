@@ -766,7 +766,7 @@ class ConversionTest(unittest.TestCase):
             )
 
     def test_nni_capacity_excludes_three_reserved_interfaces(self):
-        topology, config_dir = conversion_fixture("iosxr_mlag")
+        topology, config_dir = conversion_fixture("huawei_peer")
         with tempfile.TemporaryDirectory() as directory:
             root = Path(directory)
             profile_path = root / "profiles.yaml"
