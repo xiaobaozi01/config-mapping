@@ -13,8 +13,8 @@ from ....common.domain.interface import (
 from ....common.domain.outcomes import InterfaceAdaptationOutcome
 from ...support.interface_commands import is_uni_type_attribute
 from ...syntax.rewrite_helpers import append_top_level
-from ...syntax.semantics import interface_reference_candidates
 from .access import find_interface_node
+from .business import l2vpn_attachment_names
 from .transform import ensure_parent_interface, remove_interface
 
 _POS_INTERFACE = re.compile(r"^pos\d", re.I)
@@ -97,26 +97,12 @@ def _validate(block, vlan, inner, outcome):
         outcome.errors.append(f"{block.interface_name}: QinQ 内层 VLAN 非法")
 
 
-def _pos_l2_attachment(document, source):
-    """检查 POS 是否被 L2VPN 作为接入电路引用。
-
-    使用规范接口候选匹配，避免把描述文本或相似接口名当成二层绑定。
-    """
-    return any(
-        source.lower() in interface_reference_candidates(node.header)
-        for root in document.root.nodes
-        if re.match(r"^l2vpn\b", root.header, re.I)
-        for node in root.walk()
-        if re.match(r"^interface\s", node.header, re.I)
-    )
-
-
 def _pos_migration_error(document, block, source, encapsulations, inner_vlan):
     """拒绝依赖原 POS 封装或地址协商的业务。
 
     首个阻断原因用于设备诊断，确认静态三层业务后才允许修改暂存树。
     """
-    if block.l2transport or _pos_l2_attachment(document, source):
+    if block.l2transport or source.lower() in l2vpn_attachment_names(document):
         return "POS 二层专线无法迁移到三层以太网 UNI"
     if interface_unit(source) is not None or inner_vlan is not None:
         return "POS 子接口或标签业务无法按普通三层 UNI 迁移"

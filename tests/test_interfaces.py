@@ -100,6 +100,24 @@ class CiscoInterfaceBusinessTest(unittest.TestCase):
         self.assertNotIn("FutureVirtual0.500", business)
         self.assertNotIn("BVI500", business)
 
+    def test_xconnect_business_comes_from_l2vpn_attachment(self):
+        document = CiscoDocument(
+            "interface GigabitEthernet0/0/0/1\n"
+            " description ATTACHMENT\n!\n"
+            "interface GigabitEthernet0/0/0/2\n"
+            " xconnect 192.0.2.2 200 encapsulation mpls\n!\n"
+            "l2vpn\n xconnect group TEST\n  p2p ACCESS\n"
+            "   interface Gi0/0/0/1\n"
+            "   neighbor ipv4 192.0.2.1 pw-id 100\n!\nend\n"
+        )
+
+        analysis = document.interfaces.analysis
+        self.assertEqual(
+            analysis.business_interface_names(), {"GigabitEthernet0/0/0/1"}
+        )
+        self.assertTrue(analysis.interface_has_business("Gi0/0/0/1"))
+        self.assertFalse(analysis.interface_has_business("Gi0/0/0/2"))
+
     def test_bvi_number_is_not_used_as_vlan(self):
         """BVI 编号不参与 VLAN 推断，业务标签只能来自显式广播域关系。"""
         document = CiscoDocument(
@@ -147,6 +165,55 @@ class CiscoInterfaceBusinessTest(unittest.TestCase):
 
 
 class JunosInterfaceClassificationTest(unittest.TestCase):
+
+    def test_junos_business_uses_actual_family_and_encapsulation_statements(
+        self,
+    ):
+        document = JunosDocument(
+            'interfaces { ge-0/0/1 { description "family inet"; }'
+            " ge-0/0/2 { unit 0 { family iso; family mpls; } }"
+            " ge-0/0/3 { unit 0 { family tcc; } }"
+            " ge-0/0/4 { unit 0 { family vpls; } }"
+            " so-0/0/0 { encapsulation cisco-hdlc-ccc; unit 0; } }"
+        )
+
+        self.assertEqual(
+            document.interfaces.analysis.business_interface_names(),
+            {"ge-0/0/2.0", "ge-0/0/3.0", "ge-0/0/4.0", "so-0/0/0.0"},
+        )
+
+    def test_junos_gateway_ignores_vlan_words_in_description(self):
+        document = JunosDocument(
+            "interfaces { ge-0/0/1 { unit 10 { family inet;"
+            ' description "vlan members BLUE;"; } }'
+            " ge-0/0/2 { unit 0 { family ethernet-switching {"
+            " vlan { members BLUE100; } } } }"
+            " irb { unit 10 { family inet; } unit 100 { family inet; }"
+            " unit 200 { family inet; } unit 300 { family inet; } } }"
+            " vlans { BLUE { vlan-id 10; l3-interface irb.10; }"
+            " OTHER { vlan-id 100; l3-interface irb.100; }"
+            " BLUE100 { vlan-id 200; l3-interface irb.200;"
+            ' description "l3-interface irb.300;"; } }'
+        )
+
+        self.assertEqual(
+            document.interfaces.analysis.business_interface_names(),
+            {"ge-0/0/1.10", "ge-0/0/2.0", "irb.200"},
+        )
+
+    def test_junos_member_business_checks_effective_l2circuit_references(self):
+        document = JunosDocument(
+            "interfaces { ge-0/0/1 { gigether-options { 802.3ad ae10; } }"
+            " ge-0/0/2 { gigether-options { 802.3ad ae10; } } }"
+            " protocols { l2circuit { neighbor 192.0.2.2 {"
+            " interface ge-0/0/1 { virtual-circuit-id 10; }"
+            " inactive: interface ge-0/0/2 { virtual-circuit-id 20; } } } }"
+        )
+        analysis = document.interfaces.analysis
+
+        self.assertEqual(analysis.business_interface_names(), {"ge-0/0/1"})
+        self.assertTrue(analysis.interface_has_business("ge-0/0/1"))
+        self.assertFalse(analysis.interface_has_business("ge-0/0/2"))
 
     def test_nni_rename_keeps_media_mtu_on_parent(self):
         document = JunosDocument(

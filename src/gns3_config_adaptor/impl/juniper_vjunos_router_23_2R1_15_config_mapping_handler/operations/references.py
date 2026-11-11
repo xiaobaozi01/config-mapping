@@ -2,7 +2,7 @@
 
 import re
 
-from ..syntax.ast import JuniperNode
+from ..syntax.ast import JuniperNode, is_prose_statement
 
 
 class _ReferenceRewriter:
@@ -57,7 +57,11 @@ class _ReferenceRewriter:
         rebuilt = []
         for child in node.children:
             # inactive/protect 是配置语法前缀，仍需改写；逻辑删除和注释不参与。
-            if not child.active or child.is_comment_only:
+            if (
+                not child.active
+                or child.is_comment_only
+                or is_prose_statement(child.header)
+            ):
                 rebuilt.append(child)
                 continue
             variants = (

@@ -14,9 +14,28 @@ from ...document import CiscoDocument
 from .access import interface_nodes
 
 _MEMBER_BUSINESS = re.compile(
-    r"^(?:ipv[46]\s+(?:address|unnumbered|enable)|vrf|l2transport|xconnect)\b",
+    r"^(?:ipv[46]\s+(?:address|unnumbered|enable)|vrf|l2transport)\b",
     re.IGNORECASE,
 )
+_L2VPN_ATTACHMENT = re.compile(r"^(?:backup\s+)?interface\s+(.+)$", re.I)
+
+
+def l2vpn_attachment_names(document: CiscoDocument) -> frozenset[str]:
+    """返回活动 L2VPN 配置引用的规范接入接口名。
+
+    接口全名和缩写归一后再比较，结果随文档修订失效。
+    """
+    return document._read_interface_analysis(
+        "l2vpn_attachment_names",
+        lambda: frozenset(
+            document._parser.canonical_interface(match.group(1)).lower()
+            for block in document.root.nodes
+            if re.match(r"^l2vpn\b", block.header, re.I)
+            for node in block.walk()
+            if (match := _L2VPN_ATTACHMENT.fullmatch(node.header))
+        ),
+        frozenset,
+    )
 
 
 def bridge_domain_bindings(
@@ -113,7 +132,7 @@ def gateway_inner_vlan_hints(
 def interface_has_business(document: CiscoDocument, name: str) -> bool:
     """判断物理聚合成员是否承载独立业务。
 
-    地址、VRF、L2 业务和子接口都会阻止成员压缩。
+    地址、VRF、L2VPN 接入绑定和子接口都会阻止成员压缩。
     """
     parent = interface_parent(document._parser.canonical_interface(name))
     parser = document._parser
@@ -128,7 +147,7 @@ def interface_has_business(document: CiscoDocument, name: str) -> bool:
                 return True
         elif interface_parent(block_name) == parent:
             return True
-    return False
+    return parent.lower() in l2vpn_attachment_names(document)
 
 
 def bundle_binding_is_ambiguous(document: CiscoDocument, name: str) -> bool:
@@ -181,8 +200,7 @@ def business_interface_names(document: CiscoDocument) -> set[str]:
     mappable_kinds = {InterfaceKind.PHYSICAL, InterfaceKind.BUNDLE}
     active: set[str] = set()
     direct = re.compile(
-        r"^(?:ipv4\s+(?:address|unnumbered)\b|ipv6\s+address\b|"
-        r"xconnect\b|ethernet-services\b)",
+        r"^(?:ipv4\s+(?:address|unnumbered)|ipv6\s+address|ethernet-services)\b",
         re.IGNORECASE,
     )
     for block in interface_nodes(document):
@@ -198,8 +216,11 @@ def business_interface_names(document: CiscoDocument) -> set[str]:
             active.add(name)
 
     external_text = external_configuration_text(document)
-    referenced = referenced_interface_names(
-        external_text, known | {spec.parent for spec in specs}
+    names = known | {spec.parent for spec in specs}
+    referenced = referenced_interface_names(external_text, names)
+    l2vpn_attachments = l2vpn_attachment_names(document)
+    referenced.update(
+        name for name in names if name.lower() in l2vpn_attachments
     )
     for name in known & referenced:
         if kinds.get(name) in mappable_kinds:

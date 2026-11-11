@@ -18,6 +18,7 @@ from .access import (
     unit_number,
     walk_effective_nodes,
 )
+from .business import l2vpn_attachment_names
 from .transform import ensure_parent_interface, remove_interface
 
 _TAGS = re.compile(
@@ -36,19 +37,8 @@ _SO_ADDRESS_DEPENDENCY = re.compile(
     r"on-demand-ip-address)\b"
 )
 _SO_L2_COMMAND = re.compile(
-    r"^(?:family\s+(?:ccc|tcc|bridge|ethernet-switching)|"
+    r"^(?:family\s+(?:ccc|tcc|vpls|bridge|ethernet-switching)|"
     r"(?:input|output)-vlan-map|dlci|multilink-options)\b"
-)
-_L2_REFERENCE_SCOPES = frozenset(
-    {
-        "l2circuit",
-        "l2vpn",
-        "connections",
-        "bridge-domains",
-        "vlans",
-        "vpls",
-        "evpn",
-    }
 )
 _IP_FAMILY = re.compile(r"^family\s+inet6?$")
 _STATIC_ADDRESS = re.compile(r"^address\s+[\da-f:.]+/\d+(?:\s|$)", re.I)
@@ -114,8 +104,14 @@ def _validate(document, source, payload, vlan, inner, outcome):
                 "vlan-bridge",
             }:
                 outcome.errors.append(f"{source}: 不支持源 unit 封装 {command}")
+            else:
+                l2 = True
         elif command.startswith(("input-vlan-map", "output-vlan-map")):
             maps.append(node)
+        elif re.fullmatch(r"family\s+(?:tcc|vpls)", command):
+            outcome.errors.append(
+                f"{source}: 共享以太网 UNI 暂不支持 {command}"
+            )
         l2 = l2 or bool(
             re.match(r"family\s+(?:bridge|ethernet-switching|ccc)\b", command)
         )
@@ -157,25 +153,6 @@ def _validate_maps(document, source, maps, outcome):
     }
 
 
-def _so_l2_attachment(document, source):
-    """检查逻辑接口是否被配置为二层电路或桥域的成员。
-
-    同时检查父口和 unit 的完整接口名，仅在活动的二层配置作用域中查找。
-    """
-    references = {
-        f"interface {source.lower()}",
-        f"interface {interface_parent(source).lower()}",
-    }
-    return any(
-        any(
-            document._parser.base_header(ancestor) in _L2_REFERENCE_SCOPES
-            for ancestor in node.path
-        )
-        for node in walk_effective_nodes(document, document.root)
-        if normalized_command(_effective(document, node)) in references
-    )
-
-
 def _so_migration_error(document, source, statements, encapsulations, inner):
     """验证 so 的业务可用配置中的地址直接迁移。
 
@@ -183,7 +160,7 @@ def _so_migration_error(document, source, statements, encapsulations, inner):
     """
     if any(
         _SO_L2_COMMAND.match(command) for command in statements.values()
-    ) or _so_l2_attachment(document, source):
+    ) or {source, interface_parent(source)} & l2vpn_attachment_names(document):
         return "so 二层专线或业务无法迁移到三层以太网 UNI"
     if inner is not None or any(
         _TAGS.match(cmd) for cmd in statements.values()

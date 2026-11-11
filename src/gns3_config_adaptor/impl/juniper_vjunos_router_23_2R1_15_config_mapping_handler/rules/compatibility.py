@@ -19,6 +19,7 @@ from ..operations.interfaces.access import (
     unit_nodes,
     unit_number,
 )
+from ..syntax.ast import is_prose_statement
 
 if TYPE_CHECKING:
     from ..document import JuniperNode, JunosDocument
@@ -131,7 +132,7 @@ def _validate_reference_bindings(
     }
     for node, path in _walk(document, document.root):
         header = document._parser.base_header(node.header)
-        if header.startswith("description "):
+        if is_prose_statement(header):
             continue
         # 全局 interfaces 容器本身不是引用，已移除定义不会出现在有效遍历中。
         refs = referenced_interface_names(header, removed)

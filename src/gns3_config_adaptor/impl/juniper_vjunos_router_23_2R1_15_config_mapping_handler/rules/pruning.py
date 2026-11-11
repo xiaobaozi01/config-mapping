@@ -23,6 +23,7 @@ from ..operations.interfaces.business import (
     collect_active_vlans,
     expand_vlan_tokens,
 )
+from ..syntax.ast import is_prose_statement
 from .compatibility import _validate_pruned_references, _walk
 
 if TYPE_CHECKING:
@@ -430,9 +431,10 @@ class _JunosPruner:
 
         只检查当前语句，避免父节点误吞子树引用而提前删除本应单独审计的配置。
         """
-        return referenced_interface_names(
-            self.document._parser.base_header(node.header), self.removed
-        )
+        header = self.document._parser.base_header(node.header)
+        if is_prose_statement(header):
+            return set()
+        return referenced_interface_names(header, self.removed)
 
     def subtree_references(self, node: JuniperNode) -> set[str]:
         """返回节点及其有效子树中的已删除接口引用。
@@ -441,10 +443,7 @@ class _JunosPruner:
         """
         found = self.references(node)
         for child, _ in _walk(self.document, node):
-            if not self.document._parser.base_header(child.header).startswith(
-                "description "
-            ):
-                found.update(self.references(child))
+            found.update(self.references(child))
         return found
 
     def _prune_static_next_hops(self, node, path, header) -> set[str]:

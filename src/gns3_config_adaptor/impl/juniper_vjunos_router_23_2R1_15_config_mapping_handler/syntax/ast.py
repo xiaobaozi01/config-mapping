@@ -14,6 +14,17 @@ def base_header(header):
     return value
 
 
+def is_prose_statement(header: str) -> bool:
+    """识别包含说明文字的 Junos 语句。
+
+    说明内容中的接口名称不构成业务依赖，引用改写也应保留这些文字。
+    """
+    words = base_header(header).split(maxsplit=1)
+    return bool(
+        words and words[0] in {"description", "message", "announcement"}
+    )
+
+
 class JuniperNode(ConfigNode):
     """表示 Junos 语句，并与分号等结构标点解耦。
 

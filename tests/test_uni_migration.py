@@ -342,6 +342,55 @@ def test_sonet_uni_blocks_services_that_need_original_link(
     assert not (output / "topology-adapted.xlsx").exists()
 
 
+def test_junos_uni_ignores_interface_names_in_prose_through_conversion():
+    vendor = "juniper_junos"
+    context, device = uni_context(vendor)
+    source = device.document.render().replace(
+        "interfaces {\n",
+        'interfaces {\n    ge-0/0/60 { description "family inet"; }\n',
+        1,
+    )
+    description = 'description "Use ge-0/0/60 or ge-0/0/3.0";'
+    source = source.replace(
+        "instance-type vrf;", f"instance-type vrf; {description}", 1
+    )
+    source += 'system { login { message "Use ge-0/0/60"; } }\n'
+    device.document = parse_document(vendor, source)
+
+    build_default_pipeline().execute(context)
+
+    assert not context.has_errors, context.errors + device.errors
+    assert description in device.document.render()
+    assert any(
+        m.source_interface == "ge-0/0/60" and m.action == "remove-bare"
+        for m in device.mappings
+    )
+    assert device.replacement_map["ge-0/0/3.0"]
+
+
+def test_junos_sonet_ccc_without_external_reference_is_not_removed_as_bare():
+    vendor = "juniper_junos"
+    context, device = uni_context(vendor)
+    source = device.document.render().replace(
+        "interfaces {\n",
+        "interfaces {\n    so-0/0/60 { encapsulation cisco-hdlc-ccc; unit 0; }\n",
+        1,
+    )
+    device.document = parse_document(vendor, source)
+
+    build_default_pipeline().execute(context)
+
+    assert context.has_errors
+    assert any(
+        "so-0/0/60.0" in error and "cisco-hdlc-ccc" in error
+        for error in device.errors
+    )
+    assert not any(
+        m.source_interface == "so-0/0/60.0" and m.action == "remove-bare"
+        for m in device.mappings
+    )
+
+
 def test_original_vlan_reservations_are_not_stolen():
     specs = [
         InterfaceSpec("A", "A", None, None, InterfaceKind.PHYSICAL),
