@@ -229,6 +229,113 @@ def test_failed_uni_conversion_publishes_no_deployment_files(tmp_path):
 
 
 @pytest.mark.parametrize("vendor", ["cisco_iosxr", "juniper_junos"])
+@pytest.mark.parametrize("reuse_as", [MappingRole.NNI, MappingRole.UNI])
+def test_uni_removes_member_dependencies_before_name_reuse(vendor, reuse_as):
+    context, device = uni_context(vendor)
+    cisco = vendor == "cisco_iosxr"
+    original_member = "GigabitEthernet0/0/0/40" if cisco else "ge-0/0/40"
+    service = "Bundle-Ether20.200" if cisco else "ae20.200"
+    source = device.document.render()
+    if reuse_as == MappingRole.UNI:
+        member = device.profile.uni_parent
+        source = source.replace(original_member, member)
+    else:
+        member = original_member
+        device.profile = replace(
+            device.profile, interfaces=[member, *device.profile.interfaces[1:]]
+        )
+    if cisco:
+        source = source.replace(
+            "\nend\n",
+            f"\nrouter ospf 90\n area 0\n  interface {member}\n"
+            f"  interface {service}\n!\nend\n",
+        )
+    else:
+        source += (
+            f"protocols {{ ospf {{ area 0 {{ interface {member}; "
+            f"interface {service}; }} }} }}\n"
+            f"routing-options {{ static {{ route 10.20.0.0/24 {{ "
+            f"next-hop [ {member} 172.16.1.2 ]; "
+            f"qualified-next-hop {member} {{ preference 10; }} "
+            f"qualified-next-hop {service} {{ preference 20; }} }} }} }}\n"
+        )
+    device.document = parse_document(vendor, source)
+
+    build_default_pipeline().execute(context)
+
+    assert not context.has_errors, device.errors
+    output = device.document.render()
+    assert member in {
+        spec.parent
+        for spec in device.document.interfaces.analysis.interface_specs()
+    }
+    assert f"  interface {member}" + ("\n" if cisco else ";") not in output
+    target = next(
+        mapping.target_interface
+        for mapping in device.mappings
+        if mapping.source_interface == service and mapping.action == "map"
+    )
+    assert f"  interface {target}" + ("\n" if cisco else ";") in output
+    assert "172.16.1.1" in output
+    if not cisco:
+        assert "route 10.20.0.0/24 {" in output
+        assert "next-hop 172.16.1.2;" in output
+        assert f"qualified-next-hop {member} {{" not in output
+        assert (
+            f"qualified-next-hop {target} {{\n                preference 20;"
+            in output
+        )
+        assert "preference 10;" not in output
+    assert any(
+        event["kind"] == "uni-migration"
+        and event.get("action") == "remove"
+        and "ospf" in str(event["path"])
+        and member
+        in event.get("source_interfaces", event.get("interfaces", []))
+        for event in context.events
+    )
+
+
+@pytest.mark.parametrize(
+    ("vendor", "fixture"),
+    [("cisco_iosxr", "iosxr_bundle"), ("juniper_junos", "junos_bundle")],
+)
+def test_unknown_uni_member_reference_blocks_deployment(
+    vendor, fixture, tmp_path
+):
+    context, device = uni_context(vendor)
+    cisco = vendor == "cisco_iosxr"
+    member = device.profile.uni_parent
+    original_member = "GigabitEthernet0/0/0/40" if cisco else "ge-0/0/40"
+    source = device.document.render().replace(original_member, member)
+    if cisco:
+        source = source.replace(
+            "\nend\n",
+            f"\ncustom-service LOST\n bind-interface {member}\n!\nend\n",
+        )
+    else:
+        source += f"custom-service LOST {{ bind-interface {member}; }}\n"
+    config_dir = tmp_path / "input"
+    config_dir.mkdir()
+    for name, item in context.devices.items():
+        config = source if item is device else item.document.render()
+        (config_dir / f"{name}.cfg").write_text(config)
+
+    output = tmp_path / "output"
+    result = convert(FIXTURES / fixture / "topology.xlsx", config_dir, output)
+
+    assert result.has_errors
+    assert any(
+        event["kind"] == "uni-migration-error"
+        and f"custom-service LOST / bind-interface {member}" in event["message"]
+        for event in result.events
+    )
+    assert (output / "report.json").exists()
+    assert not (output / "configs").exists()
+    assert not (output / "topology-adapted.xlsx").exists()
+
+
+@pytest.mark.parametrize("vendor", ["cisco_iosxr", "juniper_junos"])
 def test_uni_parent_can_originally_be_an_active_nni_source(vendor):
     context, device = uni_context(vendor)
     original = (

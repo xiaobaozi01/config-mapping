@@ -154,7 +154,35 @@ class UNIPreparationHandler:
                 device=name,
                 source_interface=parent,
             )
-        self._stage(device, candidates, sources, members, vlans)
+        removed = self._stage(device, candidates, sources, members, vlans)
+        self._clean_removed_dependencies(context, name, device, removed)
+
+    @staticmethod
+    def _clean_removed_dependencies(context, name, device, removed):
+        """裁剪真正删除的接口依赖，拒绝无法确认的残留引用。
+
+        在 NNI 落位前执行，使旧引用不会因目标接口复用名称而被保留。
+        """
+        if not removed:
+            return
+        outcome = device.document.pruning.prune_interface_dependencies(
+            removed,
+            strict_input_validation=context.strict_input_validation,
+        )
+        for reference in sorted(
+            outcome.deferred_interface_references,
+            key=lambda item: (item.path, item.interface, item.rule_id),
+        ):
+            message = (
+                f"无法安全清理已删除 UNI 接口 {reference.interface} 的引用："
+                f"{' / '.join(reference.path)}（{reference.reason}）"
+            )
+            if message not in outcome.errors:
+                outcome.errors.append(message)
+            outcome.diagnostics.append(
+                dict(level="error", message=message, rule_id=reference.rule_id)
+            )
+        _report(context, name, EventKind.UNI_MIGRATION, outcome)
 
     @staticmethod
     def _check_sources(device, candidates, members):
@@ -194,8 +222,8 @@ class UNIPreparationHandler:
                 )
 
     @staticmethod
-    def _stage(device, candidates, sources, members, vlans):
-        """暂存源父树，删除裸口及聚合成员，并保存目标规划。
+    def _stage(device, candidates, sources, members, vlans) -> set[str]:
+        """暂存源父树，保存目标规划并返回实际裁剪的源接口名。
 
         只对有业务的父树建立暂存名，原名称全部释放后再允许 NNI 写入。
         """
@@ -228,25 +256,43 @@ class UNIPreparationHandler:
                     spec.kind,
                 )
             )
+        return UNIPreparationHandler._remove_unmigrated(
+            device, candidates, sources, members, set(parents)
+        )
+
+    @staticmethod
+    def _remove_unmigrated(
+        device, candidates, sources, members, source_parents
+    ) -> set[str]:
+        """删除裸口和聚合成员，收集没有迁移目标的接口名。
+
+        有业务迁移的父口引用由后续映射或校验处理，裸子口仍需清理依赖。
+        """
+        transform = device.document.interfaces.transform
         source_names = {spec.name for spec in sources}
         candidate_parents = {spec.parent for spec in candidates}
+        removed = candidate_parents - source_parents
+        for parent in sorted(removed):
+            transform.remove(parent, include_children=True)
         for spec in candidates:
             device.removed_interfaces.update({spec.name, spec.parent})
             if spec.name not in source_names:
                 _record_removal(device, spec.name, "未承载独立业务的 UNI 接口")
-            if spec.parent not in placeholders:
-                transform.remove(spec.parent, include_children=True)
+                if spec.name not in source_parents:
+                    removed.add(spec.name)
         for member, bundle in members.items():
             if bundle in candidate_parents:
                 transform.remove(member, include_children=True)
+                removed.add(member)
                 _record_removal(
                     device,
                     member,
                     "UNI 聚合扁平化，删除物理成员",
                     MappingAction.REMOVE
-                    if bundle in parents
+                    if bundle in source_parents
                     else MappingAction.REMOVE_BARE,
                 )
+        return removed
 
 
 class UNIHandler:

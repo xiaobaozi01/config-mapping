@@ -29,6 +29,23 @@ if TYPE_CHECKING:
     from ..document import JuniperNode, JunosDocument
 
 
+_STATIC_ROUTE_ACTIONS = frozenset(
+    {
+        "next-hop",
+        "qualified-next-hop",
+        "next-table",
+        "iso-net",
+        "lsp-next-hop",
+        "p2mp-ldp-next-hop",
+        "p2mp-lsp-next-hop",
+        "static-lsp-next-hop",
+        "discard",
+        "reject",
+        "receive",
+    }
+)
+
+
 def _address(value: str) -> str | None:
     """把接口地址文本归一化为主机地址。
 
@@ -420,7 +437,7 @@ class _JunosPruner:
     def subtree_references(self, node: JuniperNode) -> set[str]:
         """返回节点及其有效子树中的已删除接口引用。
 
-        静态路由可能在子语句保存下一跳或出接口，汇总检查后才能安全删除父节点。
+        保留未知引用供校验报告，避免整块删除时掩盖无法识别的依赖。
         """
         found = self.references(node)
         for child, _ in _walk(self.document, node):
@@ -429,6 +446,74 @@ class _JunosPruner:
             ):
                 found.update(self.references(child))
         return found
+
+    def _prune_static_next_hops(self, node, path, header) -> set[str]:
+        """从普通下一跳语句中移除失效接口。
+
+        列表中仍有其他成员时重写该语句，保留原有顺序并记录删除项。
+        """
+        match = re.fullmatch(
+            r"next-hop\s+(?:\[([^\[\]]+)\]|([^\s\[\]]+))", header
+        )
+        if not match or node.is_block:
+            return set()
+        values = (match.group(1) or match.group(2)).split()
+        retained = []
+        removed: set[str] = set()
+        for value in values:
+            refs = referenced_interface_names(value, self.removed)
+            if refs:
+                removed.update(refs)
+            else:
+                retained.append(value)
+        if not removed:
+            return removed
+        reason = "静态路由下一跳接口已删除"
+        if not retained:
+            self.record(node, path, reason, removed)
+            return removed
+        target = (
+            retained[0] if len(retained) == 1 else f"[ {' '.join(retained)} ]"
+        )
+        prefix = node.header.removesuffix(header)
+        node.header = f"{prefix}next-hop {target}"
+        self.result.changes.append(
+            {
+                "action": "remove-members",
+                "path": " / ".join(path),
+                "reason": reason,
+                "interfaces": sorted(removed),
+            }
+        )
+        return removed
+
+    def _prune_static_route(self, route, path) -> None:
+        """独立裁剪每个下一跳，在失去全部转发动作时移除路由。
+
+        无法识别的剩余接口引用交由后续校验报告，保留其原配置路径。
+        """
+        parser = self.document._parser
+        removed: set[str] = set()
+        has_action = False
+        for child in route.nodes:
+            if not parser.is_effective(child):
+                continue
+            header = parser.base_header(child.header)
+            keyword = header.split(maxsplit=1)[0]
+            child_path = (*path, header)
+            if keyword == "next-hop":
+                removed.update(
+                    self._prune_static_next_hops(child, child_path, header)
+                )
+            elif keyword == "qualified-next-hop" and (
+                refs := self.references(child)
+            ):
+                self.record(child, child_path, "静态路由下一跳接口已删除", refs)
+                removed.update(refs)
+            if keyword in _STATIC_ROUTE_ACTIONS and parser.is_effective(child):
+                has_action = True
+        if removed and not has_action and not self.subtree_references(route):
+            self.record(route, path, "静态路由已无有效下一跳", removed)
 
     def lost_source(self, scope: tuple[str, ...], address: str | None) -> bool:
         """判断地址是否已删除且没有其他保留接口继续提供。
@@ -562,13 +647,10 @@ class _JunosPruner:
             if not path and header == "interfaces":
                 # 接口定义已经处理，保留接口内部的未知依赖交给最终审计。
                 continue
-            refs = self.references(child)
-            is_static = "static" in path and re.match(r"route\s+", header)
-            if is_static and (route_refs := self.subtree_references(child)):
-                self.record(
-                    child, child_path, "静态路由显式出接口已删除", route_refs
-                )
+            if path and path[-1] == "static" and re.match(r"route\s+", header):
+                self._prune_static_route(child, child_path)
                 continue
+            refs = self.references(child)
             interface_match = re.fullmatch(r"interface\s+(.+)", header)
             known_interface_context = (
                 "protocols" in path
