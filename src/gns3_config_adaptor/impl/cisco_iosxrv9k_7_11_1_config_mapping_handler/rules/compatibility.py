@@ -11,6 +11,7 @@ from ...common.domain.interface import (
 from ...common.semantic_identity.models import MergeKind
 from ..operations.interfaces.access import interface_nodes
 from ..support.identity import resolve_cisco_identity
+from ..support.interface_commands import AGGREGATION_ATTRIBUTES as _AGGREGATION
 from .support import (
     CiscoRuleVisitor,
     CiscoVisitorRule,
@@ -20,7 +21,6 @@ from .support import (
     format_fragment,
 )
 
-_AGGREGATION = re.compile(r"^(?:no\s+)?(?:bundle\b|lacp\b|aggregated-)", re.I)
 _ETHERTYPE = re.compile(
     r"^(?:ethernet\s+)?(?:dot1q\s+)?tunneling\s+ethertype\b", re.I
 )
@@ -497,8 +497,10 @@ class CompatibleCommandsVisitor(CiscoRuleVisitor):
             ):
                 outcome.errors.append(f"接口 {name} 残留不兼容属性: {command}")
             if not _FAMILIAR.match(command) and not _ETHERTYPE.match(command):
-                outcome.warnings.append(
-                    f"接口 {name} 命令族 {command.split()[0]} 未覆盖兼容规则，已保留，需镜像核验"
+                message = f"接口 {name} 命令族 {command.split()[0]} 未覆盖兼容规则，已保留，需镜像核验"
+                outcome.warnings.append(message)
+                outcome.diagnostics.append(
+                    {"level": "warning", "message": message, "interface": name}
                 )
         return None
 

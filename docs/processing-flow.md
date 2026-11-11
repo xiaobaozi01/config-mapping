@@ -42,7 +42,8 @@ Excel 至少包含两个工作表：
 
 ```text
 interfaces[:-3]  → NNI 可分配接口
-interfaces[-3:]  → 三个空置预留接口
+interfaces[-2]   → UNI 共享物理口
+interfaces[-3], interfaces[-1] → 两个预留接口
 ```
 
 ### 2.2 输出
@@ -85,9 +86,11 @@ output/
         ↓
 展开并校验全部活动 Group 引用
         ↓
-计算 NNI 保留闭包并清理非 NNI
+计算原始 NNI 保留闭包并暂存 UNI 源树
         ↓
 处理 NNI 和聚合成员压缩
+        ↓
+迁移 UNI 业务到共享物理口的子接口
         ↓
 更新协议和策略中的接口引用
         ↓
@@ -113,13 +116,13 @@ GroupExpansionHandler
         ↓
 PreconfiguredInterfaceCleanupHandler
         ↓
-SourceSemanticValidationHandler
-        ↓
 InterfaceClassificationHandler
         ↓
-NonNNICleanupHandler
+UNIPreparationHandler
         ↓
 NNIHandler
+        ↓
+UNIHandler
         ↓
 ReferenceRewriteHandler
         ↓
@@ -132,11 +135,11 @@ SimulationAdaptationHandler
 FinalInterfaceValidationHandler
 ```
 
-任一阶段产生错误后，责任链停止，不继续执行后续阶段。源语义阶段只在映射前检查一次；默认报告 warning，严格模式直接阻断。最终阶段只执行转换完整性和目标兼容校验，不重复执行源语义规则。
+任一阶段产生错误后，责任链停止，不继续执行后续阶段。原始源语义审计已移除；UNI 迁移只检查安全转换所需的封装和类型约束。最终阶段只执行转换完整性和目标兼容校验，不重复执行源语义规则。
 
-NNI 中的聚合链路识别先由纯函数 `plan_nni_components()` 生成不可变分组计划，校验成功后再分配目标端口并修改拓扑和配置。非 NNI 清理在接口改名前计算完整保留闭包，避免源名与目标名重叠造成误删。
+NNI 中的聚合链路识别先由纯函数 `plan_nni_components()` 生成不可变分组计划，校验成功后再分配目标端口并修改拓扑和配置。UNI 准备阶段在接口改名前计算完整保留闭包并暂存源树，避免源名与 NNI 目标名重叠时混合业务。
 
-`TopologyPreflightHandler` 在任何配置改写前验证链路端点，只跳过端点缺失或厂商无法识别/未登记的链路，并为本端生成 `action=skip` 的 NNI 映射。Huawei 设备在输入加载阶段登记到 `external_devices`，按仅适配对端处理，不会使链路失效；已有配置只读提取到 `external_aggregations`，供 NNI 核验聚合归属和 M-LAG 配对，不参与配置改写。已确认 M-LAG 按每台华为分别压缩，保留每台一条链路。后续非 NNI 清理和 NNI 映射消费有效链路及明确保留的 NNI 身份，避免误删停用链路端点。
+`TopologyPreflightHandler` 在任何配置改写前验证链路端点，只跳过端点缺失或厂商无法识别/未登记的链路，并为本端生成 `action=skip` 的 NNI 映射。Huawei 设备在输入加载阶段登记到 `external_devices`，按仅适配对端处理，不会使链路失效；已有配置只读提取到 `external_aggregations`，供 NNI 核验聚合归属和 M-LAG 配对，不参与配置改写。已确认 M-LAG 按每台华为分别压缩，保留每台一条链路。后续 UNI 规划和 NNI 映射消费有效链路及明确保留的 NNI 身份，避免误删停用链路端点。
 
 `GroupExpansionHandler` 统一展开并校验所有活动的 group 引用及其依赖。未被活动配置引用的模板不参与求值；成功展开后删除 group 定义和对应控制语句，任一活动引用无法安全解析时整体回滚。
 
@@ -186,19 +189,21 @@ Excel 链接表提供 NNI 的权威来源。例如：
 R1 Gi0/0/0/0 ←→ R2 Gi0/0/0/1
 ```
 
-表示两端接口都是 NNI。不属于这些端点聚合与子接口闭包的物理、聚合业务接口会被删除。
+表示两端接口都是 NNI。不属于这些端点聚合与子接口闭包的物理、聚合业务接口按 UNI 迁移，无业务裸口删除。
 
 当链路连接 Cisco 与 Juniper 时，两端分别使用本端解析器和镜像 Profile 完成接口分配及引用改写，因此无需目标接口同名。该阶段只执行端口自适应，不比较两端的 IP、VLAN、MTU 或封装；业务一致性由输入配置负责。
 
 物理父口与已有子接口/unit 分别生成名称映射，即使 Junos 父口只配置了 unit，也保留父口映射。引用改写覆盖协议、策略、接口内部及 CoS 中的旧名称；Junos 仅跳过根 `interfaces` 下已迁移的接口定义名称，继续处理其内部的 `unnumbered-address`、`underlying-interface` 等引用。内部配置树中 `inactive:` 配置的引用同样更新，但最终不输出停用节点及其完整子树；独立注释和逻辑删除节点不改写。
 
-## 5. 为什么先计算 NNI 闭包，再删除非 NNI
+## 5. 为什么先计算 NNI 闭包并暂存 UNI
 
-Excel 的物理成员可能只承载 `bundle id` 或 `802.3ad`，地址、封装和协议引用实际位于 Bundle/ae 及其子接口。必须在 Group 展开后，以原始端点为起点保留父口、成员、逻辑聚合及其子接口，随后清理集合之外的物理/聚合接口。
+Excel 的物理成员可能只承载 `bundle id` 或 `802.3ad`，地址、封装和协议引用位于 Bundle/ae 及其子接口。Group 展开后先依据原始端点扩展完整 NNI 聚合闭包，预检跳过的端点也受保护。
 
-清理发生在 NNI 改名前，避免目标口恰好也是被删除源接口时覆盖错误。停用链路端点的 NNI 身份也保留，不能因没有目标映射被当作非 NNI。非 NNI 业务不再迁移为 QinQ，不使用最后三个预留口。
+范围外的物理、聚合接口按业务识别为 UNI 源。源父树先改为唯一占位名，释放旧名称后再写入 NNI 目标口；NNI 完成后才写入共享 UNI。这样既允许 NNI 目标复用原 UNI 名称，也允许共享 UNI 口原先是活动 NNI 源口。
 
-删除接口后，同步删除业务引用和完全失去接入口的容器；混合桥域保留剩余 NNI 成员和仍需要的 BVI/IRB 网关。
+共享 UNI 使用倒数第二个物理口。普通业务生成单层 VLAN 子接口，原有 QinQ 保留双层和内层标签；外层 VLAN 在每设备内唯一，冲突时重编号。BVI/IRB 保留原网关类型及桥域关系，引用改写只更新迁移后的二层接入口。UNI 聚合会扁平化，成员有独立业务时拒绝迁移。
+
+迁移处理业务封装和失效聚合属性，记录源接口、目标接口、原命令路径及原因；硬件删除交给后续 YAML 清洗。源暂存树保留到清洗完成，兼容阶段再检查剩余父级业务属性并清除。共享父口的 MTU 取最大值；ethertype 需要合并且冲突时失败。未知逻辑命令保留告警，复杂封装和不能安全继承的父级业务配置失败，不生成部署配置。
 
 聚合缩减还会在 NNI 阶段删除冗余物理成员。此时再次清理这些成员的已知接口依赖，再落位新目标口，避免旧成员名被目标重用时混淆新旧引用。清理结果记录为 `redundant-member-cleanup`。Cisco 已知绑定包括路由协议、MPLS、RSVP、EVPN、DHCP relay 和带内管理接口；镜像目的接口被删除时移除对应镜像会话。桥组、桥域名称即使与 BVI 名相同也不作为接口引用。
 
@@ -221,7 +226,7 @@ Group 展开失败后：
 
 - 原配置保持不变。
 - Group 定义和应用语句仍然保留。
-- 不继续执行 非 NNI 清理、NNI、配置清洗和参数适配。
+- 不继续执行 UNI 准备、NNI/UNI 迁移、配置清洗和参数适配。
 - 转换状态标记为失败。
 
 ## 7. Cisco IOS XR 处理流程
@@ -409,13 +414,13 @@ Bundle-Ether10
 
 #### 跨对端聚合
 
-当前没有可靠的 MC-LAG 还原输入与执行能力，跨不同设备的同一聚合在迁移前失败，不复制 Bundle 地址或展开逻辑引用。物理成员含地址、VRF、L2 transport、bridge/unit/family 或子接口时保留为单链路并告警，不参与冗余压缩；冲突聚合绑定仍报错。没有拓扑物理成员的聚合作为非 NNI 删除；拓扑成员已声明聚合绑定但配置无法解释时报错。
+当前没有可靠的 MC-LAG 还原输入与执行能力，跨不同设备的同一聚合在迁移前失败，不复制 Bundle 地址或展开逻辑引用。物理成员含地址、VRF、L2 transport、bridge/unit/family 或子接口时保留为单链路并告警，不参与冗余压缩；冲突聚合绑定仍报错。没有拓扑物理成员的聚合按 UNI 业务迁移，裸聚合删除；拓扑成员已声明聚合绑定但配置无法解释时报错。
 
-### 7.5 Cisco 非 NNI 清理与接口兼容
+### 7.5 Cisco UNI 迁移与接口兼容
 
-非 NNI 物理口、Bundle 及子接口删除，同时清理路由协议、VRF、L2VPN 和桥域中的相关引用。只剩非 NNI 接入口的桥域删除；BVI 仅在保留的 NNI 桥域仍引用它时保持 BVI 类型。
+UNI 物理口、Bundle 及子接口的有效业务迁到共享口，地址和业务引用保留并改写。旧封装由目标标签重建，移除失效聚合属性；专用物理口属性由后续 YAML 清洗；不能安全重建的二层标签重写报错。BVI 及其桥域网关关系保持，不转换为物理子接口。
 
-NNI 改名与引用更新后，兼容阶段按最终物理父口、L3 子接口、L2 transport 子接口上下文处理已知命令限制，不能只替换 `interface` 名称。目标镜像已知无法接受的命令冲突必须报错，不受 `strict_input_validation` 控制。最终校验检查迁移结果，不把规则未覆盖的命令宣称为已验证；源配置语义问题默认告警，严格模式下恢复为错误。
+NNI/UNI 迁移与引用更新后，兼容阶段按最终物理父口、L3 子接口、L2 transport 子接口上下文处理已知命令限制，不能只替换 `interface` 名称。目标镜像已知无法接受的命令冲突必须报错，不受 `strict_input_validation` 控制。最终校验检查迁移结果，不把规则未覆盖的命令宣称为已验证；源配置语义问题默认告警，严格模式下恢复为错误。
 
 ### 7.6 Cisco 认证与权限清洗
 
@@ -634,11 +639,11 @@ ge-0/0/0 {
 
 物理成员映射为目标 ge 口，保留其 `802.3ad aeN` 绑定；ae 及所有 unit、地址、封装和引用保持。硬件叶子由声明式 Cleaning 全局清理；模拟适配只省略已经变空的 `gigether-options`、`ether-options`、`aggregated-ether-options`，不得删除仍含 `802.3ad` 或 LACP 的容器。门限适配和跨对端限制与 Cisco 相同。
 
-### 8.4 Junos 非 NNI 清理
+### 8.4 Junos UNI 迁移
 
-非 NNI 物理口、ae 及其 unit 删除，协议、routing-instance、bridge-domain 和 VLAN 内的对应引用同步清理。完全依赖被删接入口的实例或桥域删除，混合容器保留剩余 NNI 成员。IRB 仅在剩余 NNI 桥域或 VLAN 仍依赖它时按原类型保留。
+物理口、ae 及其 unit 的有效业务复制到共享 UNI 的新 unit。普通业务使用 `vlan-id`，原有 QinQ 使用 `vlan-tags outer … inner …`。共享父口补齐 `flexible-vlan-tagging` 与 `encapsulation flexible-ethernet-services`。
 
-不再建立共享 UNI 父口、分配运输 VLAN、写入双层 `vlan-tags`，也不再将 IRB 地址搬到物理 unit。
+迁移处理源父口失效的聚合结构，介质专属属性留给后续 YAML 清洗；物理 MTU 按最大值合并到共享父口；描述及有效 family 配置保留，端口级 CCC 转为 unit 级 `vlan-ccc`。协议、routing-instance、bridge-domain 和 VLAN 中的接口引用同步改写。IRB 按原类型和地址保留，桥域继续引用原 IRB。
 
 ### 8.5 Junos 认证与权限清洗
 

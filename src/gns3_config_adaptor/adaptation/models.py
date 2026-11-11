@@ -7,6 +7,7 @@ from enum import StrEnum
 from pathlib import Path
 from typing import TYPE_CHECKING, Any
 
+from ..impl.common.domain.interface import UniInterfacePlan
 from ..impl.common.domain.outcomes import DeferredInterfaceReference
 from ..impl.common.domain.policies import (
     SimulationAdaptationPolicy,
@@ -70,6 +71,7 @@ class MappingRole(StrEnum):
     """
 
     NNI = "NNI"
+    UNI = "UNI"
     NON_NNI = "NON_NNI"
 
 
@@ -122,6 +124,9 @@ class EventKind(StrEnum):
     SIMULATION_ADAPTATION = "simulation-adaptation"
     SKIP_LINK = "skip-link"
     TOPOLOGY_PREFLIGHT = "topology-preflight"
+    UNI_MIGRATION = "uni-migration"
+    UNI_MIGRATION_ERROR = "uni-migration-error"
+    UNI_MIGRATION_WARNING = "uni-migration-warning"
 
 
 @dataclass(slots=True)
@@ -188,6 +193,9 @@ class InterfaceMapping:
     target_interface: str | None
     link_rows: list[int] = field(default_factory=list)
     reason: str = ""
+    source_vlan: int | None = None
+    target_vlan: int | None = None
+    inner_vlan: int | None = None
 
     def __post_init__(self) -> None:
         """校验并规范化接口映射角色和动作。
@@ -211,6 +219,9 @@ class InterfaceMapping:
         payload = asdict(self)
         payload["role"] = self.role.value
         payload["action"] = self.action.value
+        if self.role != MappingRole.UNI:
+            for key in ("source_vlan", "target_vlan", "inner_vlan"):
+                payload.pop(key)
         return payload
 
 
@@ -233,9 +244,19 @@ class ImageProfile:
     def nni_interfaces(self) -> list[str]:
         """返回可用于 NNI 分配的接口前缀。
 
-        最后三个接口始终预留，避免迁移占用控制或实验辅助端口。
+        最后三个接口不分配给 NNI，其中倒数第二个供共享 UNI，其余两个预留。
         """
         return self.interfaces[:-RESERVED_NNI_INTERFACE_COUNT]
+
+    @property
+    def uni_parent(self) -> str:
+        """返回 UNI 共享物理口，固定使用倒数第二个数据口。
+
+        另外两个末尾端口继续预留，NNI 的容量不因恢复 UNI 而改变。
+        """
+        if len(self.interfaces) < MIN_PROFILE_INTERFACE_COUNT:
+            raise ValueError("镜像接口列表至少需要四个接口")
+        return self.interfaces[-2]
 
 
 @dataclass(slots=True)
@@ -256,6 +277,7 @@ class DeviceContext:
     )
     warnings: list[str] = field(default_factory=list)
     errors: list[str] = field(default_factory=list)
+    uni_plan: list[UniInterfacePlan] = field(default_factory=list)
 
     @property
     def replacement_map(self) -> dict[str, list[str]]:

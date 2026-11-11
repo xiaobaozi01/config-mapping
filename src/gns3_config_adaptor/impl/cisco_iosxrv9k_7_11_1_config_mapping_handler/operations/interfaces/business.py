@@ -181,8 +181,8 @@ def business_interface_names(document: CiscoDocument) -> set[str]:
     mappable_kinds = {InterfaceKind.PHYSICAL, InterfaceKind.BUNDLE}
     active: set[str] = set()
     direct = re.compile(
-        r"^(?:ipv4\s+address|ipv6\s+address|xconnect\b|l2transport\b|"
-        r"bridge-domain\b|l2vpn\b|ethernet-services\b)",
+        r"^(?:ipv4\s+(?:address|unnumbered)\b|ipv6\s+address\b|"
+        r"xconnect\b|ethernet-services\b)",
         re.IGNORECASE,
     )
     for block in interface_nodes(document):

@@ -2,10 +2,10 @@
 
 from __future__ import annotations
 
-import re
-
 from ....common.config_ast.editor import format_fragment
+from ....common.domain.outcomes import InterfaceAdaptationOutcome
 from ...document import CiscoDocument, CiscoNode
+from ...support.interface_commands import STRIPPABLE_AGGREGATION_ATTRIBUTES
 from ...syntax.rewrite_helpers import append_top_level, delete_matching
 from ...syntax.writer import CiscoWriter
 from .access import (
@@ -78,7 +78,7 @@ def rename_interface_tree(document, source, target, strip_bundle=False):
             delete_matching(
                 transaction,
                 block.nodes,
-                re.compile(r"^(?:bundle\b|lacp\b|aggregated-)", re.I),
+                STRIPPABLE_AGGREGATION_ATTRIBUTES,
             )
     transaction.apply()
     for name in renamed:
@@ -102,7 +102,7 @@ def clone_fragment(original, name, strip_bundle):
         delete_matching(
             transaction,
             root.nodes,
-            re.compile(r"^(?:bundle\b|lacp\b|aggregated-)", re.I),
+            STRIPPABLE_AGGREGATION_ATTRIBUTES,
         )
     transaction.apply()
     return candidate.source + "!\n"
@@ -238,3 +238,27 @@ class CiscoInterfaceTransform:
         """
         with self._document.edit().bulk():
             ensure_parent_interface(self._document, name)
+
+    def map_uni(
+        self, source: str, parent: str, vlan: int, inner_vlan: int | None
+    ) -> InterfaceAdaptationOutcome:
+        """按目标子接口类型迁移 UNI，并返回命令级兼容处理结果。
+
+        迁移实现与普通接口改名分离，避免将源物理口配置原样带入子接口。
+        """
+        from .uni import map_uni
+
+        with self._document.edit().bulk():
+            return map_uni(self._document, source, parent, vlan, inner_vlan)
+
+    def finalize_uni_source(
+        self, source: str, check_parent: bool
+    ) -> InterfaceAdaptationOutcome:
+        """清洗完成后检查并移除原 UNI 暂存树。
+
+        把父级剩余属性的判断推迟到现有清洗之后，避免重复维护硬件命令定义。
+        """
+        from .uni import finalize_uni_source
+
+        with self._document.edit().bulk():
+            return finalize_uni_source(self._document, source, check_parent)

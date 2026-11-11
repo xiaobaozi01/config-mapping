@@ -25,12 +25,12 @@
 
 ### 2.3 镜像接口配置
 
-镜像配置文件描述 XRv9000 和 vMX 在 GNS3 中的镜像名称、可选版本、实际可用的数据接口列表和模拟参数适配策略。列表最后三个接口空置预留，其余接口按链接表顺序分配给 NNI。
+镜像配置文件描述 XRv9000 和 vMX 在 GNS3 中的镜像名称、可选版本、实际可用的数据接口列表和模拟参数适配策略。前 n-3 个接口分配给 NNI，倒数第二个承载 UNI，另外两个末尾接口预留。
 
 ## 3. 术语和分类
 
 - NNI：端口出现在 Excel 链接表中。
-- 非 NNI：不属于链接表端点及其聚合、子接口闭包的物理或聚合接口；不参与实验输出。
+- 非 NNI：不属于链接表端点及其聚合、子接口闭包的物理或聚合接口；其中有效业务按 UNI 汇聚输出。
 - Loopback：逻辑环回接口，编号和地址保持不变。
 - 管理接口：XR 的 `MgmtEth` 及 Junos 的 `fxp`、`em` 等接口，不参与业务接口映射。
 - 聚合接口：IOS XR 的 `Bundle-Ether` 或 Junos 的 `ae`。
@@ -49,25 +49,23 @@
 8. 华为设备不参与配置转换，只作为链路对端；配置存在时只读提取聚合成员和 M-LAG 配对信息，聚合核验所需信息缺失时明确报错。普通链路仍可不提供配置文件。与华为相连的 Cisco/Juniper 端点仍按本端 Profile 分配目标 NNI 并改写本端配置和拓扑接口，华为侧设备行与接口名保持原样。
 9. 华为与华为之间的链路原样保留在适配拓扑中，不产生接口映射；只有对端厂商无法识别或端点未登记时才跳过链路。
 
-### 4.2 非 NNI 清理
+### 4.2 UNI 业务迁移
 
-1. Group 展开、接口分类后，先依据原始链接表端点及聚合关系计算 NNI 保留闭包，再进行接口改名。
-2. 未被闭包保留的物理、聚合接口及其子接口删除，不再生成 UNI 目标、运输 VLAN 或 QinQ；不新增 GNS3 拓扑链路。
-3. 同步清理被删接口在协议、VRF、L2VPN、桥域、VLAN 和 routing-instance 中的引用；完全依赖被删接入口的业务容器一并移除，混合业务只移除失效成员。
-4. BVI/IRB 仅在剩余 NNI 桥域/VLAN 仍依赖它时保留原接口类型，不转换为物理子接口；无剩余 NNI 依赖者删除。
-5. 被预检跳过但已明确为 NNI 的接口保留 NNI 身份，不能误删。Loopback、管理口、已知控制虚拟口和未知接口不按非 NNI 物理口删除。
-6. 删除记录使用 `role=NON_NNI`、`action=remove`、空目标接口，写入映射与报告。
-7. BGP 本地源依赖被删除接口或地址时，以邻居或被依赖模板为单位裁剪；IPv6 源地址按规范化地址比较。模板缺失、重复、循环或多源冲突由输入方保证语义正确，prune 保留相关配置并记录 warning，不自行判定输入非法。
-8. 跳过端点占用的端口及聚合闭包不得重新分配；接口别名规范化后目标必须唯一。已知单值配置（如 MTU、主 IPv4 地址、封装）冲突默认告警并保留输入值；严格输入校验模式下恢复为错误。
-9. 地址及 VLAN 关联按 VRF／routing-instance 作用域判断，不能借用其他实例的同值对象。邻居显式配置优先于模板默认源；源失效时不得连带删除具有有效显式覆盖的邻居及所需模板公共参数。
-
-聚合主口和子接口只生成自映射（`action=preserve`）；选中的物理成员生成 `action=map-member`，冗余成员删除。不能生成 Bundle/ae 到物理接口的替换关系。没有拓扑物理成员的聚合作为非 NNI 删除；拓扑成员已声明聚合绑定但配置无法解释时，必须报错。
+1. Group 展开和接口分类后，依据原始拓扑及聚合关系计算 NNI 保留闭包，预检跳过端点同样受保护；范围外的物理、聚合接口按 UNI 处理。
+2. 只迁移有 IP、有效二层业务或外部引用的业务单元；无业务裸口删除。UNI 源父树先暂存以释放原名称，NNI 完成后再迁到共享口，避免接口重名混合业务。
+3. 共享 UNI 固定为倒数第二个物理口。默认单层 VLAN，原有 QinQ 保留双层结构与内层标签；每设备为业务分配唯一外层 VLAN（2～4094），优先保留原值，冲突时分配最小空闲值。先预留可保留的原标签，分配顺序按规范化源接口名固定。
+4. 保留地址、VRF、routing-instance、协议和二层业务绑定，并统一改写接口引用。BVI/IRB 按原类型保留及维持桥域网关关系，不迁成物理子接口。
+5. UNI 聚合业务扁平化为共享子接口，移除原物理成员及失效聚合属性并告警；成员有独立业务或绑定不唯一时拒绝迁移。NNI 聚合主口及子接口继续按原类型保留。
+6. UNI 迁移处理业务封装及失效聚合属性；硬件、介质、速率和时钟由现有 post_rewrite YAML 清洗按路径和开关删除。源父口暂存树保留到清洗完成，再由兼容阶段检查剩余父级业务配置并清除，不新增前置清洗或硬件定义提取。必需且可以安全共享的父口配置单独迁移，介质 MTU 取最大值，ethertype 冲突报错。转换记录命令路径及原因，普通清洗沿用规则命中统计。
+7. 无法安全重建的标签范围、通配封装、二层重编号或父级业务依赖始终报错并停止发布部署配置，不受宽松输入校验或模拟 off 影响。不新增 GNS3 客户设备和接入链路，不保证端到端客户通信。
+8. UNI 映射使用 `role=UNI`，业务 `action=map`，网关 `preserve`，裸口 `remove-bare`，已扁平化聚合成员 `remove`；业务映射记录源、目标和内层 VLAN。多业务父口的歧义引用不自动折叠到共享父口，交由最终完整性校验拒绝。
+9. 聚合 NNI 的冗余成员缩减、依赖裁剪及已删除接口精确引用豁免保持现有行为。原始源语义审计继续关闭，UNI 迁移仅检查安全转换所需的约束。
 
 ### 4.3 Loopback和管理口
 
 - Loopback/`lo0` 原样保留。
-- 数据接口列表最后三个接口空置预留；默认八口仅前五口用于 NNI。
-- 源接口是否保留由 NNI 闭包决定，与源接口名称是否恰好为预留口无关；预留口不得作为 NNI 输出目标。
+- 数据接口列表前 n-3 个用于 NNI、倒数第二个用于 UNI，其余两个末尾接口预留；默认八口中 0～4 为 NNI、6 为 UNI、5 和 7 预留。
+- 源接口按 NNI 保护范围和业务识别处理，与其名称是否恰好为预留口无关；预留口不得作为 NNI 输出目标。
 - 管理接口不参与转换，设备通过 GNS3 console 管理。
 
 ### 4.4 认证清洗
@@ -108,15 +106,15 @@ GNS3 实验只验证路由协议。聚合类型与成员绑定保持；实验范
 
 ```text
 CleaningRulesHandler(pre_analysis) -> TopologyPreflightHandler -> GroupExpansionHandler
--> PreconfiguredInterfaceCleanupHandler -> SourceSemanticValidationHandler
--> InterfaceClassificationHandler -> NonNNICleanupHandler
--> NNIHandler -> ReferenceRewriteHandler -> CleaningRulesHandler(post_rewrite)
+-> PreconfiguredInterfaceCleanupHandler -> InterfaceClassificationHandler
+-> UNIPreparationHandler -> NNIHandler -> UNIHandler
+-> ReferenceRewriteHandler -> CleaningRulesHandler(post_rewrite)
 -> InterfaceCompatibilityHandler -> SimulationAdaptationHandler -> FinalInterfaceValidationHandler
 ```
 
 每个处理器只负责其领域的识别、映射、配置变更和报告，并将上下文传递给下一个处理器。后续处理器可插入链中而不修改已有处理器调用方式。
 
-- `TopologyPreflightHandler` 在配置改写前校验端点，仅标记端点缺失或厂商无法识别/未登记的链路；跳过链路的本端接口仍以 `action=skip` 保留 NNI 角色，不得被非 NNI 清理误删。华为设备登记到 `external_devices`，按仅适配对端处理，不在此处跳过。
+- `TopologyPreflightHandler` 在配置改写前校验端点，仅标记端点缺失或厂商无法识别/未登记的链路；跳过链路的本端接口仍以 `action=skip` 保留 NNI 角色，不得被 UNI 规划误迁或删除。华为设备登记到 `external_devices`，按仅适配对端处理，不在此处跳过。
 - `InterfaceClassificationHandler` 只允许厂商白名单中的物理接口参与物理端口映射；未识别接口保留原配置并告警，若被链接表用作端点则转换失败。
 - `CleaningRulesHandler` 只在 `pre_analysis`、`post_rewrite` 两个固定执行点运行。
 - YAML 规则固定在 `post_rewrite` 执行；复杂规则通过统一接口声明执行点。
@@ -152,7 +150,7 @@ CleaningRulesHandler(pre_analysis) -> TopologyPreflightHandler -> GroupExpansion
    - 无法安全解析的已应用 group 触发转换失败，不输出不完整的自适应配置。
    - 显式配置高于 group；嵌套层级的 group 高于外层；同一 `apply-groups` 列表中靠前的 group 优先。
    - `inactive:` 节点及其完整子树不参与生效配置求值；最终输出时跳过该节点及其完整子树。
-4. 展开后的配置进入后续非 NNI 清理、NNI 和认证处理器。成功展开后从输出中移除 group 定义及其应用语句，避免接口改名后再次引用旧接口。
+4. 展开后的配置进入后续 UNI 准备、NNI/UNI 迁移和认证处理器。成功展开后从输出中移除 group 定义及其应用语句，避免接口改名后再次引用旧接口。
 5. group 展开必须采用事务模式：所有活动引用及其依赖均可安全解析时才提交展开结果；任一活动 group 无法解析时整体回滚并将本次转换标记为失败。
 6. 配置冲突使用完整层级和语义键判断，不能只比较命令首关键字：
    - `ipv4 address` 与 `ipv4 access-group` 是不同配置；

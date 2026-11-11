@@ -21,6 +21,10 @@ from .access import (
 
 MAX_VLAN_ID = 4094
 
+Scope = tuple[str, ...]
+ScopedVlan = tuple[Scope, int]
+ScopedVlanName = tuple[Scope, str]
+
 
 def interface_has_business(document: JunosDocument, name: str) -> bool:
     """判断物理聚合成员是否包含独立业务。
@@ -87,8 +91,9 @@ def business_interface_names(document: JunosDocument) -> set[str]:
     active = collect_interface_business(document, kinds, mappable_kinds)
     active.update(collect_reference_business(document, specs, known, kinds))
 
+    scopes = interface_business_scopes(document)
     active_vlans, active_vlan_names = collect_active_vlans(
-        document, active, specs
+        document, active, specs, scopes
     )
 
     activate_domain_gateways(
@@ -100,7 +105,10 @@ def business_interface_names(document: JunosDocument) -> set[str]:
         known,
     )
     for spec in specs:
-        if spec.kind == InterfaceKind.GATEWAY and spec.vlan in active_vlans:
+        if spec.kind == InterfaceKind.GATEWAY and any(
+            (scope, spec.vlan) in active_vlans
+            for scope in scopes.get(spec.name, {()})
+        ):
             active.add(spec.name)
     return active
 
@@ -204,8 +212,8 @@ def activate_domain_gateways(
     document: JunosDocument,
     node: JuniperNode,
     active: set[str],
-    active_vlans: set[int],
-    active_vlan_names: set[str],
+    active_vlans: set[ScopedVlan],
+    active_vlan_names: set[ScopedVlanName],
     known: set[str],
 ) -> None:
     """递归查找活跃广播域并激活其已知三层网关。
@@ -217,6 +225,7 @@ def activate_domain_gateways(
         return
     base = parser.base_header(node.header).rstrip(";")
     if base in {"bridge-domains", "vlans"}:
+        scope = configuration_scope(document, node)
         for domain in node.nodes:
             if not parser.is_effective(domain) or not domain.is_block:
                 continue
@@ -225,8 +234,8 @@ def activate_domain_gateways(
             )
             if (
                 interfaces & active
-                or vlan_ids & active_vlans
-                or domain_name in active_vlan_names
+                or any((scope, vlan) in active_vlans for vlan in vlan_ids)
+                or (scope, domain_name) in active_vlan_names
             ):
                 active.update(
                     gateway for gateway in gateways if gateway in known
@@ -276,18 +285,63 @@ def domain_gateways(
     return interfaces, gateways, vlan_ids, domain_name
 
 
+def configuration_scope(document: JunosDocument, node: JuniperNode) -> Scope:
+    """返回配置节点所属逻辑系统及路由实例的完整路径。
+
+    默认实例用空元组表示，同名实例在不同逻辑系统中仍能区分。
+    """
+    parser = document._parser
+    parts: list[str] = []
+    current = node
+    while current.parent is not None:
+        parent = current.parent
+        container = parser.base_header(parent.header).rstrip(";")
+        if container in {"logical-systems", "routing-instances"}:
+            parts.append(parser.base_header(current.header).rstrip(";"))
+            parts.append(container)
+        current = parent
+    return tuple(reversed(parts))
+
+
+def interface_business_scopes(document: JunosDocument) -> dict[str, set[Scope]]:
+    """从有效外部接口引用建立接口所属实例索引。
+
+    接入口和 IRB 使用同一作用域定义，避免跨实例的 VLAN 关联。
+    """
+    parser = document._parser
+    scopes: dict[str, set[Scope]] = {}
+    for block in document.root.nodes:
+        if not parser.is_effective(block) or parser.base_header(
+            block.header
+        ) in {"interfaces", "groups"}:
+            continue
+        for node in walk_effective_nodes(document, block):
+            match = re.fullmatch(
+                r"(?:interface|routing-interface|l3-interface)\s+([^;\s]+)\s*;?",
+                parser.base_header(node.header),
+            )
+            if match:
+                name = parser.canonical_interface(match.group(1))
+                scopes.setdefault(name, set()).add(
+                    configuration_scope(document, node)
+                )
+    return scopes
+
+
 def collect_active_vlans(
     document: JunosDocument,
     active: set[str],
     specs: list[InterfaceSpec],
-) -> tuple[set[int], set[str]]:
-    """从活跃二层接口收集 VLAN ID 和 VLAN 名称。
+    scopes: dict[str, set[Scope]] | None = None,
+) -> tuple[set[ScopedVlan], set[ScopedVlanName]]:
+    """从活跃二层接口收集带实例作用域的 VLAN ID 和名称。
 
     结果用于广播域网关激活。
     """
     spec_by_name = {spec.name: spec for spec in specs}
-    active_vlans: set[int] = set()
-    active_vlan_names: set[str] = set()
+    active_vlans: set[ScopedVlan] = set()
+    active_vlan_names: set[ScopedVlanName] = set()
+    scopes = interface_business_scopes(document) if scopes is None else scopes
     parents, units = interface_index(document)
     for name in list(active):
         spec = spec_by_name.get(name)
@@ -303,12 +357,12 @@ def collect_active_vlans(
         if unit is None:
             continue
         rendered = document.writer.effective(unit, document._parser)
-        update_active_vlans(
-            rendered,
-            spec.vlan,
-            active_vlans,
-            active_vlan_names,
-        )
+        vlans: set[int] = set()
+        names: set[str] = set()
+        update_active_vlans(rendered, spec.vlan, vlans, names)
+        for scope in scopes.get(name, scopes.get(parent, {()})):
+            active_vlans.update((scope, vlan) for vlan in vlans)
+            active_vlan_names.update((scope, value) for value in names)
     return active_vlans, active_vlan_names
 
 
@@ -354,7 +408,7 @@ def update_active_vlans(
     for match in re.finditer(r"vlan-id-list\s+\[([^\]]+)\]", rendered):
         active_vlans.update(expand_vlan_tokens(match.group(1)))
     for match in re.finditer(
-        r"vlan\s+members\s+(?:\[([^\]]+)\]|([^;\s]+))\s*;",
+        r"\bvlan\s+(?:\{\s*)?members\s+(?:\[([^\]]+)\]|([^;\s]+))\s*;",
         rendered,
     ):
         payload = match.group(1) or match.group(2) or ""

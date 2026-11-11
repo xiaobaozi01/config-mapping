@@ -48,6 +48,22 @@ class InterfaceSpec:
     inner_vlan: int | None = None
 
 
+@dataclass(frozen=True, slots=True)
+class UniInterfacePlan:
+    """保存一项 UNI 业务的原始身份、暂存名称及目标标签。
+
+    源接口在 NNI 写入前暂存，避免目标口复用原 UNI 名称时混合配置。
+    """
+
+    source: str
+    staged: str
+    parent: str
+    vlan: int
+    inner_vlan: int | None = None
+    source_vlan: int | None = None
+    source_kind: InterfaceKind = InterfaceKind.PHYSICAL
+
+
 def normalized_command(value: str) -> str:
     """归一化命令空白、结尾分号和大小写。
 

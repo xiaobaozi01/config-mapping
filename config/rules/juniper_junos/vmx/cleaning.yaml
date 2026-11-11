@@ -203,7 +203,7 @@ rules:
     path:
       - '^interfaces$'
       - '*'
-    match: '^(?:speed|link-mode|fec|no-auto-negotiation|loopback|clocking)\b'
+    match: '^(?:speed|link-mode|fec|no-auto-negotiation|auto-negotiation|loopback|clocking|hold-time|link-degrade-monitor|flow-control|no-flow-control|laser-disable|sonet-options|sdh-options|serial-options|t1-options|e1-options|optics-options|otn-options|synchronous-ethernet-options|hold-up|hold-down|damping|physical-interface-filter)\b'
     action: delete
     reason: '删除目标镜像不适用的接口硬件属性'
 
@@ -214,8 +214,20 @@ rules:
     path:
       - '^interfaces$'
       - '*'
-      - '^(?:aggregated-ether-options|gigether-options|ether-options)$'
+      - '^(?:aggregated-ether-options|gigether-options|ether-options|fastether-options)$'
       - '**'
-    match: '^(?:speed|link-mode|fec|no-auto-negotiation|loopback|clocking)\b'
+    match: '^(?:speed|link-mode|fec|no-auto-negotiation|auto-negotiation|loopback|clocking|hold-time|link-degrade-monitor|flow-control|no-flow-control|laser-disable|sonet-options|sdh-options|serial-options|t1-options|e1-options|optics-options|otn-options|synchronous-ethernet-options|hold-up|hold-down|damping|physical-interface-filter)\b'
     action: delete
     reason: '删除目标镜像不适用的接口硬件属性'
+
+  - id: remove.interface.physical.filter.unit
+    vendor: juniper_junos
+    enable: true
+    category: physical-interface-knob
+    path:
+      - '^interfaces$'
+      - '*'
+      - '^unit\s+\S+$'
+    match: '^physical-interface-filter\b'
+    action: delete
+    reason: '删除不适用于逻辑 unit 的物理接口过滤器属性'

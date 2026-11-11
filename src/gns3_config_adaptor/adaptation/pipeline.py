@@ -11,7 +11,6 @@ from .interfaces import (
     FinalInterfaceValidationHandler,
     InterfaceClassificationHandler,
     InterfaceCompatibilityHandler,
-    NonNNICleanupHandler,
     PreconfiguredInterfaceCleanupHandler,
     ReferenceRewriteHandler,
 )
@@ -20,6 +19,7 @@ from .nni import NNIHandler
 from .performance import ConversionPerformance
 from .simulation import SimulationAdaptationHandler
 from .topology import TopologyPreflightHandler
+from .uni import UNIHandler, UNIPreparationHandler
 
 
 class ConversionStage(Protocol):
@@ -82,7 +82,7 @@ def build_default_pipeline() -> ConversionPipeline:
     """按依赖顺序组装一次完整配置转换所需的默认处理器流水线。
 
     顺序体现数据依赖：先执行分析前代码规则，再预检、展开继承配置并忽略未实例化
-    接口，然后按原始接口身份裁剪非 NNI 业务，再迁移 NNI 和改写引用；
+    接口，然后按原始接口身份暂存 UNI，迁移 NNI、UNI 并改写引用；
     清洗、接口类型兼容与模拟适配完成后执行最终校验。流水线会在首次错误后停止。
     """
     return ConversionPipeline(
@@ -92,8 +92,9 @@ def build_default_pipeline() -> ConversionPipeline:
             GroupExpansionHandler(),
             PreconfiguredInterfaceCleanupHandler(),
             InterfaceClassificationHandler(),
-            NonNNICleanupHandler(),
+            UNIPreparationHandler(),
             NNIHandler(),
+            UNIHandler(),
             ReferenceRewriteHandler(),
             CleaningRulesHandler(CleaningPoint.POST_REWRITE),
             InterfaceCompatibilityHandler(),

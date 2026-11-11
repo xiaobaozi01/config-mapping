@@ -2,7 +2,9 @@
 
 from __future__ import annotations
 
+from ....common.domain.outcomes import InterfaceAdaptationOutcome
 from ....common.support.errors import require_invariant
+from ...support.interface_commands import BUNDLE_OPTION_NAMES
 from ...syntax.ast import JuniperNode
 from .access import (
     find_interface_node,
@@ -36,8 +38,7 @@ def strip_bundle_options(document, children: list[JuniperNode]):
         if not (
             parser.is_effective(child)
             and child.is_block
-            and parser.base_header(child.header)
-            in {"aggregated-ether-options", "gigether-options", "ether-options"}
+            and parser.base_header(child.header) in BUNDLE_OPTION_NAMES
         )
     ]
 
@@ -179,3 +180,27 @@ class JunosInterfaceTransform:
         """
         with self._document.edit().bulk():
             ensure_parent_interface(self._document, name)
+
+    def map_uni(
+        self, source: str, parent: str, vlan: int, inner_vlan: int | None
+    ) -> InterfaceAdaptationOutcome:
+        """将 UNI 源 unit 迁移为目标单层或双层业务接口。
+
+        批量编辑统一维护缓存失效，所有后续分析读取最新接口树。
+        """
+        from .uni import map_uni
+
+        with self._document.edit().bulk():
+            return map_uni(self._document, source, parent, vlan, inner_vlan)
+
+    def finalize_uni_source(
+        self, source: str, check_parent: bool
+    ) -> InterfaceAdaptationOutcome:
+        """在正常清洗完成后移除 UNI 源树，并检查父级业务是否遗漏。
+
+        使用原有批量事务维护缓存，不改变最终网关或桥域的关系。
+        """
+        from .uni import finalize_uni_source
+
+        with self._document.edit().bulk():
+            return finalize_uni_source(self._document, source, check_parent)

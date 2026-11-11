@@ -54,7 +54,7 @@ flowchart LR
 | 术语 | 在本项目中的含义 | 如何识别 |
 | --- | --- | --- |
 | NNI | 网络设备之间的连接接口 | 以 Excel `链接表` 为权威来源 |
-| 非 NNI | 不属于拓扑 NNI 聚合与子接口闭包的物理、聚合接口 | Group 展开后按原始链接表判定，连同业务依赖删除 |
+| 非 NNI | 不属于拓扑 NNI 聚合与子接口闭包的物理、聚合接口 | Group 展开后按原始链接表判定，有业务者按 UNI 汇聚，裸口删除 |
 | Loopback | 环回逻辑接口 | Cisco `Loopback*`，Junos `lo0.*`；原样保留 |
 | 管理口 | 设备管理接口 | Cisco `MgmtEth*`，Junos `fxp*`、`em*` 等；不参与业务映射 |
 | 聚合口 | 多个物理成员组成的逻辑接口 | Cisco `Bundle-Ether*`，Junos `ae*` |
@@ -119,10 +119,11 @@ Excel 至少包含两个工作表：
 
 ```text
 interfaces[:-3]  = 按顺序分配给 NNI
-interfaces[-3:]  = 三个空置预留口，不参与目标端口分配
+interfaces[-2]   = UNI 共享物理口
+interfaces[-3], interfaces[-1] = 两个预留口
 ```
 
-例如默认 Cisco Profile 有 8 个接口，前 5 个可分配给 NNI，最后三个空置预留。
+例如默认 Cisco Profile 有 8 个接口，0～4 可分配给 NNI，6 承载 UNI，5 和 7 预留。
 
 ### 3.3 输出与失败语义
 
@@ -419,21 +420,21 @@ classDiagram
 
 | 顺序 | Stage | 主要职责 |
 | --- | --- | --- |
-| 1 | `CleaningRulesHandler(pre_analysis)` | 清理完整 banner |
-| 2 | `TopologyPreflightHandler` | 校验链路端点、保留跳过端点的 NNI 身份 |
-| 3 | `GroupExpansionHandler` | 事务式展开并校验 Group |
+| 1 | `CleaningRulesHandler(pre_analysis)` | 分析前清理 |
+| 2 | `TopologyPreflightHandler` | 校验端点并保护跳过链路 |
+| 3 | `GroupExpansionHandler` | 展开并校验 Group |
 | 4 | `PreconfiguredInterfaceCleanupHandler` | 忽略未实例化候选接口 |
-| 5 | `SourceSemanticValidationHandler` | 在映射前检查一次源配置语义 |
-| 6 | `InterfaceClassificationHandler` | 按厂商白名单分类 |
-| 7 | `NonNNICleanupHandler` | 计算原始 NNI 闭包，删除非 NNI 与业务依赖 |
-| 8 | `NNIHandler` | 分组、成员压缩、聚合保留、端口分配 |
-| 9 | `ReferenceRewriteHandler` | 更新保留 NNI 的全局引用 |
+| 5 | `InterfaceClassificationHandler` | 分类并保守保留未知接口 |
+| 6 | `UNIPreparationHandler` | 计算原始 NNI 保护范围、分配 UNI 标签并暂存源树 |
+| 7 | `NNIHandler` | NNI 成员压缩、聚合保留和端口分配 |
+| 8 | `UNIHandler` | 按目标类型迁移业务并清理失效属性 |
+| 9 | `ReferenceRewriteHandler` | 更新 NNI/UNI 业务引用 |
 | 10 | `CleaningRulesHandler(post_rewrite)` | 路径清洗与认证替换 |
-| 11 | `InterfaceCompatibilityHandler` | 按目标接口上下文处理已知限制 |
-| 12 | `SimulationAdaptationHandler` | 目标口启用、硬件参数清理和 BFD 稳定性调整 |
-| 13 | `FinalInterfaceValidationHandler` | 严格检查最终接口，并仅降级可追溯的源语义错误 |
+| 11 | `InterfaceCompatibilityHandler` | 清洗后检查并清除 UNI 暂存树，处理目标接口已知限制 |
+| 12 | `SimulationAdaptationHandler` | 接口启用和 BFD 稳定性调整 |
+| 13 | `FinalInterfaceValidationHandler` | 目标兼容、绑定和引用完整性校验 |
 
-任一阶段写入错误后，`ConversionPipeline` 停止后续阶段，不输出设备配置。源配置语义问题只在映射前检查一次：默认写 warning，`strict_input_validation=True` 时写 error。最终校验只检查目标兼容、聚合绑定和引用完整性，不重复执行源语义规则，也不受模拟参数 `off` 或严格输入开关影响。
+任一阶段写入错误后停止后续处理，不发布部署配置。原始源语义审计继续关闭；UNI 转换所需的安全约束与已知目标兼容错误始终阻断，不受模拟参数 `off` 或宽松输入校验影响。
 
 ## 8. Group 展开
 
@@ -491,17 +492,19 @@ Excel 只列物理链路。Group 展开后从成员绑定反查 Bundle/ae，再�
 
 同一对端经两端确认的聚合多链路缩减为最早一条，物理成员按 Profile 映射；逻辑聚合名、子接口、IP/VRF/封装和协议引用保持。成员使用 `bundle id` 或 `802.3ad` 重新关联原聚合，单成员门限定向调整。后续清洗和模拟适配必须保留绑定与原协商方式。
 
-跨对端同聚合默认失败，不猜测 MC-LAG 或复制逻辑业务。同一本地 Bundle 扇出到同一对端多个 Bundle、拓扑成员与配置绑定无法对应时，在迁移前报错。聚合协商方式按输入原值保留，不判断两端模式能否实际建立会话；单端 Bundle、对端普通口的链路作为非对称混合链路保留并告警。源成员带地址、VRF、L2 transport、bridge/unit/family 或子接口时保留为单链路并告警，不参与压缩。没有拓扑物理成员的聚合作为非 NNI 删除。已跳过端点仍受保护，最后三个口继续预留。
+跨对端同聚合默认失败，不猜测 MC-LAG 或复制逻辑业务。同一本地 Bundle 扇出到同一对端多个 Bundle、拓扑成员与配置绑定无法对应时，在迁移前报错。聚合协商方式按输入原值保留，不判断两端模式能否实际建立会话；单端 Bundle、对端普通口的链路作为非对称混合链路保留并告警。源成员带地址、VRF、L2 transport、bridge/unit/family 或子接口时保留为单链路并告警，不参与压缩。没有拓扑物理成员的聚合按 UNI 业务迁移，裸聚合删除。已跳过端点仍受保护；倒数第二个口承载 UNI，其余两个末尾口预留。
 
 物理改名使用占位口避开源目标重名；业务主口始终保持 Bundle/ae 类型。
 
-## 10. 非 NNI 清理：保留闭包与依赖裁剪
+## 10. UNI 业务汇聚与类型兼容
 
-实验只展示并适配链接表中的 NNI。其他物理、聚合口及子接口即使有地址或 L2 业务，也不再迁移到共享子接口，不生成运输 VLAN 或 QinQ。
+原始 NNI 闭包之外的物理、聚合业务接口迁到倒数第二个物理口的子接口；裸口删除。源树在 NNI 落位前暂存，避免接口重名合并业务。NNI 仍只使用前 n-3 个接口。
 
-保留范围由原始拓扑端点、聚合成员关系及逻辑父口/子接口共同决定。删除非 NNI 时，协议接口、VRF、L2VPN、bridge-domain、VLAN 和 routing-instance 中的引用同时删除。完全失去接入口的业务容器删除，混合容器保留其余 NNI 成员。BVI/IRB 只有仍被 NNI 桥域或 VLAN 依赖时才保持原网关类型。
+默认使用单层 VLAN，原有 QinQ 保留双层结构与内层标签；每项业务分配唯一外层 VLAN，范围 2～4094，优先保留原标签，冲突时重编号。接口映射使用 `role=UNI`，记录源/目标/内层 VLAN，并更新协议、VRF、二层业务引用。
 
-每条接口删除使用 `role=NON_NNI`、`action=remove`、空目标接口写入 mapping/report。NNI 分配仍只使用前 n-3 个数据口；最后三个接口全部空置预留。
+UNI 聚合扁平化后不再复现 LACP 和成员冗余，成员有独立业务时失败。BVI/IRB 保留原类型、地址及桥域关系，只改写二层接入口。
+
+迁移处理业务及失效聚合结构，速率、双工、FEC、时钟和专用介质属性由现有 post_rewrite YAML 清洗删除；必需的父口属性单独迁移。源暂存树在清洗后检查并清除。`uni-migration` 事件记录源接口、目标接口、命令路径、规则及原因。未知逻辑命令保留告警；范围、通配封装、复杂重写及不能安全迁移的父级配置报错，不发布部署配置。现有 QoS 等默认清洗继续生效。
 
 ## 11. 厂商实现如何隔离
 
@@ -572,7 +575,7 @@ interfaces {
 5. 在 `parse_document()` 中注册解析器。
 6. 增加独立 fixture 与端到端测试。
 
-不要在 `NNIHandler` 或 `NonNNICleanupHandler` 中加入大量 `if vendor == ...`。如果差异属于语法或配置树操作，应下沉到厂商模块；只有真正跨厂商的业务策略才留在应用层。
+不要在 `NNIHandler` 或 `UNIHandler` 中加入大量 `if vendor == ...`。如果差异属于语法或配置树操作，应下沉到厂商模块；只有真正跨厂商的业务策略才留在应用层。
 
 ## 12. 清洗与模拟适配
 
@@ -735,7 +738,7 @@ flowchart TD
 | 接口被当成未知类型 | 对应解析器的 `interface_kind` |
 | 聚合链路被错误合并 | `gns3_config_adaptor/adaptation/nni.py` |
 | M-LAG 少了一个目标 | `NNIHandler` 的 `plans_by_logical` 和 mappings |
-| 非 NNI 删除范围异常 | 原始拓扑、聚合闭包与 `NON_NNI` mapping |
+| UNI 迁移范围异常 | 原始拓扑、聚合闭包与 `UNI` mapping |
 | 目标接口导入失败 | 接口兼容/最终校验事件与真实设备诊断 |
 | 协议仍引用旧接口 | `replacement_map` 和 `replace_references()` |
 | 某配置被意外删除 | mandatory/optional cleaning 事件与外部 rule 事件 |
@@ -884,7 +887,7 @@ git diff --check
 如果有半天：
 
 1. 按上面的 30 分钟路径阅读。
-2. 详细阅读 `NNIHandler`、`NonNNICleanupHandler`。
+2. 详细阅读 `UNIPreparationHandler`、`NNIHandler`、`UNIHandler`。
 3. 阅读 NNI、非 NNI 清理及接口兼容模块。
 4. 只选择自己更熟悉的一个厂商，阅读其 parser 和
    `<厂商>/operations/interfaces/` 中的 `access.py`、`analysis.py`、

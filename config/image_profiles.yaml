@@ -3,7 +3,7 @@ profiles:
     image: xrv9000
     # 可选：填写实际镜像版本，便于报告和后续版本特定规则匹配。
     version: "7.11.1"
-    # 前 n-3 个口供 NNI 分配，最后三个口空置预留；默认八口使用前五口。
+    # 前 n-3 个口供 NNI，倒数第二个口供 UNI，倒数第三个和最后一个口预留。
     interfaces:
       - GigabitEthernet0/0/0/0
       - GigabitEthernet0/0/0/1
@@ -25,7 +25,7 @@ profiles:
   juniper_junos:
     image: vmx
     version: null
-    # 前 n-3 个口供 NNI 分配，最后三个口空置预留；默认八口使用前五口。
+    # 前 n-3 个口供 NNI，倒数第二个口供 UNI，倒数第三个和最后一个口预留。
     interfaces:
       - ge-0/0/0
       - ge-0/0/1

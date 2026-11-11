@@ -17,7 +17,7 @@ from ..impl.cisco_iosxrv9k_7_11_1_config_mapping_handler.document import (
     CiscoDocument,
 )
 from ..impl.common.domain.contracts import VendorConfiguration
-from ..impl.common.domain.interface import interface_parent
+from ..impl.common.domain.interface import InterfaceKind, interface_parent
 from ..impl.common.rules.cleaning import CleaningAction, CleaningOperation
 from ..impl.common.support.config_paths import cleaning_rules_path, rule_prefix
 from .models import (
@@ -35,7 +35,7 @@ def target_parents(
 ) -> frozenset[str]:
     """返回设备映射中需要清洗的目标接口父口集合。
 
-    只纳入成功 NNI 映射的目标口，使清洗范围不会扩散到未参与迁移的原始业务接口。
+    纳入成功 NNI/UNI 映射的物理及聚合父口，原生 BVI/IRB 不混入物理兼容处理。
     """
     excluded = (
         {MappingAction.REMOVE, MappingAction.REMOVE_BARE, MappingAction.SKIP}
@@ -49,8 +49,12 @@ def target_parents(
             )
         )
         for mapping in device.mappings
-        if mapping.role == MappingRole.NNI
+        if mapping.role in {MappingRole.NNI, MappingRole.UNI}
         and mapping.target_interface
+        and device.document.interfaces.analysis.interface_kind(
+            mapping.target_interface
+        )
+        in {InterfaceKind.PHYSICAL, InterfaceKind.BUNDLE}
         and mapping.action not in excluded
     )
 

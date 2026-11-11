@@ -286,7 +286,7 @@ class ConversionTest(unittest.TestCase):
             )
             self.assertFalse((output / "configs").exists())
 
-    def test_junos_bundle_nni_non_nni_cleanup_and_auth(self):
+    def test_junos_bundle_nni_uni_migration_and_auth(self):
         topology, config_dir = conversion_fixture("junos_bundle")
         with tempfile.TemporaryDirectory() as directory:
             output = Path(directory) / "output"
@@ -313,12 +313,13 @@ class ConversionTest(unittest.TestCase):
             self.assertIn("interface ae0.0;", converted)
             self.assertNotIn("ge-0/0/5", converted)
             self.assertNotIn("ge-0/0/7", converted)
-            self.assertNotIn("unit 100", converted)
+            self.assertIn("unit 100", converted)
+            self.assertIn("vlan-id 100;", converted)
             self.assertNotIn("vlan-tags outer 100 inner 100;", converted)
             self.assertNotIn("UNUSED-BARE-PORT", converted)
             self.assertIn("lo0", converted)
 
-    def test_junos_non_nni_evpn_vpws_is_removed_with_references(self):
+    def test_junos_uni_evpn_vpws_is_migrated_with_references(self):
         topology, source_config_dir = conversion_fixture("junos_bundle")
         cases = {
             "leaf": ("unit 0;", ("0",)),
@@ -371,16 +372,16 @@ class ConversionTest(unittest.TestCase):
                 )
                 self.assertNotIn("et-12/0/3", converted)
                 self.assertNotIn("ge-0/0/5", converted)
-                self.assertNotIn("local 999;", converted)
-                self.assertNotIn("remote 777;", converted)
-                self.assertNotIn("route-distinguisher 24208:210101;", converted)
-                self.assertNotIn("vrf-target target:24208:210101;", converted)
+                self.assertIn("local 999;", converted)
+                self.assertIn("remote 777;", converted)
+                self.assertIn("route-distinguisher 24208:210101;", converted)
+                self.assertIn("vrf-target target:24208:210101;", converted)
                 for number in numbers:
-                    self.assertNotIn(f"VPWS_{number}", converted)
+                    self.assertIn(f"VPWS_{number}", converted)
                 self.assertIn("interface ae0.0;", converted)
-                self.assertFalse(
+                self.assertTrue(
                     any(
-                        mapping.target_interface and mapping.role != "NNI"
+                        mapping.target_interface and mapping.role == "UNI"
                         for mapping in context.devices["J1"].mappings
                     )
                 )
@@ -671,11 +672,11 @@ class ConversionTest(unittest.TestCase):
                 for item in mappings
                 if item["source_interface"] == "irb.400"
             )
-            self.assertEqual(removed_irb["role"], "NON_NNI")
-            self.assertEqual(removed_irb["action"], "remove")
-            self.assertIsNone(removed_irb["target_interface"])
+            self.assertEqual(removed_irb["role"], "UNI")
+            self.assertEqual(removed_irb["action"], "preserve")
+            self.assertEqual(removed_irb["target_interface"], "irb.400")
 
-    def test_non_nni_duplicate_vlans_are_removed_without_reassignment(self):
+    def test_uni_duplicate_vlans_are_migrated_with_reassignment(self):
         topology, config_dir = conversion_fixture("iosxr_duplicate_vlan")
         with tempfile.TemporaryDirectory() as directory:
             output = Path(directory) / "output"
@@ -686,11 +687,11 @@ class ConversionTest(unittest.TestCase):
             )
             self.assertIn("interface GigabitEthernet0/0/0/0", converted)
             self.assertIn("ipv4 address 10.0.0.1 255.255.255.252", converted)
-            self.assertNotIn("192.0.2.1", converted)
-            self.assertNotIn("198.51.100.1", converted)
-            self.assertNotIn("second-dot1q", converted)
+            self.assertIn("192.0.2.1", converted)
+            self.assertIn("198.51.100.1", converted)
+            self.assertIn("second-dot1q 201", converted)
             self.assertNotIn("interface GigabitEthernet0/0/0/5", converted)
-            self.assertFalse(
+            self.assertTrue(
                 any(mapping.role == "UNI" for mapping in context.mappings)
             )
             report = json.loads(
@@ -703,7 +704,7 @@ class ConversionTest(unittest.TestCase):
                 report["group_conflicts"][0]["winner_source"], "explicit"
             )
 
-    def test_business_on_reserved_interfaces_is_removed_without_target(self):
+    def test_business_on_reserved_interfaces_is_migrated_to_shared_uni(self):
         topology, source_config_dir = conversion_fixture("iosxr_bundle")
         with tempfile.TemporaryDirectory() as directory:
             root = Path(directory)
@@ -726,26 +727,19 @@ class ConversionTest(unittest.TestCase):
             converted = (output / "configs" / "R1.cfg").read_text(
                 encoding="utf-8"
             )
-            self.assertNotIn("interface GigabitEthernet0/0/0/6\n", converted)
+            self.assertIn("interface GigabitEthernet0/0/0/6\n", converted)
             self.assertNotIn("interface GigabitEthernet0/0/0/7\n", converted)
-            self.assertNotIn("203.0.113.1", converted)
-            self.assertNotIn("203.0.114.1", converted)
+            self.assertIn("203.0.113.1", converted)
+            self.assertIn("203.0.114.1", converted)
             for number in (6, 7):
                 self.assertTrue(
                     any(
                         mapping.source_interface
                         == f"GigabitEthernet0/0/0/{number}"
-                        and mapping.role == "NON_NNI"
-                        and mapping.action == "remove"
-                        and mapping.target_interface is None
-                        for mapping in context.devices["R1"].mappings
-                    )
-                )
-                self.assertFalse(
-                    any(
-                        mapping.target_interface
+                        and mapping.role == "UNI"
+                        and mapping.action == "map"
                         and mapping.target_interface.startswith(
-                            f"GigabitEthernet0/0/0/{number}"
+                            "GigabitEthernet0/0/0/6."
                         )
                         for mapping in context.devices["R1"].mappings
                     )
@@ -759,7 +753,7 @@ class ConversionTest(unittest.TestCase):
                 if event["kind"] == "simulation-adaptation"
                 and event["device"] == "R1"
             )
-            self.assertNotIn(
+            self.assertIn(
                 "GigabitEthernet0/0/0/6", adaptation["target_interfaces"]
             )
             self.assertNotIn(

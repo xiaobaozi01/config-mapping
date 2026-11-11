@@ -41,12 +41,15 @@ def _report(
         details = dict(change)
         target = str(change.get("interface", ""))
         if target:
-            details["source_interfaces"] = sorted(
-                {
-                    mapping.source_interface
-                    for mapping in device.mappings
-                    if mapping.target_interface == target
-                }
+            details.setdefault(
+                "source_interfaces",
+                sorted(
+                    {
+                        mapping.source_interface
+                        for mapping in device.mappings
+                        if mapping.target_interface == target
+                    }
+                ),
             )
             details.setdefault("target_interface", target)
         context.add_event(
@@ -74,19 +77,45 @@ def _report_diagnostics(
     ):
         event_kind = EventKind(f"{kind.value}-{level}")
         for message in messages:
+            diagnostics = [
+                item
+                for item in outcome.diagnostics
+                if item["level"] == level and item["message"] == message
+            ]
             rule_ids = list(
-                dict.fromkeys(
-                    item["rule_id"]
-                    for item in outcome.diagnostics
-                    if item["level"] == level and item["message"] == message
-                )
+                dict.fromkeys(item["rule_id"] for item in diagnostics)
             )
             context.add_event(
                 event_kind,
                 message,
                 device=name,
                 rule_ids=rule_ids,
+                **_diagnostic_sources(context.devices[name], diagnostics),
             )
+
+
+def _diagnostic_sources(device, diagnostics):
+    """为带目标接口的诊断补充原接口映射信息。
+
+    直接使用规则提供的结构化接口字段，不从面向用户的告警文本猜测接口名。
+    """
+    targets = {item["interface"] for item in diagnostics if "interface" in item}
+    if not targets:
+        return {}
+    details = {
+        "source_interfaces": sorted(
+            {
+                mapping.source_interface
+                for mapping in device.mappings
+                if mapping.target_interface in targets
+            }
+        )
+    }
+    if len(targets) == 1:
+        details["target_interface"] = next(iter(targets))
+    else:
+        details["target_interfaces"] = sorted(targets)
+    return details
 
 
 class PreconfiguredInterfaceCleanupHandler:
@@ -237,10 +266,14 @@ class InterfaceCompatibilityHandler:
     def process(self, context: ConversionContext) -> None:
         """逐设备适配目标接口并汇总变更、告警和错误。
 
-        只传成功 NNI 映射的目标父口，避免兼容规则修改未参与转换的原始业务接口。
+        传入成功 NNI/UNI 映射的物理及聚合父口，原生网关接口不参与物理类型换型。
         """
+        from .uni import finalize_uni_sources
+
         for name in sorted(context.devices):
             device = context.devices[name]
+            if not finalize_uni_sources(context, name):
+                return
             outcome = device.document.compatibility.adapt_interfaces(
                 set(target_parents(device))
             )
@@ -263,7 +296,7 @@ class FinalInterfaceValidationHandler:
             removed = device.removed_interfaces | {
                 mapping.source_interface
                 for mapping in device.mappings
-                if mapping.role == MappingRole.NNI
+                if mapping.role in {MappingRole.NNI, MappingRole.UNI}
                 and mapping.action
                 not in {MappingAction.SKIP, MappingAction.PRESERVE}
             }

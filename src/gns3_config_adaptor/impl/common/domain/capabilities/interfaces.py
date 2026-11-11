@@ -5,6 +5,7 @@ from __future__ import annotations
 from typing import Protocol
 
 from ..interface import InterfaceKind, InterfaceSpec
+from ..outcomes import InterfaceAdaptationOutcome
 
 
 class InterfaceAnalysis(Protocol):
@@ -105,6 +106,24 @@ class InterfaceTransform(Protocol):
         """确保目标父接口存在。
 
         只在缺失时创建最小父节点，不伪造业务子配置。
+        """
+        ...
+
+    def map_uni(
+        self, source: str, parent: str, vlan: int, inner_vlan: int | None
+    ) -> InterfaceAdaptationOutcome:
+        """把暂存业务迁到共享物理口的单层或双层标签子接口。
+
+        无法安全转换的封装返回错误，已知失效的类型专属配置删除并审计。
+        """
+        ...
+
+    def finalize_uni_source(
+        self, source: str, check_parent: bool
+    ) -> InterfaceAdaptationOutcome:
+        """在 YAML 清洗后检查并移除已经完成业务复制的暂存源树。
+
+        硬件删除只由常规清洗执行，未安全继承的父级业务配置仍须阻断输出。
         """
         ...
 

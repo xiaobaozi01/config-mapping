@@ -210,8 +210,17 @@ def merge_interface_results(
         )
         outcome.errors.extend(result.errors)
         outcome.warnings.extend(result.warnings)
+        metadata = {
+            (item["level"], item["message"]): item
+            for item in result.diagnostics
+        }
         outcome.diagnostics.extend(
-            {"rule_id": rule_id, "level": level, "message": message}
+            dict(
+                metadata.get((level, message), {}),
+                rule_id=rule_id,
+                level=level,
+                message=message,
+            )
             for level, messages in (
                 ("error", result.errors),
                 ("warning", result.warnings),

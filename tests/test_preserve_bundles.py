@@ -28,7 +28,9 @@ def context_for(vendor, split_peer=False, filename_override=None):
     )
     devices = [
         Device(name, vendor, None, row + 2)
-        for row, name in enumerate(["A", "B", "C"])
+        for row, name in enumerate(
+            ["A", "B", "C"] if split_peer else ["A", "B"]
+        )
     ]
     links = [
         Link(
@@ -445,8 +447,11 @@ class PreserveBundleTest(unittest.TestCase):
 
         device = context.devices["A"]
         self.assertFalse(context.has_errors, context.errors + device.errors)
-        self.assertTrue(device.deferred_interface_references)
+        self.assertFalse(device.deferred_interface_references)
         self.assertIn("custom-service FOO", device.document.render())
+        self.assertNotIn(
+            "bind-interface GigabitEthernet0/0/0/99", device.document.render()
+        )
 
     def test_redundant_member_references_are_pruned_at_nni_removal(self):
         cases = [

@@ -149,6 +149,6 @@ rules:
     path:
       - '^interface\b'
       - '**'
-    match: '^(?:no\s+)?(?:speed|duplex|negotiation|fec|transceiver|carrier-delay|dampening)\b'
+    match: '^(?:no\s+)?(?:speed|duplex|negotiation|fec|transceiver|carrier-delay|dampening|flow-control|auto-negotiate|pos|sonet|sdh|serial|channel-group|framing|scrambling|clock\s+(?:source|rate)|loopback|crc|signal-fail|holdoff-time|link-delay|frequency\s+synchronization|synchronous|ethernet\s+(?:loopback|link)|ptp)\b'
     action: delete
     reason: '删除目标镜像不适用的接口硬件属性'

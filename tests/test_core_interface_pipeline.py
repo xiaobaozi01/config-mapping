@@ -209,12 +209,11 @@ class CoreInterfacePipelineTest(unittest.TestCase):
             self.assertFalse(context.has_errors)
             report = json.loads((output / "report.json").read_text())
             self.assertEqual(report["status"], "success")
-            self.assertTrue(
-                any(
-                    "custom-service FOO" in warning
-                    for warning in report["warnings"]
-                )
+            converted = (output / "configs" / "R1.cfg").read_text()
+            self.assertNotIn(
+                "bind-interface GigabitEthernet0/0/0/99", converted
             )
+            self.assertIn("203.0.113.1", converted)
             self.assertIn(
                 "custom-service FOO",
                 (output / "configs" / "R1.cfg").read_text(),

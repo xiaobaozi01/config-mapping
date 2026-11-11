@@ -739,8 +739,8 @@ class JunosActiveVlanIndexTest(unittest.TestCase):
                 document, {spec.name for spec in specs}, specs
             )
             scan.assert_called_once_with(document)
-        self.assertEqual(vlans, {101, 102})
-        self.assertEqual(names, {"BLUE"})
+        self.assertEqual(vlans, {((), 101), ((), 102)})
+        self.assertEqual(names, {((), "BLUE")})
 
 
 if __name__ == "__main__":
