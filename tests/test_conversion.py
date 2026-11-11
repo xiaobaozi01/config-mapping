@@ -156,7 +156,8 @@ class ConversionTest(unittest.TestCase):
             self.assertIn("exec-timeout 10 0", converted)
             self.assertIn("interface GigabitEthernet0/0/0/0", converted)
             self.assertNotIn("interface GigabitEthernet0/0/0/5", converted)
-            self.assertNotIn("interface GigabitEthernet0/0/0/7", converted)
+            self.assertNotIn("interface GigabitEthernet0/0/0/6", converted)
+            self.assertIn("interface GigabitEthernet0/0/0/7.", converted)
             self.assertNotIn("second-dot1q 2", converted)
             self.assertNotIn("UNUSED-BARE-PORT", converted)
             self.assertIn("interface Loopback0", converted)
@@ -312,7 +313,8 @@ class ConversionTest(unittest.TestCase):
             self.assertIn("root-authentication encrypted-password", converted)
             self.assertIn("interface ae0.0;", converted)
             self.assertNotIn("ge-0/0/5", converted)
-            self.assertNotIn("ge-0/0/7", converted)
+            self.assertNotIn("ge-0/0/6", converted)
+            self.assertIn("ge-0/0/7 {", converted)
             self.assertIn("unit 100", converted)
             self.assertIn("vlan-id 100;", converted)
             self.assertNotIn("vlan-tags outer 100 inner 100;", converted)
@@ -727,8 +729,8 @@ class ConversionTest(unittest.TestCase):
             converted = (output / "configs" / "R1.cfg").read_text(
                 encoding="utf-8"
             )
-            self.assertIn("interface GigabitEthernet0/0/0/6\n", converted)
-            self.assertNotIn("interface GigabitEthernet0/0/0/7\n", converted)
+            self.assertIn("interface GigabitEthernet0/0/0/7\n", converted)
+            self.assertNotIn("interface GigabitEthernet0/0/0/6\n", converted)
             self.assertIn("203.0.113.1", converted)
             self.assertIn("203.0.114.1", converted)
             for number in (6, 7):
@@ -739,7 +741,7 @@ class ConversionTest(unittest.TestCase):
                         and mapping.role == "UNI"
                         and mapping.action == "map"
                         and mapping.target_interface.startswith(
-                            "GigabitEthernet0/0/0/6."
+                            "GigabitEthernet0/0/0/7."
                         )
                         for mapping in context.devices["R1"].mappings
                     )
@@ -754,10 +756,10 @@ class ConversionTest(unittest.TestCase):
                 and event["device"] == "R1"
             )
             self.assertIn(
-                "GigabitEthernet0/0/0/6", adaptation["target_interfaces"]
+                "GigabitEthernet0/0/0/7", adaptation["target_interfaces"]
             )
             self.assertNotIn(
-                "GigabitEthernet0/0/0/7", adaptation["target_interfaces"]
+                "GigabitEthernet0/0/0/6", adaptation["target_interfaces"]
             )
 
     def test_nni_capacity_excludes_three_reserved_interfaces(self):

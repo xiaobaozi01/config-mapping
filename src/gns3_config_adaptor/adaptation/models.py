@@ -244,19 +244,19 @@ class ImageProfile:
     def nni_interfaces(self) -> list[str]:
         """返回可用于 NNI 分配的接口前缀。
 
-        最后三个接口不分配给 NNI，其中倒数第二个供共享 UNI，其余两个预留。
+        最后三个接口不分配给 NNI，其中最后一个供共享 UNI，其余两个预留。
         """
         return self.interfaces[:-RESERVED_NNI_INTERFACE_COUNT]
 
     @property
     def uni_parent(self) -> str:
-        """返回 UNI 共享物理口，固定使用倒数第二个数据口。
+        """返回 UNI 共享物理口，固定使用最后一个数据口。
 
         另外两个末尾端口继续预留，NNI 的容量不因恢复 UNI 而改变。
         """
         if len(self.interfaces) < MIN_PROFILE_INTERFACE_COUNT:
             raise ValueError("镜像接口列表至少需要四个接口")
-        return self.interfaces[-2]
+        return self.interfaces[-1]
 
 
 @dataclass(slots=True)

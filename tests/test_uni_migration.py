@@ -89,6 +89,11 @@ def test_uni_preserves_business_and_native_gateway(vendor):
         if m.role == MappingRole.UNI and m.target_vlan is not None
     ]
     assert len(mappings) == 6
+    assert all(
+        mapping.target_interface
+        == f"{device.profile.interfaces[-1]}.{mapping.target_vlan}"
+        for mapping in mappings
+    )
     assert len({m.target_vlan for m in mappings}) == 6
     qinq = next(m for m in mappings if m.inner_vlan == 200)
     assert qinq.source_vlan == 100

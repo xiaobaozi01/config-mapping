@@ -79,7 +79,7 @@ if context.has_errors:
     raise RuntimeError(context.errors)
 ```
 
-`profiles_path` 可配置镜像名称/版本、数据接口列表和模拟参数适配策略；前 n-3 个接口分配给 NNI，倒数第二个接口承载共享 UNI，倒数第三个和最后一个接口预留（默认八口中 0～4 为 NNI、6 为 UNI、5 和 7 预留）。清洗规则位于项目配置目录，按厂商分别位于 `config/rules/cisco_iosxr/xrv9000/cleaning.yaml` 和 `config/rules/juniper_junos/vmx/cleaning.yaml`，转换时不接受外部规则文件。
+`profiles_path` 可配置镜像名称/版本、数据接口列表和模拟参数适配策略；前 n-3 个接口分配给 NNI，最后一个接口承载共享 UNI，倒数第三个和倒数第二个接口预留（默认八口中 0～4 为 NNI、7 为 UNI、5 和 6 预留）。清洗规则位于项目配置目录，按厂商分别位于 `config/rules/cisco_iosxr/xrv9000/cleaning.yaml` 和 `config/rules/juniper_junos/vmx/cleaning.yaml`，转换时不接受外部规则文件。
 
 转换流程已移除原始配置语义审计，不再在映射前扫描原配置的标量冲突或接口角色等语义问题。必要语法解析、拓扑与接口映射冲突检查、最终目标兼容和残留引用校验继续执行。`convert()` 和 `prepare_context()` 保留 keyword-only 参数 `strict_input_validation=False`，该参数只影响仍保留的业务校验，不会重新启用源配置审计。两厂商校验能力不再提供专用的 `validate_source_semantics()` 入口。
 
@@ -103,7 +103,7 @@ Cisco 与 Juniper 的跨厂商 NNI 会按链路两端各自的厂商语法和镜
 
 华为只读提取支持物理口中的 `eth-trunk N`、Eth-Trunk 下的 `trunkport` 成员列表/同前缀 `to` 范围，以及 `dfs-group N m-lag M`。M-LAG 配对需要 DFS `source ip/ipv6 ... peer ...`（含 `dual-active detection` 形式）的双向地址，或拓扑中明确连接双方 `peer-link N` 成员口的链路；单独的相同 DFS、Eth-Trunk 或 M-LAG 编号不足以配对。配置路径沿用设备表“配置文件”列，未指定时按设备名在配置目录中查找 `.cfg/.conf/.txt`。报告通过 `external-aggregation-read` 和 `external-mlag-verified` 记录读取与配对结果，不包含配置原文。
 
-Excel 中的 NNI 及其聚合、子接口闭包按原类型适配。范围外有业务的物理口、聚合口及子接口迁到倒数第二个数据口的共享 UNI 子接口；裸口删除。普通业务生成单层 VLAN，原有 QinQ 保留双层结构和内层标签，外层冲突时重新分配。BVI/IRB 保留原网关类型、地址和桥域关系，仅改写二层接入口引用。UNI 聚合扁平化后不再复现 LACP 或成员冗余；成员自身有独立业务时拒绝迁移。Loopback、管理口以及未识别接口仍遵循保守保留策略。
+Excel 中的 NNI 及其聚合、子接口闭包按原类型适配。范围外有业务的物理口、聚合口及子接口迁到最后一个数据口的共享 UNI 子接口；裸口删除。普通业务生成单层 VLAN，原有 QinQ 保留双层结构和内层标签，外层冲突时重新分配。BVI/IRB 保留原网关类型、地址和桥域关系，仅改写二层接入口引用。UNI 聚合扁平化后不再复现 LACP 或成员冗余；成员自身有独立业务时拒绝迁移。Loopback、管理口以及未识别接口仍遵循保守保留策略。
 
 UNI 源接口在 NNI 写入前暂存，防止目标复用原 UNI 名称时混入业务。迁移负责业务封装和聚合扁平化，专属转换记录原接口、目标接口、命令路径和原因；物理介质、速率、时钟等硬件属性交给后续 YAML 清洗，按规则记录命中数和原因。无法安全转换的标签范围、重写操作或父口配置冲突报错，不发布部署配置；未知逻辑命令保留并告警。`interface-mapping.json` 的 UNI 映射另外记录 `source_vlan`、`target_vlan`、`inner_vlan`；`report.json` 使用 `uni-migration` 事件记录迁移与命令清理。现有 QoS、认证等默认清洗规则继续生效。
 
