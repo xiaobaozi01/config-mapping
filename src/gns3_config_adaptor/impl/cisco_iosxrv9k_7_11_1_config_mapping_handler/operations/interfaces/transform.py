@@ -240,7 +240,13 @@ class CiscoInterfaceTransform:
             ensure_parent_interface(self._document, name)
 
     def map_uni(
-        self, source: str, parent: str, vlan: int, inner_vlan: int | None
+        self,
+        source: str,
+        parent: str,
+        vlan: int,
+        inner_vlan: int | None,
+        *,
+        original_source: str | None = None,
     ) -> InterfaceAdaptationOutcome:
         """按目标子接口类型迁移 UNI，并返回命令级兼容处理结果。
 
@@ -249,7 +255,14 @@ class CiscoInterfaceTransform:
         from .uni import map_uni
 
         with self._document.edit().bulk():
-            return map_uni(self._document, source, parent, vlan, inner_vlan)
+            return map_uni(
+                self._document,
+                source,
+                parent,
+                vlan,
+                inner_vlan,
+                original_source=original_source,
+            )
 
     def finalize_uni_source(
         self, source: str, check_parent: bool

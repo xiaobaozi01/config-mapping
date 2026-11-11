@@ -126,6 +126,222 @@ def test_uni_preserves_business_and_native_gateway(vendor):
     assert all("ADAPT-UNI" not in str(e) for e in removed)
 
 
+def sonet_uni_context(vendor, encapsulation="", *, ipv6=False):
+    """复用原有 UNI 业务和拓扑，将承载三层业务的源口改为 SONET。"""
+    context, device = uni_context(vendor)
+    source = device.document.render()
+    route = "2001:db8:18::/64" if ipv6 else "198.18.0.0/24"
+    if vendor == "cisco_iosxr":
+        parent = "POS0/0/0/3"
+        source = source.replace("GigabitEthernet0/0/0/3", parent)
+        source = source.replace(
+            f"interface {parent}\n",
+            f"interface {parent}\n"
+            + (f" encapsulation {encapsulation}\n" if encapsulation else "")
+            + " keepalive 10\n"
+            + (" ppp authentication chap\n" if encapsulation == "ppp" else ""),
+            1,
+        )
+        if ipv6:
+            source = source.replace(
+                "ipv4 address 192.0.2.1 255.255.255.0",
+                "ipv6 address 2001:db8:3::1/64",
+            ).replace(f"  interface {parent}\n", "")
+        source = source.replace(
+            "\nend\n",
+            "\nrouter static\n vrf TENANT-A\n"
+            f"  address-family {'ipv6' if ipv6 else 'ipv4'} unicast\n"
+            f"   {route} {parent}\n!\nend\n",
+        )
+        interface = parent
+    else:
+        parent = "so-0/0/3"
+        source = source.replace("ge-0/0/3", parent)
+        source = source.replace(
+            f"{parent} {{\n",
+            f"{parent} {{\n"
+            + (
+                f"        encapsulation {encapsulation};\n"
+                if encapsulation
+                else ""
+            )
+            + "        no-keepalives;\n"
+            + (
+                "        ppp-options { lcp-restart-timer 3; }\n"
+                if encapsulation != "cisco-hdlc"
+                else ""
+            ),
+            1,
+        )
+        if ipv6:
+            source = source.replace(
+                "family inet {\n                address 192.0.2.1/24;",
+                "family inet6 {\n                address 2001:db8:3::1/64;",
+            )
+        interface = f"{parent}.0"
+        ospf = "ospf3" if ipv6 else "ospf"
+        source += f"protocols {{ {ospf} {{ area 0 {{ interface {interface}; }} }} }}\n"
+        static = f"static {{ route {route} {{ next-hop {interface}; }} }}"
+        if ipv6:
+            static = f"rib TENANT-A.inet6.0 {{ {static} }}"
+        source = source.replace(
+            "instance-type vrf;",
+            f"instance-type vrf; routing-options {{ {static} }}",
+            1,
+        )
+    device.document = parse_document(vendor, source)
+    return context, device, interface
+
+
+@pytest.mark.parametrize(
+    ("vendor", "encapsulation", "ipv6"),
+    [
+        ("cisco_iosxr", "ppp", False),
+        ("cisco_iosxr", "hdlc", True),
+        ("cisco_iosxr", "", False),
+        ("juniper_junos", "ppp", False),
+        ("juniper_junos", "cisco-hdlc", True),
+        ("juniper_junos", "", False),
+    ],
+)
+def test_sonet_uni_migrates_static_addresses_and_references(
+    vendor, encapsulation, ipv6
+):
+    context, device, interface = sonet_uni_context(
+        vendor, encapsulation, ipv6=ipv6
+    )
+    old_commands = (
+        ("pos crc", "keepalive 10", "ppp authentication")
+        if vendor == "cisco_iosxr"
+        else ("sonet-options", "no-keepalives", "ppp-options")
+    )
+    for stage in build_default_pipeline().stages:
+        stage.process(context)
+        assert not context.has_errors, device.errors + context.errors
+        if type(stage).__name__ == "UNIHandler":
+            staged_output = device.document.render()
+            assert all(command not in staged_output for command in old_commands)
+            if encapsulation:
+                assert f"encapsulation {encapsulation}" not in staged_output
+
+    output = device.document.render()
+    mapping = next(
+        m for m in device.mappings if m.source_interface == interface
+    )
+    address = "2001:db8:3::1/64" if ipv6 else "192.0.2.1"
+    assert address in output
+    if vendor == "cisco_iosxr":
+        route = "2001:db8:18::/64" if ipv6 else "198.18.0.0/24"
+        assert f"interface {mapping.target_interface}\n" in output
+        assert f"encapsulation dot1q {mapping.target_vlan}\n" in output
+        assert f"{route} {mapping.target_interface}\n" in output
+        if not ipv6:
+            assert f"  interface {mapping.target_interface}\n" in output
+    else:
+        assert f"vlan-id {mapping.target_vlan};" in output
+        assert f"interface {mapping.target_interface};" in output
+        assert f"next-hop {mapping.target_interface};" in output
+    assert "TENANT-A" in output
+    assert interface not in output
+    assert "ADAPT-UNI" not in output
+    events = [
+        event
+        for event in context.events
+        if event["kind"] == "uni-migration"
+        and event.get("source_interface") == interface
+        and "source_encapsulation" in event
+    ]
+    assert len(events) == 1
+    assert events[0]["source_encapsulation"] == (encapsulation or "implicit")
+    assert events[0]["target_interface"] == mapping.target_interface
+
+
+@pytest.mark.parametrize(
+    ("vendor", "original", "replacement", "reason"),
+    [
+        (
+            "cisco_iosxr",
+            "ipv4 address 192.0.2.1 255.255.255.0",
+            "ipv4 address negotiated",
+            "协商地址",
+        ),
+        (
+            "cisco_iosxr",
+            "ppp authentication chap",
+            "peer default ip address 192.0.2.2",
+            "点到点对端地址",
+        ),
+        (
+            "cisco_iosxr",
+            "interface POS0/0/0/3\n",
+            "interface POS0/0/0/3 l2transport\n",
+            "二层专线",
+        ),
+        (
+            "cisco_iosxr",
+            "\nend\n",
+            "\nl2vpn\n xconnect group LEGACY\n  p2p TEST\n"
+            "   interface POS0/0/0/3\n!\nend\n",
+            "二层专线",
+        ),
+        (
+            "juniper_junos",
+            "address 192.0.2.1/24;",
+            "negotiate-address;",
+            "协商地址",
+        ),
+        (
+            "juniper_junos",
+            "address 192.0.2.1/24;",
+            "address 192.0.2.1/32 { destination 192.0.2.2; }",
+            "点到点对端地址",
+        ),
+        (
+            "juniper_junos",
+            "encapsulation ppp;",
+            "encapsulation ppp-ccc;",
+            "不支持的 so 封装",
+        ),
+        (
+            "juniper_junos",
+            None,
+            "protocols { l2circuit { neighbor 192.0.2.2 {"
+            " interface so-0/0/3.0 { virtual-circuit-id 30; } } } }",
+            "二层专线",
+        ),
+    ],
+)
+def test_sonet_uni_blocks_services_that_need_original_link(
+    vendor, original, replacement, reason, tmp_path
+):
+    context, device, interface = sonet_uni_context(vendor, "ppp")
+    source = device.document.render()
+    if original is None:
+        source += f"\n{replacement}\n"
+    else:
+        assert original in source
+        source = source.replace(original, replacement, 1)
+    config_dir = tmp_path / "input"
+    config_dir.mkdir()
+    for name, item in context.devices.items():
+        config = source if item is device else item.document.render()
+        (config_dir / f"{name}.cfg").write_text(config)
+
+    output = tmp_path / "output"
+    result = convert(context.topology.path, config_dir, output)
+
+    assert result.has_errors
+    assert any(
+        event["kind"] == "uni-migration-error"
+        and interface in event["message"]
+        and reason in event["message"]
+        for event in result.events
+    ), result.devices[device.device.name].errors
+    assert (output / "report.json").exists()
+    assert not (output / "configs").exists()
+    assert not (output / "topology-adapted.xlsx").exists()
+
+
 def test_original_vlan_reservations_are_not_stolen():
     specs = [
         InterfaceSpec("A", "A", None, None, InterfaceKind.PHYSICAL),

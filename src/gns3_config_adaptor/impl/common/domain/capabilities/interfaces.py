@@ -110,11 +110,17 @@ class InterfaceTransform(Protocol):
         ...
 
     def map_uni(
-        self, source: str, parent: str, vlan: int, inner_vlan: int | None
+        self,
+        source: str,
+        parent: str,
+        vlan: int,
+        inner_vlan: int | None,
+        *,
+        original_source: str | None = None,
     ) -> InterfaceAdaptationOutcome:
         """把暂存业务迁到共享物理口的单层或双层标签子接口。
 
-        无法安全转换的封装返回错误，已知失效的类型专属配置删除并审计。
+        原接口名可用于识别暂存前的链路介质，无法安全转换的封装返回错误。
         """
         ...
 

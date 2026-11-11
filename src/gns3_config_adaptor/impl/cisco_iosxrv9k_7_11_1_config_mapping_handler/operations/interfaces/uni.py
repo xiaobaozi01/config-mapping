@@ -5,11 +5,31 @@ from __future__ import annotations
 import re
 
 from ....common.config_ast.editor import format_fragment
-from ....common.domain.interface import interface_parent
+from ....common.domain.interface import (
+    interface_parent,
+    interface_unit,
+    normalized_command,
+)
 from ....common.domain.outcomes import InterfaceAdaptationOutcome
 from ...support.interface_commands import is_uni_type_attribute
+from ...syntax.rewrite_helpers import append_top_level
+from ...syntax.semantics import interface_reference_candidates
 from .access import find_interface_node
 from .transform import ensure_parent_interface, remove_interface
+
+_POS_INTERFACE = re.compile(r"^pos\d", re.I)
+_POS_LINK_COMMAND = re.compile(
+    r"^(?:no )?(?:encapsulation|pos|sonet|sdh|crc|scrambling|framing|"
+    r"clock (?:source|rate)|keepalive|ppp)(?:\s|$)"
+)
+_POS_ADDRESS_DEPENDENCY = re.compile(
+    r"^(?:ipv[46] (?:address (?:negotiated|peer|dhcp|autoconfig)|unnumbered)|"
+    r"ppp ip(?:v6)?cp|peer default ip address)\b"
+)
+_STATIC_ADDRESS = re.compile(
+    r"^(?:ipv4 address \d+(?:\.\d+){3}(?:/\d+| \d+(?:\.\d+){3})|"
+    r"ipv6 address [\da-f:.]+(?:/\d+| link-local))(?:\s|$)"
+)
 
 
 def _record(outcome, source, command, reason, action="removed"):
@@ -77,6 +97,80 @@ def _validate(block, vlan, inner, outcome):
         outcome.errors.append(f"{block.interface_name}: QinQ 内层 VLAN 非法")
 
 
+def _pos_l2_attachment(document, source):
+    """检查 POS 是否被 L2VPN 作为接入电路引用。
+
+    使用规范接口候选匹配，避免把描述文本或相似接口名当成二层绑定。
+    """
+    return any(
+        source.lower() in interface_reference_candidates(node.header)
+        for root in document.root.nodes
+        if re.match(r"^l2vpn\b", root.header, re.I)
+        for node in root.walk()
+        if re.match(r"^interface\s", node.header, re.I)
+    )
+
+
+def _pos_migration_error(document, block, source, encapsulations, inner_vlan):
+    """拒绝依赖原 POS 封装或地址协商的业务。
+
+    首个阻断原因用于设备诊断，确认静态三层业务后才允许修改暂存树。
+    """
+    if block.l2transport or _pos_l2_attachment(document, source):
+        return "POS 二层专线无法迁移到三层以太网 UNI"
+    if interface_unit(source) is not None or inner_vlan is not None:
+        return "POS 子接口或标签业务无法按普通三层 UNI 迁移"
+    if len(encapsulations) > 1:
+        return "POS 存在多个封装定义"
+    if encapsulations and encapsulations[0] not in {"ppp", "hdlc"}:
+        return f"不支持的 POS 封装 {encapsulations[0]}"
+    if any(
+        _POS_ADDRESS_DEPENDENCY.match(normalized_command(node.header))
+        for node in block.walk()
+    ):
+        return "POS 依赖协商地址、未编号地址或点到点对端地址"
+    if not any(
+        _STATIC_ADDRESS.match(normalized_command(node.header))
+        for node in block.nodes
+    ):
+        return "POS 缺少可直接迁移的静态 IPv4 或 IPv6 地址"
+    if any(
+        re.match(
+            r"^(?:rewrite|frame-relay|ppp multilink|xconnect|ethernet-services)\b",
+            normalized_command(node.header),
+        )
+        for node in block.nodes
+    ):
+        return "POS 依赖标签重写、专线封装或多链路配置"
+    return None
+
+
+def _adapt_pos(document, block, source, inner_vlan, outcome):
+    """验证三层 POS 并移除暂存树中的旧链路专属命令。
+
+    报告只记录原封装类型，PPP 认证命令中的凭据不进入审计事件。
+    """
+    encapsulations = [
+        command.removeprefix("encapsulation").strip()
+        for node in block.nodes
+        if re.match(
+            r"^encapsulation\b", command := normalized_command(node.header)
+        )
+    ]
+    error = _pos_migration_error(
+        document, block, source, encapsulations, inner_vlan
+    )
+    if error:
+        outcome.errors.append(f"{source}: {error}")
+        return None
+    transaction = document.edit()
+    for node in block.nodes:
+        if _POS_LINK_COMMAND.match(normalized_command(node.header)):
+            transaction.delete(node, "移除 POS 链路专属配置")
+    transaction.apply()
+    return encapsulations[0] if encapsulations else "implicit"
+
+
 def _parent_payload(document, block, parent, outcome):
     """保留共享父口所需 MTU，将可用的 ethertype 留给兼容阶段迁移。
 
@@ -141,7 +235,13 @@ def _merge_mtu(document, parent, command, outcome, source):
 
 
 def map_uni(
-    document, source: str, parent: str, vlan: int, inner_vlan: int | None
+    document,
+    source: str,
+    parent: str,
+    vlan: int,
+    inner_vlan: int | None,
+    *,
+    original_source: str | None = None,
 ) -> InterfaceAdaptationOutcome:
     """把一个暂存接口复制为单层或双层 UNI 业务子接口。
 
@@ -152,13 +252,32 @@ def map_uni(
     if block is None:
         outcome.errors.append(f"UNI 暂存接口不存在: {source}")
         return outcome
-    _validate(block, vlan, inner_vlan, outcome)
+    source_encapsulation = None
+    if original_source and _POS_INTERFACE.match(original_source):
+        source_encapsulation = _adapt_pos(
+            document, block, original_source, inner_vlan, outcome
+        )
+    else:
+        _validate(block, vlan, inner_vlan, outcome)
     if outcome.errors:
         return outcome
+    _create_uni_target(
+        document, block, parent, vlan, inner_vlan, outcome, source_encapsulation
+    )
+    return outcome
+
+
+def _create_uni_target(
+    document, block, parent, vlan, inner_vlan, outcome, source_encapsulation
+):
+    """复制业务配置并登记目标子接口及其标签。
+
+    普通业务与 POS 使用相同的目标封装生成逻辑，POS 额外记录被替换的链路类型。
+    """
     ensure_parent_interface(document, parent)
     inherited = _parent_payload(document, block, parent, outcome)
     if outcome.errors:
-        return outcome
+        return
     target = f"{parent}.{vlan}"
     commands = _payload(document, block, parent, inherited, outcome)
     suffix = f" second-dot1q {inner_vlan}" if inner_vlan is not None else ""
@@ -171,8 +290,6 @@ def map_uni(
         " l2transport" if block.l2transport else ""
     )
     transaction = document.edit()
-    from ...syntax.rewrite_helpers import append_top_level
-
     append_top_level(
         transaction,
         document,
@@ -180,16 +297,19 @@ def map_uni(
         "创建 UNI 业务子接口",
     )
     transaction.apply()
-    outcome.changes.append(
-        {
-            "interface": target,
-            "action": "mapped",
-            "reason": "重建 UNI 业务封装",
-            "outer_vlan": vlan,
-            "inner_vlan": inner_vlan,
-        }
-    )
-    return outcome
+    change = {
+        "interface": target,
+        "action": "mapped",
+        "reason": "重建 UNI 业务封装",
+        "outer_vlan": vlan,
+        "inner_vlan": inner_vlan,
+    }
+    if source_encapsulation is not None:
+        change.update(
+            reason="将 POS 三层业务迁移到以太网 UNI",
+            source_encapsulation=source_encapsulation,
+        )
+    outcome.changes.append(change)
 
 
 def _payload(document, block, parent, inherited, outcome):

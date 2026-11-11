@@ -4,11 +4,20 @@ from __future__ import annotations
 
 import re
 
-from ....common.domain.interface import interface_parent, interface_unit
+from ....common.domain.interface import (
+    interface_parent,
+    interface_unit,
+    normalized_command,
+)
 from ....common.domain.outcomes import InterfaceAdaptationOutcome
 from ...support.interface_commands import is_uni_type_attribute
 from ...syntax.ast import JuniperNode
-from .access import find_interface_node, unit_nodes, unit_number
+from .access import (
+    find_interface_node,
+    unit_nodes,
+    unit_number,
+    walk_effective_nodes,
+)
 from .transform import ensure_parent_interface, remove_interface
 
 _TAGS = re.compile(
@@ -17,6 +26,32 @@ _TAGS = re.compile(
 _KNOWN = re.compile(
     r"^(?:description|family|encapsulation|vlan-id|vlan-tags|input-vlan-map|output-vlan-map|mtu|bandwidth|filter|policer|disable|enable|accounting|rpf-check|no-redirects)\b"
 )
+_SO_INTERFACE = re.compile(r"^so-\d", re.I)
+_SO_LINK_COMMAND = re.compile(
+    r"^(?:encapsulation|sonet-options|sdh-options|ppp-options|"
+    r"(?:no-)?keepalives|clocking|framing)(?:\s|$)"
+)
+_SO_ADDRESS_DEPENDENCY = re.compile(
+    r"^(?:negotiate-address|unnumbered-address|destination(?:-profile)?|"
+    r"on-demand-ip-address)\b"
+)
+_SO_L2_COMMAND = re.compile(
+    r"^(?:family\s+(?:ccc|tcc|bridge|ethernet-switching)|"
+    r"(?:input|output)-vlan-map|dlci|multilink-options)\b"
+)
+_L2_REFERENCE_SCOPES = frozenset(
+    {
+        "l2circuit",
+        "l2vpn",
+        "connections",
+        "bridge-domains",
+        "vlans",
+        "vpls",
+        "evpn",
+    }
+)
+_IP_FAMILY = re.compile(r"^family\s+inet6?$")
+_STATIC_ADDRESS = re.compile(r"^address\s+[\da-f:.]+/\d+(?:\s|$)", re.I)
 
 
 def _record(outcome, source, command, reason, action="removed"):
@@ -120,6 +155,96 @@ def _validate_maps(document, source, maps, outcome):
         ("pop", "push"),
         ("pop-pop", "push-push"),
     }
+
+
+def _so_l2_attachment(document, source):
+    """检查逻辑接口是否被配置为二层电路或桥域的成员。
+
+    同时检查父口和 unit 的完整接口名，仅在活动的二层配置作用域中查找。
+    """
+    references = {
+        f"interface {source.lower()}",
+        f"interface {interface_parent(source).lower()}",
+    }
+    return any(
+        any(
+            document._parser.base_header(ancestor) in _L2_REFERENCE_SCOPES
+            for ancestor in node.path
+        )
+        for node in walk_effective_nodes(document, document.root)
+        if normalized_command(_effective(document, node)) in references
+    )
+
+
+def _so_migration_error(document, source, statements, encapsulations, inner):
+    """验证 so 的业务可用配置中的地址直接迁移。
+
+    检查地址族中的协商和对端配置，防止生成失去原连接语义的以太网 unit。
+    """
+    if any(
+        _SO_L2_COMMAND.match(command) for command in statements.values()
+    ) or _so_l2_attachment(document, source):
+        return "so 二层专线或业务无法迁移到三层以太网 UNI"
+    if inner is not None or any(
+        _TAGS.match(cmd) for cmd in statements.values()
+    ):
+        return "so 标签业务无法按普通三层 UNI 迁移"
+    if len(encapsulations) > 1:
+        return "so 存在冲突的封装定义"
+    if encapsulations - {"ppp", "cisco-hdlc"}:
+        encapsulation = next(iter(encapsulations)) or "（空）"
+        return f"不支持的 so 封装 {encapsulation}"
+    if any(
+        _SO_ADDRESS_DEPENDENCY.match(_effective(document, child))
+        for node, command in statements.items()
+        if _IP_FAMILY.match(command) or command == "ppp-options"
+        for child in walk_effective_nodes(document, node)
+    ):
+        return "so 依赖协商地址、未编号地址或点到点对端地址"
+    if not any(
+        _STATIC_ADDRESS.match(_effective(document, child))
+        for node, command in statements.items()
+        if _IP_FAMILY.match(command)
+        for child in node.nodes
+        if document._parser.is_effective(child)
+    ):
+        return "so 缺少可直接迁移的静态 IPv4 或 IPv6 地址"
+    return None
+
+
+def _adapt_so(document, parent, payload, source, inner_vlan, outcome):
+    """验证三层 SONET 业务，并从暂存父口和 unit 移除旧链路配置。
+
+    父口和 unit 一起验证，确认原封装和地址可迁移后才删除专属配置。
+    """
+    if len(unit_nodes(document, parent)) > 1:
+        outcome.errors.append(
+            f"{source}: so 的多个 unit 无法按单条三层业务迁移"
+        )
+        return None
+    statements = {
+        node: normalized_command(_effective(document, node))
+        for node in (*parent.nodes, *payload.nodes)
+        if document._parser.is_effective(node)
+        and not document._parser.is_unit(node.header)
+    }
+    encapsulations = {
+        command.removeprefix("encapsulation").strip()
+        for command in statements.values()
+        if re.match(r"^encapsulation(?:\s|$)", command)
+    }
+    error = _so_migration_error(
+        document, source, statements, encapsulations, inner_vlan
+    )
+    if error:
+        outcome.errors.append(f"{source}: {error}")
+        return None
+    transaction = document.edit()
+    for node, command in statements.items():
+        if _SO_LINK_COMMAND.match(command):
+            transaction.delete(node, "移除 SONET 链路专属配置")
+    transaction.apply()
+    return next(iter(encapsulations), "implicit")
 
 
 def _prepare_target(document, parent):
@@ -269,7 +394,13 @@ def _encapsulate(document, unit, inherited, encapsulation, vlan, inner):
 
 
 def map_uni(
-    document, source: str, parent: str, vlan: int, inner_vlan: int | None
+    document,
+    source: str,
+    parent: str,
+    vlan: int,
+    inner_vlan: int | None,
+    *,
+    original_source: str | None = None,
 ) -> InterfaceAdaptationOutcome:
     """将一个源 unit 或物理口业务迁入共享 UNI 的新 unit。
 
@@ -293,30 +424,68 @@ def map_uni(
         outcome.errors.append(f"UNI 暂存 unit 不存在: {source}")
         return outcome
     payload = payload or JuniperNode("unit 0", [])
-    _validate(document, source, payload, vlan, inner_vlan, outcome)
+    source_encapsulation = None
+    if original_source and _SO_INTERFACE.match(original_source):
+        source_encapsulation = _adapt_so(
+            document, node, payload, original_source, inner_vlan, outcome
+        )
+    else:
+        _validate(document, source, payload, vlan, inner_vlan, outcome)
     if outcome.errors:
         return outcome
+    _create_uni_target(
+        document,
+        source,
+        node,
+        payload,
+        parent,
+        vlan,
+        inner_vlan,
+        outcome,
+        source_encapsulation,
+    )
+    return outcome
+
+
+def _create_uni_target(
+    document,
+    source,
+    node,
+    payload,
+    parent,
+    vlan,
+    inner_vlan,
+    outcome,
+    source_encapsulation,
+):
+    """继承父口业务属性，创建目标 unit 并登记迁移结果。
+
+    目标 unit 使用共享以太网父口，源为 SONET 时额外报告原封装。
+    """
     target = _prepare_target(document, parent)
     inherited, encapsulation = _parent_config(
         document, source, node, target, outcome
     )
     if outcome.errors:
-        return outcome
+        return
     unit = JuniperNode(
         f"unit {vlan}", _payload(document, source, payload, outcome)
     )
     _encapsulate(document, unit, inherited, encapsulation, vlan, inner_vlan)
     target.children.append(unit)
-    outcome.changes.append(
-        {
-            "interface": f"{parent}.{vlan}",
-            "action": "mapped",
-            "reason": "重建 UNI 业务封装",
-            "outer_vlan": vlan,
-            "inner_vlan": inner_vlan,
-        }
-    )
-    return outcome
+    change = {
+        "interface": f"{parent}.{vlan}",
+        "action": "mapped",
+        "reason": "重建 UNI 业务封装",
+        "outer_vlan": vlan,
+        "inner_vlan": inner_vlan,
+    }
+    if source_encapsulation is not None:
+        change.update(
+            reason="将 so 三层业务迁移到以太网 UNI",
+            source_encapsulation=source_encapsulation,
+        )
+    outcome.changes.append(change)
 
 
 def finalize_uni_source(

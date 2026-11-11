@@ -313,6 +313,7 @@ class UNIHandler:
                     device.profile.uni_parent,
                     plan.vlan,
                     plan.inner_vlan,
+                    original_source=plan.source,
                 )
                 for messages in (outcome.errors, outcome.warnings):
                     messages[:] = [
